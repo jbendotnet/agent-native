@@ -59,6 +59,7 @@ const messages = {
     commentsAndRepliesDescription:
       "Quand quelqu’un commente votre deck ou y répond.",
     retry: "Réessayer",
+    reload: "Recharger",
     mcpAbout:
       "Connectez Slides à Claude, ChatGPT, Cursor ou toute application d’IA compatible avec MCP. Cette application peut alors travailler dans Slides pour vous : créer des decks, ajouter des diapositives et exporter vers PowerPoint. Elle ne voit que ce que vous pouvez voir.",
     workspaceTitle: "Espace de travail",
@@ -130,7 +131,7 @@ const messages = {
       "Google Picker nécessite GOOGLE_PICKER_API_KEY et GOOGLE_PICKER_APP_ID.",
     imageUploadFailed: "Échec de l’envoi de l’image",
     imageUploadNeedsBuilder:
-      "Connectez un stockage d’objets pour téléverser des images : connectez Builder.io (gratuit) ou ajoutez vos propres clés de stockage compatibles S3 dans Paramètres → Envois de fichiers.",
+      "Configurez un stockage d’objets pour téléverser des images : utilisez Builder.io (gratuit) ou ajoutez vos propres clés de stockage compatibles S3 dans Paramètres → Envois de fichiers.",
     sentToAgent: "Envoyé à l’agent",
     imageUploadGenericError:
       "Une erreur est survenue lors de l’envoi de cette image.",
@@ -777,10 +778,12 @@ const messages = {
     tryAgain: "Réessayer",
     imageUploadFailed: "Error al subir imagen",
     imageUploadNeedsBuilder:
-      "Connectez un stockage d’objets pour téléverser des images : connectez Builder.io (gratuit) ou ajoutez vos propres clés de stockage compatibles S3 dans Paramètres → Envois de fichiers.",
+      "Configurez un stockage d’objets pour téléverser des images : utilisez Builder.io (gratuit) ou ajoutez vos propres clés de stockage compatibles S3 dans Paramètres → Envois de fichiers.",
     imageAdded: "Imagen añadida",
     imageUploadError: "Algo salió mal al subir esta imagen.",
     exportFailed: "Error al exportar",
+    agentRunFailed:
+      "L’exécution de l’agent a échoué avant la création des diapositives. Consultez les détails dans le chat, puis réessayez.",
     deckHasNoSlides: "Cette présentation ne contient aucune diapositive.",
     pdfRenderFailed: "No se pudo renderizar el PDF.",
     buildingDeck: "Construyendo deck",
@@ -992,8 +995,8 @@ const messages = {
           "Lisez le site d’entreprise fourni et créez une présentation sur celle-ci. Signalez les problèmes d’accès au lieu d’inventer des faits.",
       },
     },
-    connectBuilderIo: "Connecter Builder.io",
-    connectingBuilder: "Connexion à Builder.io…",
+    connectBuilderIo: "Utiliser Builder.io",
+    connectingBuilder: "Configuration de Builder.io…",
     recent: "Récents",
     starters: {
       pitch: {
@@ -1017,7 +1020,7 @@ const messages = {
     fileStorageStatusUnavailable:
       "Impossible de vérifier le stockage d’objets. Réessayez avant d’envoyer des fichiers.",
     fileStorageSetupRequired:
-      "Aucun stockage d’objets n’est connecté. Connectez Builder.io gratuitement ou ajoutez vos propres clés de stockage compatibles S3 dans Paramètres → Téléversements de fichiers.",
+      "Aucun stockage d’objets n’est connecté. Utilisez Builder.io gratuitement ou ajoutez vos propres clés de stockage compatibles S3 dans Paramètres → Téléversements de fichiers.",
     decksTitle: "Decks",
     deckLengthQuestion: "Quelle longueur doit faire ce deck ?",
     deckLengthHeader: "Longueur du deck",
@@ -1050,7 +1053,7 @@ const messages = {
     addDesignSystem: "+ Système de design",
     importFrom: "Importer depuis",
     referenceFileStorageUnavailable:
-      "Le stockage de fichiers n’est pas configuré. Connectez Builder.io ou un autre fournisseur pour importer des fichiers de référence.",
+      "Le stockage de fichiers n’est pas configuré. Utilisez Builder.io ou un autre fournisseur pour importer des fichiers de référence.",
     attachedFiles: "Pièces jointes",
     imported: "Importé",
     importedReferenceDeck: "Deck de référence importé",

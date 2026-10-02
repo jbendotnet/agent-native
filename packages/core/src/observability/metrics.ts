@@ -19,6 +19,11 @@ const HTTP_SERVER_DURATION_BUCKETS_S = [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10];
 
 export const OBSERVABILITY_FLUSH_TIMEOUT_MS = 2_000;
 
+// A timer that fires this much past its deadline means the process was frozen
+// mid-flush (the runtime suspended it after the response), not that the export
+// was slow.
+const FLUSH_SUSPENDED_SLACK_MS = 1_000;
+
 const KNOWN_HTTP_METHODS = new Set([
   "CONNECT",
   "DELETE",
@@ -130,8 +135,13 @@ function flushErrorType(error: unknown): string {
   return error instanceof Error && error.name ? error.name : "unknown";
 }
 
-function recordFlushFailure(errorType: string): void {
-  instruments()?.flushFailures.add(1, { "error.type": errorType });
+type TelemetrySignal = "metrics" | "traces";
+
+function recordFlushFailure(signal: TelemetrySignal, errorType: string): void {
+  instruments()?.flushFailures.add(1, {
+    "agent_native.telemetry.signal": signal,
+    "error.type": errorType,
+  });
 }
 
 /**
@@ -144,30 +154,37 @@ export async function flushObservability(): Promise<void> {
   const provider = getRegisteredObservabilityProvider();
   if (!provider) return;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const startedAt = Date.now();
   const timeout = new Promise<string>((resolve) => {
-    timer = setTimeout(
-      () => resolve("timeout"),
-      OBSERVABILITY_FLUSH_TIMEOUT_MS,
-    );
+    timer = setTimeout(() => {
+      const late =
+        Date.now() - startedAt - OBSERVABILITY_FLUSH_TIMEOUT_MS >
+        FLUSH_SUSPENDED_SLACK_MS;
+      resolve(late ? "suspended" : "timeout");
+    }, OBSERVABILITY_FLUSH_TIMEOUT_MS);
     timer.unref?.();
   });
   try {
     // One provider failing must not end the wait for the other: the response
     // hook returning early lets the runtime freeze mid-export.
+    const flushes = [
+      ["metrics", provider.meterProvider],
+      ["traces", provider.tracerProvider],
+    ] as const;
     const failures = await Promise.all(
-      [provider.meterProvider, provider.tracerProvider].map((signal) =>
+      flushes.map(([, signalProvider]) =>
         Promise.race([
           (async () => {
-            await signal?.forceFlush?.();
+            await signalProvider?.forceFlush?.();
             return undefined;
           })().catch(flushErrorType),
           timeout,
         ]),
       ),
     );
-    for (const failure of failures) {
-      if (failure) recordFlushFailure(failure);
-    }
+    failures.forEach((failure, index) => {
+      if (failure) recordFlushFailure(flushes[index][0], failure);
+    });
   } finally {
     clearTimeout(timer);
   }

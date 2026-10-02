@@ -22,6 +22,7 @@ const amplitudeMock = vi.hoisted(() => ({
 
 const replayMock = vi.hoisted(() => ({
   emitSessionReplayAgentChatEvent: vi.fn(),
+  emitSessionReplayAnalyticsEvent: vi.fn(),
   emitSessionReplayException: vi.fn(),
   getSessionReplayId: vi.fn(() => undefined),
   getSessionReplayContext: vi.fn(() => null),
@@ -195,6 +196,7 @@ describe("browser analytics pageviews", () => {
     replayMock.startSessionReplay.mockClear();
     replayMock.stopSessionReplay.mockClear();
     replayMock.emitSessionReplayAgentChatEvent.mockClear();
+    replayMock.emitSessionReplayAnalyticsEvent.mockClear();
     tracingMock.recordTrackingEvent.mockClear();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
@@ -244,6 +246,7 @@ describe("browser analytics pageviews", () => {
         new Response(
           JSON.stringify({
             configured: true,
+            chatEligible: false,
             engine: "builder",
             model: "claude-sonnet-4-6",
             source: "app_secrets",
@@ -262,6 +265,7 @@ describe("browser analytics pageviews", () => {
       properties: {
         llm_connection: "builder",
         llm_connection_configured: true,
+        llm_chat_eligible: false,
       },
     });
   });
@@ -324,6 +328,42 @@ describe("browser analytics pageviews", () => {
     expect(body.anonymousId).toMatch(/^[A-Za-z0-9_-]+$/);
     const latestBody = JSON.parse(String(analyticsCalls[1][1].body));
     expect(getCookie()).toContain(`an_aid=${latestBody.anonymousId}`);
+  });
+
+  it("keeps high-value signup attribution when the cookie payload exceeds its budget", async () => {
+    const params = new URLSearchParams({
+      gclid: "click-id",
+      msclkid: "microsoft-click-id",
+      utm_source: "google",
+      utm_medium: "cpc",
+      utm_campaign: "launch",
+      utm_content: "💡".repeat(120),
+      utm_term: "💡".repeat(120),
+    });
+    const { getCookie, localStorage } = installBrowser(
+      `https://slides.agent-native.com/?${params}`,
+    );
+    const { configureTracking } = await freshAnalytics();
+
+    configureTracking({
+      llmConnectionStatus: false,
+      authSessionRefresh: false,
+      pageviewTracking: false,
+    });
+
+    const cookie = getCookie();
+    const value = cookie.slice("an_ft=".length).split(";", 1)[0]!;
+    const captured = JSON.parse(decodeURIComponent(value));
+    const stored = JSON.parse(localStorage.getItem("an_attribution")!);
+
+    expect(cookie.length).toBeLessThanOrEqual(1500);
+    expect(captured).toMatchObject({
+      gclid: "click-id",
+      msclkid: "microsoft-click-id",
+      utm_source: "google",
+      capture_truncated: "1",
+    });
+    expect(stored.utm_term).toBe("💡".repeat(60));
   });
 
   it("emits return usage after a seven-day gap between app entries", async () => {
@@ -1334,6 +1374,51 @@ describe("browser analytics pageviews", () => {
     expect(replayMock.emitSessionReplayAgentChatEvent).toHaveBeenCalledWith(
       event,
     );
+  });
+
+  it("marks named app events on the replay once, without telemetry events", async () => {
+    installBrowser("https://clips.agent-native.com/library");
+    installFetch({
+      session: { email: "dev@example.com", userId: "auth-user-1" },
+    });
+    replayMock.startSessionReplay.mockResolvedValue({
+      started: true,
+      replayId: "replay-1",
+      sessionId: "browser-session-1",
+    });
+    const { configureTracking, trackEvent } = await freshAnalytics();
+    configureTracking({
+      key: "anpk_configured",
+      endpoint: "https://analytics.example.test/api/analytics/track",
+      sessionReplay: true,
+    });
+    await tick();
+
+    trackEvent("recording_started", { clip_id: "clip-1" });
+    trackEvent("share_link_copied", { clip_id: "clip-1" });
+    trackEvent("pageview");
+    trackEvent("action.response", { action: "list-clips" });
+    trackEvent("session_status", { signed_in: true });
+    const replayOptions = replayMock.startSessionReplay.mock.calls[0][0];
+    replayOptions.onUploadRejectedWithAttemptId(
+      { status: 409, restartAttempted: true, restartSucceeded: true },
+      "opaque-attempt-1",
+    );
+    await tick();
+
+    const marked = replayMock.emitSessionReplayAnalyticsEvent.mock.calls.map(
+      ([name]) => name,
+    );
+    expect(marked).toContain("recording_started");
+    // The lifecycle alias (output_shared) describes the same moment.
+    expect(marked.filter((name) => name !== "recording_started")).toHaveLength(
+      1,
+    );
+    expect(marked).not.toContain("output_shared");
+    expect(marked).not.toContain("pageview");
+    expect(marked).not.toContain("action.response");
+    expect(marked).not.toContain("session_status");
+    expect(marked).not.toContain("session_replay_upload_rejected");
   });
 
   it("switches content capture before emitting client-side pageviews", async () => {

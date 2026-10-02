@@ -43,7 +43,11 @@ import {
   agentNativeMcpInstructions,
   agentNativeToolTitle,
 } from "../shared/agent-mcp-metadata.js";
-import { EMBED_TARGET_HEADER } from "../shared/embed-auth.js";
+import {
+  EMBED_TARGET_HEADER,
+  EMBED_TARGET_QUERY_PARAM,
+  EMBED_TOKEN_QUERY_PARAM,
+} from "../shared/embed-auth.js";
 import {
   isMcpEmbedCorsOrigin,
   MCP_EMBED_CORS_ALLOW_HEADERS,
@@ -53,6 +57,7 @@ import {
   countActionFailure,
   countCredentialState,
 } from "../tracking/failure-counters.js";
+import { redact, redactErrorStack } from "../tracking/redaction.js";
 import { notifyActionChange } from "./action-change.js";
 import {
   readBrowserSessionIdHeader,
@@ -88,7 +93,9 @@ import { hasUiActionCapability } from "./ui-action-capability.js";
 declare const __AGENT_NATIVE_BUILD_ID__: string | undefined;
 declare const __AGENT_NATIVE_CLIENT_COMPATIBILITY_VERSION__: string | undefined;
 
-function requiredClientCompatibilityVersion(): string {
+function requiredClientCompatibilityVersion(appVersion?: string): string {
+  const configuredAppVersion = appVersion?.trim();
+  if (configuredAppVersion) return configuredAppVersion;
   const configured =
     typeof __AGENT_NATIVE_CLIENT_COMPATIBILITY_VERSION__ === "string"
       ? __AGENT_NATIVE_CLIENT_COMPATIBILITY_VERSION__
@@ -116,6 +123,10 @@ import {
 
 const ROUTE_PREFIX = "/_agent-native/actions";
 const FRONTEND_MUTATION_METHODS = new Set(["POST", "PUT", "DELETE"]);
+const EMBED_ACTION_QUERY_PARAMS = new Set([
+  EMBED_TARGET_QUERY_PARAM,
+  EMBED_TOKEN_QUERY_PARAM,
+]);
 
 async function resolveFeatureFlagA2ACaller(event: any, actionName: string) {
   const required =
@@ -155,6 +166,7 @@ export function parseActionSearchParams(
 ): Record<string, any> {
   const params: Record<string, any> = {};
   for (const [rawKey, value] of searchParams.entries()) {
+    if (EMBED_ACTION_QUERY_PARAMS.has(actionParamKey(rawKey))) continue;
     appendActionParam(params, rawKey, value);
   }
   return params;
@@ -165,6 +177,7 @@ function parseActionQueryObject(
 ): Record<string, any> {
   const params: Record<string, any> = {};
   for (const [rawKey, rawValue] of Object.entries(query)) {
+    if (EMBED_ACTION_QUERY_PARAMS.has(actionParamKey(rawKey))) continue;
     const values = Array.isArray(rawValue) ? rawValue : [rawValue];
     for (const value of values) {
       if (value != null) appendActionParam(params, rawKey, String(value));
@@ -178,8 +191,8 @@ function appendActionParam(
   rawKey: string,
   value: any,
 ) {
-  const isArrayKey = rawKey.endsWith("[]");
-  const key = isArrayKey ? rawKey.slice(0, -2) : rawKey;
+  const key = actionParamKey(rawKey);
+  const isArrayKey = key !== rawKey;
   const current = params[key];
   if (current === undefined) {
     params[key] = isArrayKey ? [value] : value;
@@ -188,6 +201,10 @@ function appendActionParam(
   } else {
     params[key] = [current, value];
   }
+}
+
+function actionParamKey(rawKey: string): string {
+  return rawKey.endsWith("[]") ? rawKey.slice(0, -2) : rawKey;
 }
 
 function readTimezoneHeader(event: any): string | undefined {
@@ -312,6 +329,7 @@ export interface ActionRouteAuthAdapter {
 }
 
 export interface MountActionRoutesOptions {
+  clientCompatibilityVersion?: string;
   getOwnerFromEvent?: (event: any) => string | Promise<string>;
   getAuthUserIdFromEvent?: (
     event: any,
@@ -574,7 +592,9 @@ function mountActionRoutesInternal(
           return { error: `Method not allowed. Use ${method}.` };
         }
 
-        const requiredCompatibility = requiredClientCompatibilityVersion();
+        const requiredCompatibility = requiredClientCompatibilityVersion(
+          options?.clientCompatibilityVersion,
+        );
         if (isFrontendActionRequest(event) && requiredCompatibility) {
           const receivedCompatibility = getHeader(
             event,
@@ -1116,7 +1136,7 @@ function mountActionRoutesInternal(
                 action: name,
                 ...(requestId ? { requestId } : {}),
                 ...(captureId ? { captureId } : {}),
-                error: err?.stack ?? String(err),
+                error: redactErrorStack(err) ?? redact(String(err)),
               });
               return { error: "Internal server error" };
             }

@@ -56,6 +56,7 @@ const messages = {
     commentsAndReplies: "التعليقات والردود",
     commentsAndRepliesDescription: "عندما يعلّق شخص على عرضك أو يرد فيه.",
     retry: "إعادة المحاولة",
+    reload: "إعادة تحميل",
     mcpAbout:
       "اربط Slides بـ Claude أو ChatGPT أو Cursor أو أي تطبيق ذكاء اصطناعي يدعم MCP. يمكن لهذا التطبيق بعد ذلك العمل في Slides نيابةً عنك: إنشاء العروض التقديمية وإضافة الشرائح والتصدير إلى PowerPoint. ولا يرى إلا ما يمكنك رؤيته.",
     workspaceTitle: "مساحة العمل",
@@ -770,6 +771,8 @@ const messages = {
     imageAdded: "Imagen añadida",
     imageUploadError: "Algo salió mal al subir esta imagen.",
     exportFailed: "Error al exportar",
+    agentRunFailed:
+      "فشل تشغيل الوكيل قبل إنشاء أي شرائح. راجع التفاصيل في الدردشة، ثم حاول مرة أخرى.",
     deckHasNoSlides: "لا توجد شرائح في هذا العرض التقديمي.",
     pdfRenderFailed: "No se pudo renderizar el PDF.",
     buildingDeck: "Construyendo deck",
@@ -975,8 +978,8 @@ const messages = {
           "اقرأ موقع الشركة المقدم وأنشئ عرضًا عن الشركة. أبلغ عن تعذر الوصول بدلًا من اختلاق الحقائق.",
       },
     },
-    connectBuilderIo: "ربط Builder.io",
-    connectingBuilder: "جارٍ ربط Builder.io…",
+    connectBuilderIo: "استخدم Builder.io",
+    connectingBuilder: "جارٍ إعداد Builder.io…",
     recent: "الأخيرة",
     starters: {
       pitch: {

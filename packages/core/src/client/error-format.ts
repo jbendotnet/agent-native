@@ -31,7 +31,7 @@ const OPEN_BUILDER_SPACE_SETTINGS_LABEL = "Open Builder space settings";
 const START_NEW_CHAT_LABEL = "Start new chat";
 const ADD_CREDITS_IN_BUILDER_LABEL = "Add credits in Builder";
 const BUILDER_AUTHENTICATION_ERROR =
-  "Builder rejected the connected credentials. Reconnect Builder.io (free tier available) in Settings, then retry.";
+  "Builder rejected the connected credentials. Sign in to Builder.io again (free tier available) in Settings, then retry.";
 /**
  * A 401 says the credential this request carried was refused. It does NOT say
  * whose credential it was, and the reader is frequently someone with no saved
@@ -84,6 +84,8 @@ const MALFORMED_REQUEST_ATTACHMENT_MESSAGE =
   "The model rejected an attached file, so this message was never sent. Remove the attachment and retry — a PDF, a plain-text file, or a JPEG, PNG, GIF, or WebP image is read directly; other formats have to be uploaded and linked instead.";
 const MALFORMED_REQUEST_MESSAGE =
   "The model provider rejected this request as malformed, so it was not retried. Retry, or start a new chat if it keeps happening.";
+export const CHAT_REQUEST_TOO_LARGE_MESSAGE =
+  "This request exceeded the server's size limit (HTTP 413). Start a new chat or remove large attachments or references, then retry.";
 const MALFORMED_REQUEST_CODES = new Set([
   "invalid_request",
   "invalid_request_error",
@@ -157,20 +159,21 @@ const KNOWN_CHAT_ERROR_KEYS = new Map<string, string>([
     ATTACHMENT_PASSWORD_PROTECTED_MESSAGE,
     "agentChat.errorMessages.attachmentPasswordProtected",
   ],
+  [CHAT_REQUEST_TOO_LARGE_MESSAGE, "agentChat.errorMessages.requestTooLarge"],
   [
-    "No LLM provider is connected. Open this app's Manage agent > LLM, then connect Builder.io or add a provider key.",
+    "No LLM provider is connected. Open this app's Manage agent > LLM, then use Builder.io or add a provider key.",
     "agentChat.errorMessages.noProviderConnected",
   ],
   [
-    "No LLM provider is connected. Open this app's Manage agent > LLM, then connect Builder.io (free tier available) or add a provider key.",
+    "No LLM provider is connected. Open this app's Manage agent > LLM, then use Builder.io (free tier available) or add a provider key.",
     "agentChat.errorMessages.noProviderConnected",
   ],
   [
-    "No LLM provider is connected. Open Settings > Agent > AI providers, then connect Builder.io or add a provider key.",
+    "No LLM provider is connected. Open Settings > Agent > AI providers, then use Builder.io or add a provider key.",
     "agentChat.errorMessages.noProviderConnected",
   ],
   [
-    "No LLM provider is connected. Open Settings > Agent > AI providers, then connect Builder.io (free tier available) or add a provider key.",
+    "No LLM provider is connected. Open Settings > Agent > AI providers, then use Builder.io (free tier available) or add a provider key.",
     "agentChat.errorMessages.noProviderConnected",
   ],
   [

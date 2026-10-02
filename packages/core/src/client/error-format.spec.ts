@@ -258,7 +258,7 @@ describe("formatChatErrorText", () => {
       expect(
         normalizeChatError("Invalid token", "builder_auth_error").message,
       ).toBe(
-        "Builder rejected the connected credentials. Reconnect Builder.io (free tier available) in Settings, then retry.",
+        "Builder rejected the connected credentials. Sign in to Builder.io again (free tier available) in Settings, then retry.",
       );
       expect(
         formatChatErrorText(
@@ -494,6 +494,18 @@ describe("localizeKnownChatErrorText", () => {
     ).toBe(
       "Fehler: Der Modellanbieter hat den gespeicherten API-Schlüssel abgelehnt.\n\n[Neuen Chat starten](agent-native:new-chat)",
     );
+  });
+
+  it("localizes a request-size failure", () => {
+    expect(
+      localizeKnownChatErrorText(
+        "Error: This request exceeded the server's size limit (HTTP 413). Start a new chat or remove large attachments or references, then retry.",
+        (key, options) =>
+          key === "agentChat.errorMessages.requestTooLarge"
+            ? "Diese Anfrage ist zu groß."
+            : interpolate(key, options),
+      ),
+    ).toBe("Fehler: Diese Anfrage ist zu groß.");
   });
 
   it.each([

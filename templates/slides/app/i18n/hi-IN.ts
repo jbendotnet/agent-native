@@ -56,6 +56,7 @@ const messages = {
     commentsAndReplies: "टिप्पणियाँ और जवाब",
     commentsAndRepliesDescription: "जब कोई आपके डेक पर टिप्पणी करे या उसमें जवाब दे।",
     retry: "फिर कोशिश करें",
+    reload: "फिर से लोड करें",
     mcpAbout:
       "Slides को Claude, ChatGPT, Cursor या MCP का समर्थन करने वाले किसी भी AI ऐप से कनेक्ट करें। फिर वह ऐप आपके लिए Slides में काम कर सकता है: डेक बनाना, स्लाइड जोड़ना और PowerPoint में एक्सपोर्ट करना। वह केवल वही देखता है जो आप देख सकते हैं।",
     workspaceTitle: "कार्यस्थान",
@@ -754,6 +755,8 @@ const messages = {
     imageAdded: "चित्र जोड़ा गया",
     imageUploadError: "यह चित्र अपलोड करते समय कुछ गलत हुआ।",
     exportFailed: "निर्यात विफल",
+    agentRunFailed:
+      "स्लाइड बनाने से पहले एजेंट रन विफल हो गया। चैट में विवरण देखें और फिर कोशिश करें।",
     deckHasNoSlides: "डेक में कोई स्लाइड नहीं है।",
     pdfRenderFailed: "PDF रेंडर नहीं हो सका।",
     buildingDeck: "डेक बनाया जा रहा है",
@@ -954,8 +957,8 @@ const messages = {
           "दी गई कंपनी की वेबसाइट पढ़ें और कंपनी के बारे में प्रस्तुति बनाएं। तथ्य गढ़ने के बजाय पहुंच की विफलताओं की जानकारी दें।",
       },
     },
-    connectBuilderIo: "Builder.io कनेक्ट करें",
-    connectingBuilder: "Builder.io से कनेक्ट हो रहा है…",
+    connectBuilderIo: "Builder.io इस्तेमाल करें",
+    connectingBuilder: "Builder.io सेट अप हो रहा है…",
     recent: "हाल के",
     starters: {
       pitch: {
