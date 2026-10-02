@@ -1,6 +1,6 @@
 # ADR: Opt-In Organization Teams Built on Workspace Groups
 
-Status: Proposed
+Status: Accepted
 
 Date: 2026-09-25
 
