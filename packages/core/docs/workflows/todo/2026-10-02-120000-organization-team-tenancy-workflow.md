@@ -22,7 +22,7 @@ Use `verifying-changes` and `adding-tests-and-ci` for Core runtime and PostgreSQ
 
 ## Lifecycle notes
 
-- This file is staged in `todo/` for later execution. Epics and newly filed child plans are in outer and inner `wip/`, respectively, as required by the planning conventions.
+- This file remains in `todo/`. Epic 1 and its storage child are already in `in-progress/`; preserve that work. Epics 2–6 and their child plans remain in outer and inner `wip/`, respectively.
 - Before execution, load and follow `workflow`, `execute-plan`, `plans-organisation`, and `subagent-delegation`. Move this workflow to `in-progress/`.
 - The first child execution moves its whole epic to outer `in-progress/` and that child to inner `in-progress/`. Repair relative links after lifecycle moves, including this index. Move verified children to inner `completed/`; do not mark the entire epic completed without explicit user declaration.
 - Each delegation MUST read the current child plan, its parent `epic.md`, `requirements.md`, and the ADR in full. The leader retains sequencing, documentation, state changes, and signoff.
@@ -30,21 +30,23 @@ Use `verifying-changes` and `adding-tests-and-ci` for Core runtime and PostgreSQ
 
 ## Sequential tranches
 
+Execute whole epics in numerical order: identity → authorization → context → selection UX → sharing → compatibility proof. Every child and independent proof gate in an epic must pass before the next epic starts. A later epic consumes a completed contract, not partial work. Keep requirement IDs unchanged: I, A, C, S, H, R. Lifecycle completion still requires the explicit user declaration described above.
+
 1. <tranche id="team-identity" owner="leader">
 
-   MUST load and follow `execute-plan` to execute the three children of [Epic 1](../../plans/wip/organization-team-tenancy-01-identity/epic.md) in order. Delegate implementation to `medium`; verify PostgreSQL mutation invariants and conversion/deletion compatibility before proceeding. No UI may expose team creation before those gates pass.
+   MUST load and follow `execute-plan` to execute the three children of [Epic 1](../../plans/in-progress/organization-team-tenancy-01-identity/epic.md) in order. Delegate implementation to `medium`; verify PostgreSQL mutation invariants and conversion/deletion compatibility before proceeding. No UI may expose team creation before those gates pass.
 
    </tranche>
 
 2. <tranche id="conversation-security" owner="leader">
 
-   MUST load and follow `execute-plan` for [Epic 3](../../plans/wip/organization-team-tenancy-03-authorization/epic.md): immutable creation binding and direct/list policy, public token exclusion, then linked-run/background access. These protections precede exposing bound conversation creation or team shares. Verify denial after current membership changes, not only initial grants.
+   MUST load and follow `execute-plan` for [Epic 2](../../plans/wip/organization-team-tenancy-02-authorization/epic.md): immutable creation binding and direct/list policy, public token exclusion, then linked-run/background access. Prove the complete contract with internal creation inputs, linked-run fixtures, and seeded existing group-share rows. Verify denial after current membership changes, not only initial grants. Reject bound prompt execution explicitly until Epic 3 supplies required context; expose user/agent bound creation only in Epic 4. Later context, UI, and share actions are not prerequisites for Epic 2 completion.
 
    </tranche>
 
 3. <tranche id="team-context" owner="leader">
 
-   MUST load and follow `execute-plan` for [Epic 2](../../plans/wip/organization-team-tenancy-02-context/epic.md): member-authorized resource operations, then prompt precedence and labeled memory. A required team lookup failure must stop the turn. Binding comes from Epic 3, never from the active preference on a later turn.
+   MUST load and follow `execute-plan` for [Epic 3](../../plans/wip/organization-team-tenancy-03-context/epic.md) only after all Epic 2 children and proof gates pass: member-authorized resource operations, then prompt precedence and labeled memory. Binding and current-access checks come from completed Epic 2, never from the active preference on a later turn. Replace the pre-context execution denial only when required context loads correctly in normal/background paths. A required team lookup failure must stop the turn. Prove context without waiting for selection UI or share actions, and rerun authorization checks before proceeding.
 
    </tranche>
 

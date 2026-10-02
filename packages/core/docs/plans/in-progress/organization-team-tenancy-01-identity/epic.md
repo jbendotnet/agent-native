@@ -24,7 +24,7 @@ No product decision remains open. Concurrent writes and stale supplied IDs are c
 
 Execute in order:
 
-1. [Additive team storage and identity](wip/01-storage-and-identity.md) — I-01, I-04 identity rule.
+1. [Additive team storage and identity](in-progress/01-storage-and-identity.md) — I-01, I-04 identity rule. In progress.
 2. [Role-aware atomic mutations and audit](wip/02-role-aware-mutations.md) — I-02, I-03.
 3. [Conversion and deletion compatibility](wip/03-conversion-and-deletion.md) — I-04, I-05.
 

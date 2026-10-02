@@ -1,4 +1,4 @@
-# Epic 3 requirements
+# Epic 2 requirements
 
 Source: [accepted ADR](../../../design/organization-team-tenancy.md).
 
@@ -10,3 +10,5 @@ Source: [accepted ADR](../../../design/organization-team-tenancy.md).
 | A-04 | Every new linked-run read/list/stream/reconnect/replay/background response request resolves its conversation and applies fresh current read policy. Missing conversation denies. Cached/background results cannot bypass. Already-open streams may finish until disconnect.                                            | Route/service/controller matrix, revocation during stream, reconnect/replay, durable worker reentry, missing link. |
 
 No successor owner, lead/admin read exception, automatic transfer, separate run sharing, or all-team access. Retain data and bindings after deletion; never infer replacement team by name.
+
+Epic 2 owns the membership/owner/viewer policy at prompt entry, not successful team-context assembly. Before Epic 3 implements context loading, reject bound prompt execution explicitly. Prove viewer read policy using existing group-share rows seeded in tests; team-grant mutation actions and shared-work discovery remain in Epic 5. All A-01–A-04 proof gates must pass before Epic 3 starts.

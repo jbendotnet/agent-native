@@ -2,7 +2,7 @@
 
 ## Problem / Goal
 
-Meet I-02/I-03 after [storage](01-storage-and-identity.md). Read [requirements](../requirements.md), [epic](../epic.md), and [ADR](../../../../design/organization-team-tenancy.md). Existing member updates derive a replacement list and call upsert; action-level owner/admin checks alone cannot implement team leads safely.
+Meet I-02/I-03 after [storage](../in-progress/01-storage-and-identity.md). Read [requirements](../requirements.md), [epic](../epic.md), and [ADR](../../../../design/organization-team-tenancy.md). Existing member updates derive a replacement list and call upsert; action-level owner/admin checks alone cannot implement team leads safely.
 
 ## Solution
 

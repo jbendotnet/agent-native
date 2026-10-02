@@ -2,7 +2,7 @@
 
 ## Problem / Goal
 
-Meet S-03 after durable selection, Epic 3 full security, and Epic 2 bound prompts. Read [epic](../epic.md), [requirements](../requirements.md), and [ADR](../../../../design/organization-team-tenancy.md). Core `useChatThreads.createThread` initially creates only a local draft.
+Meet S-03 after durable selection and all Epics 1–3 child and proof gates, including Epic 2 full security and Epic 3 bound prompts. Read [epic](../epic.md), [requirements](../requirements.md), and [ADR](../../../../design/organization-team-tenancy.md). Core `useChatThreads.createThread` initially creates only a local draft.
 
 ## Solution
 

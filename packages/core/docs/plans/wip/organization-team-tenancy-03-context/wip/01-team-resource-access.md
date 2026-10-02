@@ -2,7 +2,7 @@
 
 ## Problem / Goal
 
-Meet C-01 after Epic 1. Read [epic](../epic.md), [requirements](../requirements.md), and [ADR](../../../../design/organization-team-tenancy.md). Current resource owner handlers do not recognize team owners.
+Meet C-01 after all Epic 2 children and proof gates pass, using Epic 1 membership helpers. Read [epic](../epic.md), [requirements](../requirements.md), and [ADR](../../../../design/organization-team-tenancy.md). Current resource owner handlers do not recognize team owners.
 
 ## Solution
 

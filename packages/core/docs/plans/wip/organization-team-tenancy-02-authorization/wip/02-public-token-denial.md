@@ -16,7 +16,7 @@ Guard token store issuance and every redemption path using persisted binding. De
 
    1. Add bound-thread rejection in `createThreadShareLink` and indexed/legacy branches of `getThreadByShareToken` in `chat-threads/store.ts`. Do not trust token possession, current selection, or group existence to decide binding: a deleted team still leaves a non-null binding.
    2. Apply the rule to the plugin `/threads/:id/share` route and `server/agent-chat/shared-thread.ts` public handler. Preserve normal token validation/revocation and deny before transcript/run enrichment. Ensure token metadata cannot reopen the thread via another public serialization path.
-   3. Test bound issue denial, existing hashed token after test-controlled binding, indexed and legacy lookup, membership loss, team deletion, and missing conversation. Include unbound explicitly team-shared conversations to prove they keep existing public behavior after Epic 5.
+   3. Test bound issue denial, existing hashed token after test-controlled binding, indexed and legacy lookup, membership loss, team deletion, and missing conversation. Seed existing viewer group-share rows on unbound conversations to prove public behavior remains unchanged now. Epic 5 repeats this proof through its new share actions; those actions are not a prerequisite for this child.
 
    </implementation_tranche>
 

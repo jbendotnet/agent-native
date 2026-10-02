@@ -14,7 +14,7 @@ Core `settings/user-settings.ts` provides user-scoped settings. Application stat
 
 ## Dependencies / Risks
 
-Requires Epic 1 roles, Epic 3 complete thread/run/token security, and Epic 2 prompt/resource authorization before exposing bound creation. Draft creation must not be confused with durable creation. Exact resource-editor placement should follow the existing shared agent settings surface, not an invented new panel.
+Start only after all children and proof gates in Epics 1–3 pass: Epic 1 roles, Epic 2 complete thread/run/token security, and Epic 3 prompt/resource authorization. Complete all three selection/management children before Epic 5 starts. Draft creation must not be confused with durable creation. Exact resource-editor placement should follow the existing shared agent settings surface, not an invented new panel.
 
 ## Child Plans
 

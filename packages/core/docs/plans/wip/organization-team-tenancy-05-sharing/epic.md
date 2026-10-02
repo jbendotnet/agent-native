@@ -14,7 +14,7 @@ Generic `share-resource` permits broader roles and resource-admin authority. Cha
 
 ## Dependencies / Risks
 
-Requires Epic 1 team validation, Epic 3 full thread/run/public security, and Epic 4 shared controls. Generic action paths and races between two grants are security-sensitive. Org admins and leads get no implicit read exception.
+Start only after all children and proof gates in Epics 1–4 pass. Reuse Epic 1 team validation, Epic 2 full thread/run/public security, Epic 3 context loading, and Epic 4 shared controls. Complete both sharing children before Epic 6 starts. Generic action paths and races between two grants are security-sensitive. Org admins and leads get no implicit read exception.
 
 ## Child Plans
 

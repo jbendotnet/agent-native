@@ -2,7 +2,7 @@
 
 ## Problem / Goal
 
-Meet S-04 after Epic 1 roles and Epic 2 resource access. Read [epic](../epic.md), [requirements](../requirements.md), and [ADR](../../../../design/organization-team-tenancy.md).
+Meet S-04 after Epics 1–3 pass all child and proof gates, using Epic 1 roles and Epic 3 resource access. Read [epic](../epic.md), [requirements](../requirements.md), and [ADR](../../../../design/organization-team-tenancy.md).
 
 ## Solution
 
@@ -16,7 +16,7 @@ Extend Toolkit's existing org groups surface and shared agent resource editor. P
 
    1. Extend `packages/toolkit/src/app/org/GroupsSection.tsx` group queries/editor with team designation and explicit conversion. Owners/admins retain create/delete/full membership/lead controls. Conversion must not reset shares, members, or connection references.
    2. Add a member/lead-accessible view using the existing settings surface rather than simply opening all owner/admin controls. Leads can add existing org members/remove ordinary members only; any current member can open team context. Inspect `MembersSection.tsx` bulk controls so they honor the same capability outputs.
-   3. Locate the actual current shared agent resources editor and compose team scope with Epic 2's named helpers. Allow instructions/skills/memory editing without exposing org-default editing to ordinary team members or nonmember admins. Preserve inherited-default and stale-delete behavior.
+   3. Locate the actual current shared agent resources editor and compose team scope with Epic 3's named helpers. Allow instructions/skills/memory editing without exposing org-default editing to ordinary team members or nonmember admins. Preserve inherited-default and stale-delete behavior.
    4. Use shared dialogs/controls, optimistic changes with rollback, accessible labels, and configured locale catalogs. Display errors from rejected stale permissions; do not pretend a failed mutation saved. Keep density consistent with the repo's no-default-chrome rule.
    5. Add focused existing UI/action tests where appropriate; format changed source with oxfmt and run configured localization guards.
 

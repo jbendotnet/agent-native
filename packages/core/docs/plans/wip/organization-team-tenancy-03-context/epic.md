@@ -1,4 +1,4 @@
-# Epic 2: Team agent context
+# Epic 3: Team agent context
 
 ## Problem / Goal
 
@@ -18,7 +18,7 @@ Reuse agent `resources` under `__team__:<group-id>`. No copied org resources/cre
 
 ## Risks / Dependencies / Open Questions
 
-Requires [Epic 1](../organization-team-tenancy-01-identity/epic.md) membership and [Epic 3](../organization-team-tenancy-03-authorization/epic.md) stored binding. Required team lookup failures cannot inherit the current best-effort omission behavior. UI context editing is delivered in Epic 4.
+Start only after all children and proof gates in [Epic 2](../organization-team-tenancy-02-authorization/epic.md) pass, using its completed binding and authorization contract and [Epic 1](../../in-progress/organization-team-tenancy-01-identity/epic.md) membership helpers. Complete both context children before Epic 4 starts. Required team lookup failures cannot inherit the current best-effort omission behavior. UI context editing is delivered in Epic 4 and is not a prerequisite for context proof.
 
 ## Child Plans
 
@@ -27,4 +27,4 @@ Requires [Epic 1](../organization-team-tenancy-01-identity/epic.md) membership a
 
 ## Success Criteria
 
-Authorized members use existing resource shapes through shared operations. Every turn loads only its recorded team context with deterministic precedence; missing access or failed lookup stops the turn.
+Authorized members use existing resource shapes through shared operations. Every turn loads only its recorded team context with deterministic precedence; missing access or failed lookup stops the turn. Prove successful normal/background turns through internal creation inputs without selection UI or future share actions, and rerun Epic 2 authorization checks after integrating context.
