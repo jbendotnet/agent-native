@@ -143,7 +143,17 @@ Never reuse a deleted team's ID or infer a replacement from its name. Group crea
 
 ## Current implementation seams
 
-These are existing surfaces to extend, not claims that V1 is implemented:
+### Implemented group storage
+
+`workspace-connections/migrations.ts` migration v15, `workspace-user-groups-team-fields`, adds `is_team` and `lead_emails_json` with false/empty defaults. `WorkspaceUserGroup` exposes `isTeam` and `leadEmails`; `member_emails_json` remains the only member list. The store normalizes email lists, rejects leads outside membership and leads on ordinary groups, and removes omitted leads when their membership is removed.
+
+`upsertWorkspaceUserGroup` generates an ID only for creation. A supplied ID updates an existing row in the same organization or fails; it never inserts a replacement. Omitted team fields retain their stored values, and an existing team cannot be converted back to an ordinary group. Updates compare the stored team marker and lead list at the write boundary. A conflicting change fails with a retry error rather than overwriting a concurrent conversion or lead change.
+
+These storage guarantees do not implement the team actor-role policy, dedicated lead action, audit contract, or team context and conversation features described above. Hosted request initialization does not run the migration.
+
+### Remaining integration surfaces
+
+These existing surfaces still need the remaining V1 behavior:
 
 - Workspace groups and connection allow-lists: `packages/core/src/workspace-connections/groups.ts`, `packages/core/src/workspace-connections/store.ts`
 - Shared principals, list and direct access: `packages/core/src/sharing/access.ts`, `packages/core/src/sharing/actions/share-resource.ts`

@@ -22,7 +22,7 @@ Use `verifying-changes` and `adding-tests-and-ci` for Core runtime and PostgreSQ
 
 ## Lifecycle notes
 
-- This file remains in `todo/`. Epic 1 and its storage child are already in `in-progress/`; preserve that work. Epics 2–6 and their child plans remain in outer and inner `wip/`, respectively.
+- This file remains in `todo/`. Epic 1 is closed in `completed/` at the user's request; only its storage child is implemented and verified. Its role-policy and lifecycle children remain unfinished in inner `wip/`. Reopening Epic 1 requires confirmation before executing those children. Epics 2–6 and their child plans remain in outer and inner `wip/`, respectively.
 - Before execution, load and follow `workflow`, `execute-plan`, `plans-organisation`, and `subagent-delegation`. Move this workflow to `in-progress/`.
 - The first child execution moves its whole epic to outer `in-progress/` and that child to inner `in-progress/`. Repair relative links after lifecycle moves, including this index. Move verified children to inner `completed/`; do not mark the entire epic completed without explicit user declaration.
 - Each delegation MUST read the current child plan, its parent `epic.md`, `requirements.md`, and the ADR in full. The leader retains sequencing, documentation, state changes, and signoff.
@@ -34,7 +34,7 @@ Execute whole epics in numerical order: identity → authorization → context �
 
 1. <tranche id="team-identity" owner="leader">
 
-   MUST load and follow `execute-plan` to execute the three children of [Epic 1](../../plans/in-progress/organization-team-tenancy-01-identity/epic.md) in order. Delegate implementation to `medium`; verify PostgreSQL mutation invariants and conversion/deletion compatibility before proceeding. No UI may expose team creation before those gates pass.
+   After confirmation to reopen [Epic 1](../../plans/completed/organization-team-tenancy-01-identity/epic.md), MUST load and follow `execute-plan` to execute its unfinished children in order. Preserve the verified storage child. Delegate implementation to `medium`; verify PostgreSQL mutation invariants and conversion/deletion compatibility before proceeding. No UI may expose team creation before those gates pass.
 
    </tranche>
 

@@ -750,10 +750,9 @@ describe("workspace connection store", () => {
         );
 
       const results = await Promise.allSettled(
-        ["Finance", "finance"].map((name, index) =>
+        ["Finance", "finance"].map((name) =>
           runWithRequestContext({ userEmail: "owner@example.com", orgId }, () =>
             upsertWorkspaceUserGroup({
-              id: `concurrent-group-${attempt}-${index}`,
               name,
               memberEmails: [],
             }),
@@ -775,6 +774,233 @@ describe("workspace connection store", () => {
         String(rejected[0]?.reason?.message ?? rejected[0]?.reason),
       ).toMatch(/already exists/i);
       expect(await listWorkspaceUserGroupsForOrg(orgId)).toHaveLength(1);
+    }
+  });
+
+  it("keeps group identity, team fields, and scoped update-only IDs", async () => {
+    const { runWithRequestContext } =
+      await import("../server/request-context.js");
+    const {
+      deleteWorkspaceUserGroup,
+      listWorkspaceUserGroupsForOrg,
+      updateWorkspaceUserGroupMembers,
+      upsertWorkspaceUserGroup,
+    } = await import("./groups.js");
+    await pglite.exec(`CREATE TABLE IF NOT EXISTS org_members (
+      id TEXT PRIMARY KEY, org_id TEXT NOT NULL, email TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member', joined_at BIGINT NOT NULL DEFAULT 0,
+      federation_removal_pending_at INTEGER
+    )`);
+    for (const [id, orgId, email] of [
+      ["team-owner", "org-team", "owner@example.com"],
+      ["team-member", "org-team", "member@example.com"],
+      ["other-owner", "org-other", "owner@example.com"],
+    ]) {
+      await pglite
+        .prepare("INSERT INTO org_members (id, org_id, email) VALUES (?, ?, ?)")
+        .run(id, orgId, email);
+    }
+    const inOrg = <T>(orgId: string, operation: () => Promise<T>) =>
+      runWithRequestContext(
+        { userEmail: "owner@example.com", orgId },
+        operation,
+      );
+    const original = await inOrg("org-team", () =>
+      upsertWorkspaceUserGroup({
+        name: "Finance",
+        memberEmails: [" Member@Example.com "],
+      }),
+    );
+    expect(original.id).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(original).toMatchObject({
+      isTeam: false,
+      leadEmails: [],
+      memberEmails: ["member@example.com"],
+    });
+    const converted = await inOrg("org-team", () =>
+      upsertWorkspaceUserGroup({
+        id: original.id,
+        name: "Finance",
+        memberEmails: original.memberEmails,
+        isTeam: true,
+        leadEmails: [" Member@Example.com ", "member@example.com"],
+      }),
+    );
+    expect(converted).toMatchObject({
+      id: original.id,
+      isTeam: true,
+      leadEmails: ["member@example.com"],
+    });
+    expect(
+      (
+        await inOrg("org-team", () => listWorkspaceUserGroupsForOrg("org-team"))
+      )[0],
+    ).toMatchObject(converted);
+    const stored = await pglite
+      .prepare(
+        "SELECT is_team, lead_emails_json FROM workspace_user_groups WHERE id = ?",
+      )
+      .get(original.id);
+    expect(stored).toMatchObject({
+      is_team: true,
+      lead_emails_json: '["member@example.com"]',
+    });
+    const renamed = await inOrg("org-team", () =>
+      upsertWorkspaceUserGroup({
+        id: original.id,
+        name: "Finance Team",
+        memberEmails: original.memberEmails,
+      }),
+    );
+    expect(renamed).toMatchObject({
+      id: original.id,
+      isTeam: true,
+      leadEmails: ["member@example.com"],
+    });
+    const removed = await inOrg("org-team", () =>
+      updateWorkspaceUserGroupMembers({
+        id: original.id,
+        operation: "remove",
+        memberEmails: ["member@example.com"],
+      }),
+    );
+    expect(removed).toMatchObject({
+      isTeam: true,
+      memberEmails: [],
+      leadEmails: [],
+    });
+    await expect(
+      inOrg("org-team", () =>
+        upsertWorkspaceUserGroup({
+          id: original.id,
+          name: "Finance Team",
+          memberEmails: [],
+          isTeam: false,
+        }),
+      ),
+    ).rejects.toThrow(/cannot be converted back/i);
+    await expect(
+      inOrg("org-team", () =>
+        upsertWorkspaceUserGroup({
+          id: original.id,
+          name: "Finance Team",
+          memberEmails: [],
+          leadEmails: ["missing@example.com"],
+        }),
+      ),
+    ).rejects.toThrow(/must be group members/i);
+    await expect(
+      inOrg("org-other", () =>
+        upsertWorkspaceUserGroup({
+          id: original.id,
+          name: "Finance Team",
+          memberEmails: [],
+        }),
+      ),
+    ).rejects.toThrow(/not found/i);
+    expect(
+      await inOrg("org-other", () =>
+        listWorkspaceUserGroupsForOrg("org-other"),
+      ),
+    ).toEqual([]);
+    await expect(
+      inOrg("org-team", () =>
+        upsertWorkspaceUserGroup({
+          id: "missing-team-id",
+          name: "Finance Team",
+          memberEmails: [],
+        }),
+      ),
+    ).rejects.toThrow(/not found/i);
+    expect(
+      await inOrg("org-team", () => listWorkspaceUserGroupsForOrg("org-team")),
+    ).toEqual([removed]);
+    expect(
+      await inOrg("org-team", () => deleteWorkspaceUserGroup(original.id)),
+    ).toBe(true);
+    await expect(
+      inOrg("org-team", () =>
+        upsertWorkspaceUserGroup({
+          id: original.id,
+          name: "Finance Team",
+          memberEmails: [],
+        }),
+      ),
+    ).rejects.toThrow(/not found/i);
+    const replacement = await inOrg("org-team", () =>
+      upsertWorkspaceUserGroup({ name: "Finance Team", memberEmails: [] }),
+    );
+    expect(replacement.id).not.toBe(original.id);
+    expect(
+      await inOrg("org-team", () => listWorkspaceUserGroupsForOrg("org-team")),
+    ).toEqual([replacement]);
+  });
+
+  it("rejects a stale update when a group converts to a team before the write", async () => {
+    const { runWithRequestContext } =
+      await import("../server/request-context.js");
+    const { upsertWorkspaceUserGroup } = await import("./groups.js");
+    await pglite.exec(`CREATE TABLE IF NOT EXISTS org_members (
+      id TEXT PRIMARY KEY, org_id TEXT NOT NULL, email TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member', joined_at BIGINT NOT NULL DEFAULT 0,
+      federation_removal_pending_at INTEGER
+    )`);
+    await pglite
+      .prepare("INSERT INTO org_members (id, org_id, email) VALUES (?, ?, ?)")
+      .run("race-member", "org-race", "member@example.com");
+    const inOrg = <T>(operation: () => Promise<T>) =>
+      runWithRequestContext(
+        { userEmail: "member@example.com", orgId: "org-race" },
+        operation,
+      );
+    const group = await inOrg(() =>
+      upsertWorkspaceUserGroup({
+        name: "Finance",
+        memberEmails: ["member@example.com"],
+      }),
+    );
+    const execute = sharedClient.execute.bind(sharedClient);
+    let converted = false;
+    const spy = vi
+      .spyOn(sharedClient, "execute")
+      .mockImplementation(async (arg) => {
+        const sql = typeof arg === "string" ? arg : arg.sql;
+        if (
+          !converted &&
+          /^UPDATE public\.workspace_user_groups\s/i.test(sql.trim())
+        ) {
+          converted = true;
+          await pglite
+            .prepare(
+              "UPDATE workspace_user_groups SET is_team = true, lead_emails_json = ? WHERE id = ?",
+            )
+            .run('["member@example.com"]', group.id);
+        }
+        return execute(arg);
+      });
+    try {
+      await expect(
+        inOrg(() =>
+          upsertWorkspaceUserGroup({
+            id: group.id,
+            name: "Renamed Finance",
+            memberEmails: group.memberEmails,
+          }),
+        ),
+      ).rejects.toThrow(/changed while updating/i);
+      expect(converted).toBe(true);
+      const row = await pglite
+        .prepare(
+          "SELECT name, is_team, lead_emails_json FROM workspace_user_groups WHERE id = ?",
+        )
+        .get(group.id);
+      expect(row).toMatchObject({
+        name: "Finance",
+        is_team: true,
+        lead_emails_json: '["member@example.com"]',
+      });
+    } finally {
+      spy.mockRestore();
     }
   });
 

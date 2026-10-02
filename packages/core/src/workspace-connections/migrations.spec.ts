@@ -275,7 +275,50 @@ describe("WORKSPACE_CONNECTIONS_MIGRATIONS", () => {
           "SELECT MAX(version) AS version FROM workspace_group_runner_migrations",
         )
         .get();
-      expect(version?.version).toBe(14);
+      expect(version?.version).toBe(15);
+    } finally {
+      vi.clearAllMocks();
+      await pglite.close();
+    }
+  }, 30_000);
+
+  it("adds team defaults to legacy rows once and keeps them on rerun", async () => {
+    const pglite = await createTestPglite();
+    const exec = pgliteExec(pglite);
+    try {
+      for (const migration of WORKSPACE_CONNECTIONS_MIGRATIONS) {
+        if (migration.version > 14) break;
+        const sql =
+          typeof migration.sql === "string"
+            ? migration.sql
+            : (migration.sql.postgres ?? "");
+        if (sql) await pglite.exec(sql);
+      }
+      await pglite
+        .prepare(
+          "INSERT INTO workspace_user_groups (id, org_id, name) VALUES (?, ?, ?)",
+        )
+        .run("legacy-team-default", "org-old", "Legacy");
+      await pglite.exec(`CREATE TABLE workspace_team_migrations (version BIGINT PRIMARY KEY);
+        INSERT INTO workspace_team_migrations (version) VALUES (14);`);
+      vi.mocked(getDbExec).mockReturnValue(exec);
+      vi.mocked(createDbExec).mockResolvedValue(exec);
+      vi.mocked(getMigrationDatabaseUrl).mockReturnValue("");
+      const migrate = runMigrations(WORKSPACE_CONNECTIONS_MIGRATIONS, {
+        table: "workspace_team_migrations",
+      });
+      await migrate(null);
+      await migrate(null);
+      const row = await pglite
+        .prepare(
+          "SELECT is_team, lead_emails_json FROM workspace_user_groups WHERE id = ?",
+        )
+        .get("legacy-team-default");
+      expect(row).toMatchObject({ is_team: false, lead_emails_json: "[]" });
+      const named = await pglite
+        .prepare("SELECT name FROM workspace_team_migrations_named")
+        .all();
+      expect(named).toEqual([{ name: "workspace-user-groups-team-fields" }]);
     } finally {
       vi.clearAllMocks();
       await pglite.close();

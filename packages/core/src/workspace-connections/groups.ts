@@ -21,6 +21,8 @@ export interface WorkspaceUserGroup {
   orgId: string;
   name: string;
   memberEmails: string[];
+  isTeam: boolean;
+  leadEmails: string[];
   createdByEmail: string;
   createdAt: string;
   updatedAt: string;
@@ -30,6 +32,8 @@ export interface UpsertWorkspaceUserGroupInput {
   id?: string;
   name: string;
   memberEmails: string[];
+  isTeam?: boolean;
+  leadEmails?: string[];
   orgId?: string | null;
   createdByEmail?: string;
 }
@@ -74,6 +78,16 @@ function normalizeMemberEmails(value: unknown): string[] {
         .filter(Boolean),
     ),
   );
+}
+
+function validateEmailList(value: unknown, field: string): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.some((email) => typeof email !== "string" || !email.trim())
+  ) {
+    throw new Error(`${field} must be a list of email addresses.`);
+  }
+  return normalizeMemberEmails(value);
 }
 
 export function normalizeWorkspaceUserGroupIds(value: unknown): string[] {
@@ -135,6 +149,10 @@ function parseRow(row: Record<string, unknown>): WorkspaceUserGroup {
     memberEmails: normalizeMemberEmails(
       safeJsonParse<unknown>(row.member_emails_json, []),
     ),
+    isTeam: row.is_team === true,
+    leadEmails: normalizeMemberEmails(
+      safeJsonParse<unknown>(row.lead_emails_json, []),
+    ),
     createdByEmail: stringifyValue(row.created_by_email ?? ""),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
@@ -149,6 +167,8 @@ async function ensureWorkspaceUserGroupColumns(
     ["org_id", "TEXT NOT NULL DEFAULT ''"],
     ["name", "TEXT NOT NULL DEFAULT ''"],
     ["member_emails_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["is_team", "BOOLEAN NOT NULL DEFAULT false"],
+    ["lead_emails_json", "TEXT NOT NULL DEFAULT '[]'"],
     ["normalized_name", "TEXT"],
     ["created_by_email", "TEXT NOT NULL DEFAULT ''"],
     ["created_at", `BIGINT NOT NULL DEFAULT 0`],
@@ -215,6 +235,8 @@ export async function ensureWorkspaceUserGroupsTable(): Promise<void> {
           name TEXT NOT NULL DEFAULT '',
           normalized_name TEXT,
           member_emails_json TEXT NOT NULL DEFAULT '[]',
+          is_team BOOLEAN NOT NULL DEFAULT false,
+          lead_emails_json TEXT NOT NULL DEFAULT '[]',
           created_by_email TEXT NOT NULL DEFAULT '',
           created_at BIGINT NOT NULL DEFAULT 0,
           updated_at BIGINT NOT NULL DEFAULT 0
@@ -358,7 +380,7 @@ export async function upsertWorkspaceUserGroup(
     throw new Error("User groups must belong to the active workspace.");
   }
   const name = normalizeGroupName(input.name);
-  const memberEmails = normalizeMemberEmails(input.memberEmails);
+  const memberEmails = validateEmailList(input.memberEmails, "Group members");
   const missing = (
     await Promise.all(
       memberEmails.map(async (email) =>
@@ -375,7 +397,36 @@ export async function upsertWorkspaceUserGroup(
   await ensureWorkspaceUserGroupsTable();
   const client = getDbExec();
   const table = workspaceUserGroupsTable();
-  const id = input.id?.trim() || randomUUID();
+  if (input.id !== undefined && !input.id.trim()) {
+    throw new Error("A user group is required.");
+  }
+  const id = input.id?.trim() ?? randomUUID();
+  const existing = input.id
+    ? (await listWorkspaceUserGroupsForOrg(orgId, [id]))[0]
+    : undefined;
+  if (input.id && !existing)
+    throw new Error(`User group "${id}" was not found.`);
+  if (input.isTeam !== undefined && typeof input.isTeam !== "boolean") {
+    throw new Error("isTeam must be a boolean.");
+  }
+  const isTeam = input.isTeam ?? existing?.isTeam ?? false;
+  if (existing?.isTeam && !isTeam) {
+    throw new Error("A team cannot be converted back to a user group.");
+  }
+  const leadEmails =
+    input.leadEmails === undefined
+      ? (existing?.leadEmails ?? [])
+      : validateEmailList(input.leadEmails, "Team leads");
+  if (!isTeam && leadEmails.length > 0) {
+    throw new Error("Ordinary user groups cannot have team leads.");
+  }
+  const nextLeads = leadEmails.filter((email) => memberEmails.includes(email));
+  if (
+    input.leadEmails !== undefined &&
+    nextLeads.length !== leadEmails.length
+  ) {
+    throw new Error("Team leads must be group members.");
+  }
   const now = Date.now();
   const createdByEmail =
     input.createdByEmail?.trim().toLowerCase() || requestScope.userEmail;
@@ -389,23 +440,43 @@ export async function upsertWorkspaceUserGroup(
     throw duplicateWorkspaceUserGroupNameError(name);
   }
   try {
-    const update = await client.execute({
-      sql: `UPDATE ${table}
-        SET name = ?, normalized_name = LOWER(BTRIM(?)), member_emails_json = ?, updated_at = ?
-        WHERE id = ? AND org_id = ?`,
-      args: [name, name, JSON.stringify(memberEmails), now, id, orgId],
-    });
-    if (update.rowsAffected === 0) {
+    if (input.id && existing) {
+      const update = await client.execute({
+        sql: `UPDATE ${table}
+          SET name = ?, normalized_name = LOWER(BTRIM(?)), member_emails_json = ?,
+              is_team = ?, lead_emails_json = ?, updated_at = ?
+          WHERE id = ? AND org_id = ? AND is_team = ? AND lead_emails_json = ?`,
+        args: [
+          name,
+          name,
+          JSON.stringify(memberEmails),
+          isTeam,
+          JSON.stringify(nextLeads),
+          now,
+          id,
+          orgId,
+          existing.isTeam,
+          JSON.stringify(existing.leadEmails),
+        ],
+      });
+      if (update.rowsAffected === 0) {
+        const current = (await listWorkspaceUserGroupsForOrg(orgId, [id]))[0];
+        if (!current) throw new Error(`User group "${id}" was not found.`);
+        throw new Error(`User group "${id}" changed while updating; retry.`);
+      }
+    } else {
       await client.execute({
         sql: `INSERT INTO ${table}
-          (id, org_id, name, normalized_name, member_emails_json, created_by_email, created_at, updated_at)
-          VALUES (?, ?, ?, LOWER(BTRIM(?)), ?, ?, ?, ?)`,
+          (id, org_id, name, normalized_name, member_emails_json, is_team, lead_emails_json, created_by_email, created_at, updated_at)
+          VALUES (?, ?, ?, LOWER(BTRIM(?)), ?, ?, ?, ?, ?, ?)`,
         args: [
           id,
           orgId,
           name,
           name,
           JSON.stringify(memberEmails),
+          isTeam,
+          JSON.stringify(nextLeads),
           createdByEmail,
           now,
           now,

@@ -26,3 +26,17 @@ Extend `packages/core/src/workspace-connections/groups.ts` and its existing migr
 ## Verification
 
 Use `verifying-changes` for Core storage. Run `pnpm --dir packages/core exec vitest --run src/workspace-connections/migrations.spec.ts src/workspace-connections/store.spec.ts` plus the focused group spec introduced beside `groups.ts`. Run Core typecheck and format modified source with oxfmt. Assert existing groups have false/empty defaults and that no supplied missing ID is inserted. Re-run the hosted initialization test; no migration/backfill at plugin initialization.
+
+## Execution record
+
+Completed 2026-10-02 after independent review and verification.
+
+- Storage: migration v15, `workspace-user-groups-team-fields`, adds the two defaulted columns. Group inputs and list results carry team markers and normalized leads without a second membership list.
+- Identity: new groups receive server-generated IDs; supplied IDs update only existing groups in the current organization. Missing, deleted, and wrong-organization IDs cannot insert rows. Omitted team fields are preserved and deconversion is rejected.
+- Identity issue resolved: independent review found a stale update could undo a concurrent conversion. The update now compares the current marker and lead list at the database write boundary and reports a retry error on conflict. A PostgreSQL-backed interleaving test proves the converted row survives unchanged.
+- Verification placement: focused group cases reuse the existing PostgreSQL-backed `store.spec.ts` harness instead of creating a separate group spec.
+- Tooling issue resolved: initial formatting could not find the workspace executable. On recovery the executables were available; no dependency install or package-local install was needed.
+- Independent rerun: `pnpm --dir packages/core exec vitest --run src/workspace-connections/migrations.spec.ts src/workspace-connections/store.spec.ts` passed 37 tests across two files.
+- Hosted proof: `pnpm --dir packages/core exec vitest --run src/db/ddl-guard.spec.ts` passed 32 tests.
+- `pnpm --dir packages/core typecheck`, `pnpm guard:additive-migrations`, oxfmt checks for all four changed TypeScript files, and `git diff --check` passed.
+- Added `.changeset/fresh-teams-keep-identity.md`. Role policy and action lifecycle compatibility remain unfinished in children 02 and 03. The epic was subsequently closed at the user's request on 2026-10-02, with those child plans preserved in `wip/`.
