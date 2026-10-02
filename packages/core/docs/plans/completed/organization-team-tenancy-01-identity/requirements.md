@@ -1,0 +1,15 @@
+# Epic 1 requirements
+
+Source: [accepted ADR](../../../design/organization-team-tenancy.md). These are implementation targets, not current behavior.
+
+| ID   | Requirement                                                                                                                                                                                                                                     | Acceptance evidence                                                                                   |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| I-01 | Add `is_team BOOLEAN NOT NULL DEFAULT false` and `lead_emails_json TEXT NOT NULL DEFAULT '[]'`. Existing `member_emails_json` remains the only membership authority. Use its email JSON encoding. Ordinary groups have no leads.                | Existing rows migrate unchanged; malformed input rejected; roles round-trip.                          |
+| I-02 | Current org owners/admins create, convert, delete, appoint/remove leads, and manage membership. A current lead adds existing org members or removes ordinary members only in their team. Leads cannot remove/appoint leads or invite org users. | Direct/action/bulk actor matrix, wrong-org and departed actors denied.                                |
+| I-03 | Membership and leads update atomically. Leads are always a subset of members. Admin removal removes the lead role too; lead removal of a lead is denied. Audit effective membership, conversion, and lead changes.                              | Concurrent writes cannot lose roles or violate subset; audits identify actor and changes.             |
+| I-04 | Conversion is explicit and keeps ID, members, shares, and connection allow-lists. New IDs are server-generated; supplied ID is update-only and missing fails. No implicit deconversion or reuse.                                                | Stale/deleted ID cannot be inserted; conversion preserves grant and connection access.                |
+| I-05 | Team deletion removes required connection allow-list references first, then group. Bound conversations do not block deletion; data/context remain stored but inaccessible. Ordinary deletion behavior remains compatible.                       | Cleanup failure reported; successful deletion ends group permissions without deleting unrelated data. |
+
+Action contract: extend `list-workspace-user-groups`, `upsert-workspace-user-group`, `bulk-update-workspace-user-groups`, and `delete-workspace-user-group`; add `set-workspace-team-leads(teamGroupId, leadEmails)` returning membership and leads. Omitted `isTeam` is false on create and unchanged on update.
+
+Non-goals: a new organization, automatic invitations, lead succession, group-to-team conversion without an explicit choice, general resource ownership changes.
