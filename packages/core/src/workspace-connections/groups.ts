@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { deriveActorKind } from "../audit/config.js";
+import { ensureAuditTables } from "../audit/store.js";
 import {
   getDbExec,
   isProductionServerlessFunctionRuntime,
@@ -15,6 +17,10 @@ import {
   getRequestOrgId,
   getRequestUserEmail,
 } from "../server/request-context.js";
+import {
+  ensureWorkspaceConnectionsTable,
+  removeWorkspaceUserGroupFromConnections,
+} from "./store.js";
 
 export interface WorkspaceUserGroup {
   id: string;
@@ -36,6 +42,7 @@ export interface UpsertWorkspaceUserGroupInput {
   leadEmails?: string[];
   orgId?: string | null;
   createdByEmail?: string;
+  auditCaller?: string;
 }
 
 export interface UpdateWorkspaceUserGroupMembersInput {
@@ -43,6 +50,14 @@ export interface UpdateWorkspaceUserGroupMembersInput {
   memberEmails: string[];
   operation: "add" | "remove";
   orgId?: string | null;
+  auditCaller?: string;
+}
+
+export interface SetWorkspaceTeamLeadsInput {
+  teamGroupId: string;
+  leadEmails: string[];
+  orgId?: string | null;
+  auditCaller?: string;
 }
 
 export function workspaceUserGroupsTable(): string {
@@ -356,6 +371,7 @@ export async function workspaceUserGroupRole(
   if (!normalizedOrgId || !normalizedEmail) {
     return null;
   }
+  if (!(await isOrgMember(normalizedOrgId, normalizedEmail))) return null;
   const { rows } = await getDbExec().execute({
     sql: `SELECT role FROM org_members
           WHERE org_id = ? AND LOWER(email) = ?
@@ -371,6 +387,233 @@ export async function workspaceUserGroupRole(
     : null;
 }
 
+async function mutateWorkspaceUserGroup(
+  orgId: string,
+  actor: string,
+  id: string | undefined,
+  caller: string,
+  memberEmails: string[],
+  change: (
+    current: WorkspaceUserGroup | undefined,
+    role: "owner" | "admin" | "member",
+    tx: DbExec,
+  ) => Promise<WorkspaceUserGroup>,
+): Promise<WorkspaceUserGroup> {
+  await ensureWorkspaceUserGroupsTable();
+  if (!(await isOrgMember(orgId, actor))) {
+    throw new Error("Only current workspace members can manage user groups.");
+  }
+  const client = getDbExec();
+  if (!client.transaction) {
+    throw new Error(
+      "Workspace user group changes require database transactions.",
+    );
+  }
+  await ensureAuditTables();
+  return client.transaction(async (tx) => {
+    const memberships = await lockCurrentOrgMembers(tx, orgId, [
+      actor,
+      ...memberEmails,
+    ]);
+    const roles = memberships.filter(
+      (row) => (row as { email: string }).email === actor,
+    );
+    const role = String(
+      (roles[0] as { role?: string } | undefined)?.role ?? "",
+    );
+    if (role !== "owner" && role !== "admin" && role !== "member") {
+      throw new Error("Only current workspace members can manage user groups.");
+    }
+    const current = id
+      ? (
+          await tx.execute({
+            sql: `SELECT * FROM ${workspaceUserGroupsTable()} WHERE id = ? AND org_id = ? FOR UPDATE`,
+            args: [id, orgId],
+          })
+        ).rows[0]
+      : undefined;
+    if (id && !current) throw new Error(`User group "${id}" was not found.`);
+    const before = current
+      ? parseRow(current as Record<string, unknown>)
+      : undefined;
+    const after = await change(before, role, tx);
+    const addedMembers = after.memberEmails.filter(
+      (email) => !before?.memberEmails.includes(email),
+    );
+    const removedMembers =
+      before?.memberEmails.filter(
+        (email) => !after.memberEmails.includes(email),
+      ) ?? [];
+    const addedLeads = after.leadEmails.filter(
+      (email) => !before?.leadEmails.includes(email),
+    );
+    const removedLeads =
+      before?.leadEmails.filter((email) => !after.leadEmails.includes(email)) ??
+      [];
+    const converted = !before?.isTeam && after.isTeam;
+    if (
+      addedMembers.length ||
+      removedMembers.length ||
+      addedLeads.length ||
+      removedLeads.length ||
+      converted
+    ) {
+      await tx.execute({
+        sql: `INSERT INTO agent_audit_log
+          (id, created_at, action, caller, actor_kind, actor_email, org_id,
+           target_type, target_id, status, summary, input, owner_email, visibility)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          randomUUID(),
+          Date.now(),
+          "workspace-user-group-change",
+          caller,
+          deriveActorKind(caller, actor),
+          actor,
+          orgId,
+          "workspace-user-group",
+          after.id,
+          "success",
+          "Changed workspace user group membership or roles",
+          JSON.stringify({
+            addedMembers,
+            removedMembers,
+            addedLeads,
+            removedLeads,
+            converted,
+          }),
+          actor,
+          "admins",
+        ],
+      });
+    }
+    return after;
+  });
+}
+
+async function lockCurrentOrgMembers(
+  tx: DbExec,
+  orgId: string,
+  memberEmails: string[],
+): Promise<Array<{ email: string; role: string }>> {
+  // Lock before the group row in deterministic order; org role/offboarding
+  // writers update or delete these rows and must wait for this transaction.
+  const emails = Array.from(new Set(memberEmails)).sort();
+  const { rows } = await tx.execute({
+    sql: `SELECT LOWER(email) AS email, role FROM org_members
+      WHERE org_id = ? AND LOWER(email) IN (${emails.map(() => "?").join(", ")})
+        AND federation_removal_pending_at IS NULL
+      ORDER BY LOWER(email), id FOR UPDATE`,
+    args: [orgId, ...emails],
+  });
+  return rows as Array<{ email: string; role: string }>;
+}
+
+function requireGroupManager(role: string): void {
+  if (role !== "owner" && role !== "admin") {
+    throw new Error("Only workspace admins can manage user groups.");
+  }
+}
+
+async function validateGroupMembers(
+  tx: DbExec,
+  orgId: string,
+  memberEmails: string[],
+): Promise<void> {
+  const missing: string[] = [];
+  for (const email of memberEmails) {
+    const { rows } = await tx.execute({
+      sql: `SELECT 1 FROM org_members WHERE org_id = ? AND LOWER(email) = ?
+        AND federation_removal_pending_at IS NULL LIMIT 1`,
+      args: [orgId, email],
+    });
+    if (!rows.length) missing.push(email);
+  }
+  if (missing.length) {
+    throw new Error(
+      `Group members must belong to this workspace: ${missing.join(", ")}.`,
+    );
+  }
+}
+
+async function validateCurrentOrgMembers(
+  orgId: string,
+  memberEmails: string[],
+): Promise<void> {
+  const missing = (
+    await Promise.all(
+      memberEmails.map(async (email) =>
+        (await isOrgMember(orgId, email)) ? null : email,
+      ),
+    )
+  ).filter((email): email is string => email !== null);
+  if (missing.length) {
+    throw new Error(
+      `Group members must belong to this workspace: ${missing.join(", ")}.`,
+    );
+  }
+}
+
+async function persistWorkspaceUserGroup(
+  tx: DbExec,
+  orgId: string,
+  actor: string,
+  current: WorkspaceUserGroup | undefined,
+  name: string,
+  memberEmails: string[],
+  isTeam: boolean,
+  leadEmails: string[],
+): Promise<WorkspaceUserGroup> {
+  const id = current?.id ?? randomUUID();
+  const now = Date.now();
+  try {
+    if (current) {
+      await tx.execute({
+        sql: `UPDATE ${workspaceUserGroupsTable()} SET name = ?, normalized_name = LOWER(BTRIM(?)),
+          member_emails_json = ?, is_team = ?, lead_emails_json = ?, updated_at = ?
+          WHERE id = ? AND org_id = ?`,
+        args: [
+          name,
+          name,
+          JSON.stringify(memberEmails),
+          isTeam,
+          JSON.stringify(leadEmails),
+          now,
+          id,
+          orgId,
+        ],
+      });
+    } else {
+      await tx.execute({
+        sql: `INSERT INTO ${workspaceUserGroupsTable()}
+          (id, org_id, name, normalized_name, member_emails_json, is_team, lead_emails_json, created_by_email, created_at, updated_at)
+          VALUES (?, ?, ?, LOWER(BTRIM(?)), ?, ?, ?, ?, ?, ?)`,
+        args: [
+          id,
+          orgId,
+          name,
+          name,
+          JSON.stringify(memberEmails),
+          isTeam,
+          JSON.stringify(leadEmails),
+          actor,
+          now,
+          now,
+        ],
+      });
+    }
+  } catch (error) {
+    if (isUniqueViolation(error))
+      throw duplicateWorkspaceUserGroupNameError(name);
+    throw error;
+  }
+  const { rows } = await tx.execute({
+    sql: `SELECT * FROM ${workspaceUserGroupsTable()} WHERE id = ? AND org_id = ?`,
+    args: [id, orgId],
+  });
+  return parseRow(rows[0] as Record<string, unknown>);
+}
+
 export async function upsertWorkspaceUserGroup(
   input: UpsertWorkspaceUserGroupInput,
 ): Promise<WorkspaceUserGroup> {
@@ -381,126 +624,52 @@ export async function upsertWorkspaceUserGroup(
   }
   const name = normalizeGroupName(input.name);
   const memberEmails = validateEmailList(input.memberEmails, "Group members");
-  const missing = (
-    await Promise.all(
-      memberEmails.map(async (email) =>
-        (await isOrgMember(orgId, email)) ? null : email,
-      ),
-    )
-  ).filter((email): email is string => Boolean(email));
-  if (missing.length > 0) {
-    throw new Error(
-      `Group members must belong to this workspace: ${missing.join(", ")}.`,
-    );
-  }
-
-  await ensureWorkspaceUserGroupsTable();
-  const client = getDbExec();
-  const table = workspaceUserGroupsTable();
+  await validateCurrentOrgMembers(orgId, memberEmails);
   if (input.id !== undefined && !input.id.trim()) {
     throw new Error("A user group is required.");
   }
-  const id = input.id?.trim() ?? randomUUID();
-  const existing = input.id
-    ? (await listWorkspaceUserGroupsForOrg(orgId, [id]))[0]
-    : undefined;
-  if (input.id && !existing)
-    throw new Error(`User group "${id}" was not found.`);
   if (input.isTeam !== undefined && typeof input.isTeam !== "boolean") {
     throw new Error("isTeam must be a boolean.");
   }
-  const isTeam = input.isTeam ?? existing?.isTeam ?? false;
-  if (existing?.isTeam && !isTeam) {
-    throw new Error("A team cannot be converted back to a user group.");
-  }
-  const leadEmails =
-    input.leadEmails === undefined
-      ? (existing?.leadEmails ?? [])
-      : validateEmailList(input.leadEmails, "Team leads");
-  if (!isTeam && leadEmails.length > 0) {
-    throw new Error("Ordinary user groups cannot have team leads.");
-  }
-  const nextLeads = leadEmails.filter((email) => memberEmails.includes(email));
-  if (
-    input.leadEmails !== undefined &&
-    nextLeads.length !== leadEmails.length
-  ) {
-    throw new Error("Team leads must be group members.");
-  }
-  const now = Date.now();
-  const createdByEmail =
-    input.createdByEmail?.trim().toLowerCase() || requestScope.userEmail;
-  const duplicate = await client.execute({
-    sql: `SELECT id FROM ${table}
-      WHERE org_id = ? AND LOWER(BTRIM(name)) = LOWER(BTRIM(?)) AND id <> ?
-      LIMIT 1`,
-    args: [orgId, name, id],
-  });
-  if (duplicate.rows.length > 0) {
-    throw duplicateWorkspaceUserGroupNameError(name);
-  }
-  try {
-    if (input.id && existing) {
-      const update = await client.execute({
-        sql: `UPDATE ${table}
-          SET name = ?, normalized_name = LOWER(BTRIM(?)), member_emails_json = ?,
-              is_team = ?, lead_emails_json = ?, updated_at = ?
-          WHERE id = ? AND org_id = ? AND is_team = ? AND lead_emails_json = ?`,
-        args: [
-          name,
-          name,
-          JSON.stringify(memberEmails),
-          isTeam,
-          JSON.stringify(nextLeads),
-          now,
-          id,
-          orgId,
-          existing.isTeam,
-          JSON.stringify(existing.leadEmails),
-        ],
-      });
-      if (update.rowsAffected === 0) {
-        const current = (await listWorkspaceUserGroupsForOrg(orgId, [id]))[0];
-        if (!current) throw new Error(`User group "${id}" was not found.`);
-        throw new Error(`User group "${id}" changed while updating; retry.`);
+  return mutateWorkspaceUserGroup(
+    orgId,
+    requestScope.userEmail,
+    input.id?.trim(),
+    input.auditCaller ?? "http",
+    memberEmails,
+    async (current, role, tx) => {
+      requireGroupManager(role);
+      const isTeam = input.isTeam ?? current?.isTeam ?? false;
+      if (current?.isTeam && !isTeam) {
+        throw new Error("A team cannot be converted back to a user group.");
       }
-    } else {
-      await client.execute({
-        sql: `INSERT INTO ${table}
-          (id, org_id, name, normalized_name, member_emails_json, is_team, lead_emails_json, created_by_email, created_at, updated_at)
-          VALUES (?, ?, ?, LOWER(BTRIM(?)), ?, ?, ?, ?, ?, ?)`,
-        args: [
-          id,
-          orgId,
-          name,
-          name,
-          JSON.stringify(memberEmails),
-          isTeam,
-          JSON.stringify(nextLeads),
-          createdByEmail,
-          now,
-          now,
-        ],
-      });
-    }
-  } catch (error) {
-    if (isUniqueViolation(error)) {
-      const conflict = await client.execute({
-        sql: `SELECT id FROM ${table}
-          WHERE org_id = ? AND LOWER(BTRIM(name)) = LOWER(BTRIM(?)) AND id <> ?
-          LIMIT 1`,
-        args: [orgId, name, id],
-      });
-      if (conflict.rows.length > 0) {
-        throw duplicateWorkspaceUserGroupNameError(name);
+      const leads =
+        input.leadEmails === undefined
+          ? (current?.leadEmails ?? [])
+          : validateEmailList(input.leadEmails, "Team leads");
+      if (!isTeam && leads.length) {
+        throw new Error("Ordinary user groups cannot have team leads.");
       }
-    }
-    throw error;
-  }
-  const groups = await listWorkspaceUserGroupsForOrg(orgId, [id]);
-  const group = groups[0];
-  if (!group) throw new Error(`User group "${id}" was not found after upsert.`);
-  return group;
+      if (
+        input.leadEmails !== undefined &&
+        leads.some((email) => !memberEmails.includes(email))
+      ) {
+        throw new Error("Team leads must be group members.");
+      }
+      const nextLeads = leads.filter((email) => memberEmails.includes(email));
+      await validateGroupMembers(tx, orgId, memberEmails);
+      return persistWorkspaceUserGroup(
+        tx,
+        orgId,
+        requestScope.userEmail,
+        current,
+        name,
+        memberEmails,
+        isTeam,
+        nextLeads,
+      );
+    },
+  );
 }
 
 export async function updateWorkspaceUserGroupMembers(
@@ -514,36 +683,92 @@ export async function updateWorkspaceUserGroupMembers(
 
   const id = input.id.trim();
   if (!id) throw new Error("A user group is required.");
-  const group = (await listWorkspaceUserGroupsForOrg(orgId, [id]))[0];
-  if (!group) throw new Error(`User group "${id}" was not found.`);
-
-  const memberEmails = normalizeMemberEmails(input.memberEmails);
-  const missing = (
-    await Promise.all(
-      memberEmails.map(async (email) =>
-        (await isOrgMember(orgId, email)) ? null : email,
-      ),
-    )
-  ).filter((email): email is string => Boolean(email));
-  if (missing.length > 0) {
-    throw new Error(
-      `Group members must belong to this workspace: ${missing.join(", ")}.`,
-    );
-  }
-
-  const existing = new Set(group.memberEmails);
-  const nextMembers =
-    input.operation === "add"
-      ? Array.from(new Set([...existing, ...memberEmails]))
-      : group.memberEmails.filter((email) => !memberEmails.includes(email));
-
-  return upsertWorkspaceUserGroup({
-    id: group.id,
-    name: group.name,
-    memberEmails: nextMembers,
+  const memberEmails = validateEmailList(input.memberEmails, "Group members");
+  if (input.operation === "add")
+    await validateCurrentOrgMembers(orgId, memberEmails);
+  return mutateWorkspaceUserGroup(
     orgId,
-    createdByEmail: requestScope.userEmail,
-  });
+    requestScope.userEmail,
+    id,
+    input.auditCaller ?? "http",
+    input.operation === "add" ? memberEmails : [],
+    async (group, role, tx) => {
+      if (!group) throw new Error(`User group "${id}" was not found.`);
+      if (
+        role === "member" &&
+        (!group.isTeam || !group.leadEmails.includes(requestScope.userEmail))
+      ) {
+        throw new Error(
+          "Only workspace admins or team leads can manage group members.",
+        );
+      }
+      if (
+        role === "member" &&
+        input.operation === "remove" &&
+        memberEmails.some((email) => group.leadEmails.includes(email))
+      ) {
+        throw new Error("Team leads cannot remove team leads.");
+      }
+      if (input.operation !== "add" && input.operation !== "remove") {
+        throw new Error("Invalid group membership operation.");
+      }
+      const nextMembers =
+        input.operation === "add"
+          ? Array.from(new Set([...group.memberEmails, ...memberEmails]))
+          : group.memberEmails.filter((email) => !memberEmails.includes(email));
+      if (input.operation === "add") {
+        await validateGroupMembers(tx, orgId, memberEmails);
+      }
+      return persistWorkspaceUserGroup(
+        tx,
+        orgId,
+        requestScope.userEmail,
+        group,
+        group.name,
+        nextMembers,
+        group.isTeam,
+        group.leadEmails.filter((email) => nextMembers.includes(email)),
+      );
+    },
+  );
+}
+
+export async function setWorkspaceTeamLeads(
+  input: SetWorkspaceTeamLeadsInput,
+): Promise<WorkspaceUserGroup> {
+  const scope = requireWorkspaceUserGroupScope();
+  const orgId = input.orgId?.trim() || scope.orgId;
+  if (orgId !== scope.orgId)
+    throw new Error("User groups must belong to the active workspace.");
+  const id = input.teamGroupId.trim();
+  if (!id) throw new Error("A team is required.");
+  const leads = validateEmailList(input.leadEmails, "Team leads");
+  await validateCurrentOrgMembers(orgId, leads);
+  return mutateWorkspaceUserGroup(
+    orgId,
+    scope.userEmail,
+    id,
+    input.auditCaller ?? "http",
+    leads,
+    async (group, role, tx) => {
+      requireGroupManager(role);
+      if (!group?.isTeam) throw new Error("A marked team is required.");
+      if (leads.some((email) => !group.memberEmails.includes(email))) {
+        throw new Error("Team leads must be group members.");
+      }
+      await validateGroupMembers(tx, orgId, leads);
+      return persistWorkspaceUserGroup(
+        tx,
+        orgId,
+        scope.userEmail,
+        group,
+        group.name,
+        group.memberEmails,
+        true,
+        leads,
+      );
+    },
+  );
 }
 
 export async function deleteWorkspaceUserGroup(
@@ -558,12 +783,52 @@ export async function deleteWorkspaceUserGroup(
   const normalizedId = id.trim();
   if (!normalizedId) throw new Error("A user group is required.");
 
+  await assertWorkspaceUserGroupManager(
+    normalizedOrgId,
+    requestScope.userEmail,
+  );
+
   await ensureWorkspaceUserGroupsTable();
-  const result = await getDbExec().execute({
-    sql: `DELETE FROM ${workspaceUserGroupsTable()} WHERE id = ? AND org_id = ?`,
-    args: [normalizedId, normalizedOrgId],
+  await ensureWorkspaceConnectionsTable();
+  const client = getDbExec();
+  if (!client.transaction) {
+    throw new Error(
+      "Workspace user group changes require database transactions.",
+    );
+  }
+  return client.transaction(async (tx) => {
+    const memberships = await lockCurrentOrgMembers(tx, normalizedOrgId, [
+      requestScope.userEmail,
+    ]);
+    requireGroupManager(memberships[0]?.role ?? "");
+    const { rows } = await tx.execute({
+      sql: `SELECT id FROM ${workspaceUserGroupsTable()} WHERE id = ? AND org_id = ? FOR UPDATE`,
+      args: [normalizedId, normalizedOrgId],
+    });
+    if (!rows.length) return false;
+    await removeWorkspaceUserGroupFromConnections(
+      tx,
+      normalizedOrgId,
+      normalizedId,
+    );
+    const result = await tx.execute({
+      sql: `DELETE FROM ${workspaceUserGroupsTable()} WHERE id = ? AND org_id = ?`,
+      args: [normalizedId, normalizedOrgId],
+    });
+    return result.rowsAffected > 0;
   });
-  return result.rowsAffected > 0;
+}
+
+export async function getWorkspaceTeamForMember(
+  orgId: string,
+  teamGroupId: string,
+  userEmail: string,
+): Promise<WorkspaceUserGroup | null> {
+  const email = userEmail.trim().toLowerCase();
+  const id = teamGroupId.trim();
+  if (!id || !(await isOrgMember(orgId, email))) return null;
+  const group = (await listWorkspaceUserGroupsForOrg(orgId, [id]))[0];
+  return group?.isTeam && group.memberEmails.includes(email) ? group : null;
 }
 
 export async function workspaceUserGroupsIncludeUser(

@@ -26,6 +26,7 @@ interface FrameworkClient {
     rows: any[];
     rowsAffected: number;
   }>;
+  transaction?<T>(fn: (tx: FrameworkClient) => Promise<T>): Promise<T>;
 }
 
 let pglite: Awaited<ReturnType<typeof createTestPglite>>;
@@ -52,6 +53,24 @@ beforeAll(async () => {
       const result = await stmt.run(...args);
       return { rows: [], rowsAffected: Number(result.changes ?? 0) };
     },
+    transaction: (fn) =>
+      pglite.db.transaction(async (tx) =>
+        fn({
+          execute: async (arg) => {
+            const sql = typeof arg === "string" ? arg : arg.sql;
+            const args = typeof arg === "string" ? [] : (arg.args ?? []);
+            let index = 0;
+            const result = await tx.query(
+              sql.replace(/\?/g, () => `$${++index}`),
+              args,
+            );
+            return {
+              rows: result.rows,
+              rowsAffected: result.affectedRows ?? result.rowCount ?? 0,
+            };
+          },
+        }),
+      ),
   };
 });
 
@@ -676,6 +695,266 @@ describe("workspace connection store", () => {
     expect(bobAfterRemoval.available).toBe(false);
   });
 
+  it("converts and deletes a group without losing grants or opening restricted connections", async () => {
+    const { runWithRequestContext } =
+      await import("../server/request-context.js");
+    const { upsertWorkspaceUserGroup, workspaceUserGroupsIncludeUser } =
+      await import("./groups.js");
+    const deleteAction = (
+      await import("./actions/delete-workspace-user-group.js")
+    ).default;
+    const upsertAction = (
+      await import("./actions/upsert-workspace-user-group.js")
+    ).default;
+    const { upsertWorkspaceConnection, resolveWorkspaceConnectionForApp } =
+      await import("./store.js");
+    await pglite.exec(`CREATE TABLE IF NOT EXISTS org_members (
+      id TEXT PRIMARY KEY, org_id TEXT NOT NULL, email TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member', joined_at BIGINT NOT NULL DEFAULT 0,
+      federation_removal_pending_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS lifecycle_resources (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS lifecycle_shares (resource_id TEXT, principal_id TEXT, role TEXT);`);
+    await pglite.exec(
+      "DELETE FROM lifecycle_resources; DELETE FROM lifecycle_shares",
+    );
+    for (const [id, email, role] of [
+      ["owner", "owner@example.com", "owner"],
+      ["member", "member@example.com", "member"],
+    ]) {
+      await pglite
+        .prepare(
+          "INSERT INTO org_members (id, org_id, email, role) VALUES (?, ?, ?, ?)",
+        )
+        .run(id, "org-lifecycle", email, role);
+    }
+    const asOwner = <T>(run: () => Promise<T>) =>
+      runWithRequestContext(
+        { userEmail: "owner@example.com", orgId: "org-lifecycle" },
+        run,
+      );
+    const asMember = <T>(run: () => Promise<T>) =>
+      runWithRequestContext(
+        { userEmail: "member@example.com", orgId: "org-lifecycle" },
+        run,
+      );
+    const group = await asOwner(() =>
+      upsertWorkspaceUserGroup({
+        name: "Existing group",
+        memberEmails: ["member@example.com"],
+      }),
+    );
+    const other = await asOwner(() =>
+      upsertWorkspaceUserGroup({
+        name: "Other group",
+        memberEmails: [],
+      }),
+    );
+    await pglite
+      .prepare("INSERT INTO lifecycle_resources (id, payload) VALUES (?, ?)")
+      .run("private-resource", "retained payload");
+    await pglite
+      .prepare("INSERT INTO lifecycle_shares VALUES (?, ?, ?)")
+      .run("private-resource", group.id, "viewer");
+    await asOwner(() =>
+      upsertWorkspaceConnection({
+        id: "conn-lifecycle",
+        provider: "github",
+        allowedUserGroups: [group.id, other.id],
+      }),
+    );
+    await asOwner(() =>
+      upsertWorkspaceConnection({
+        id: "conn-last-group",
+        provider: "github",
+        allowedUserGroups: [group.id],
+      }),
+    );
+    const row = async (
+      table:
+        | "workspace_user_groups"
+        | "workspace_connections"
+        | "lifecycle_shares"
+        | "lifecycle_resources",
+      id: string,
+    ) =>
+      pglite
+        .prepare(
+          `SELECT * FROM ${table} WHERE ${table === "lifecycle_shares" ? "resource_id" : "id"} = ?`,
+        )
+        .get(id);
+    const beforeGroup = await row("workspace_user_groups", group.id);
+    const beforeConnection = await row(
+      "workspace_connections",
+      "conn-lifecycle",
+    );
+    const beforeShare = await row("lifecycle_shares", "private-resource");
+    const access = () =>
+      asMember(() =>
+        resolveWorkspaceConnectionForApp({
+          appId: "dispatch",
+          connectionId: "conn-lifecycle",
+        }),
+      );
+    expect((await access()).available).toBe(true);
+    expect(
+      await workspaceUserGroupsIncludeUser(
+        "org-lifecycle",
+        [group.id],
+        "member@example.com",
+      ),
+    ).toBe(true);
+
+    const converted = await asOwner(() =>
+      upsertAction.run(
+        {
+          id: group.id,
+          name: group.name,
+          memberEmails: group.memberEmails,
+          isTeam: true,
+        },
+        { userEmail: "owner@example.com", orgId: "org-lifecycle" },
+      ),
+    );
+    expect(converted).toMatchObject({
+      id: group.id,
+      isTeam: true,
+      memberEmails: group.memberEmails,
+      leadEmails: [],
+    });
+    expect(await row("workspace_user_groups", group.id)).toMatchObject({
+      id: group.id,
+      org_id: "org-lifecycle",
+      name: beforeGroup?.name,
+      member_emails_json: beforeGroup?.member_emails_json,
+      created_by_email: beforeGroup?.created_by_email,
+      created_at: beforeGroup?.created_at,
+      is_team: true,
+    });
+    expect(await row("workspace_connections", "conn-lifecycle")).toEqual(
+      beforeConnection,
+    );
+    expect(await row("lifecycle_shares", "private-resource")).toEqual(
+      beforeShare,
+    );
+    expect((await access()).available).toBe(true);
+
+    const originalTransaction = sharedClient.transaction!.bind(sharedClient);
+    const failingCleanup = vi
+      .spyOn(sharedClient, "transaction")
+      .mockImplementation((fn) =>
+        originalTransaction((tx) =>
+          fn({
+            execute: async (arg) => {
+              const sql = typeof arg === "string" ? arg : arg.sql;
+              if (
+                /UPDATE public\.workspace_connections SET allowed_user_groups_json/.test(
+                  sql,
+                ) &&
+                typeof arg !== "string" &&
+                arg.args?.includes("conn-last-group")
+              )
+                throw new Error("Connection cleanup failed");
+              return tx.execute(arg);
+            },
+          }),
+        ),
+      );
+    try {
+      await expect(
+        asOwner(() =>
+          deleteAction.run(
+            { id: group.id },
+            {
+              userEmail: "owner@example.com",
+              orgId: "org-lifecycle",
+            },
+          ),
+        ),
+      ).rejects.toThrow(/Connection cleanup failed/);
+    } finally {
+      failingCleanup.mockRestore();
+    }
+    expect(await row("workspace_user_groups", group.id)).not.toBeNull();
+    expect(await row("workspace_connections", "conn-lifecycle")).toEqual(
+      beforeConnection,
+    );
+    expect(await row("workspace_connections", "conn-last-group")).toMatchObject(
+      {
+        allowed_user_groups_json: JSON.stringify([group.id]),
+        status: "connected",
+      },
+    );
+
+    await expect(
+      asMember(() =>
+        deleteAction.run(
+          { id: group.id },
+          {
+            userEmail: "member@example.com",
+            orgId: "org-lifecycle",
+          },
+        ),
+      ),
+    ).rejects.toThrow(/admins/);
+    expect(
+      await asOwner(() =>
+        deleteAction.run(
+          { id: group.id },
+          {
+            userEmail: "owner@example.com",
+            orgId: "org-lifecycle",
+          },
+        ),
+      ),
+    ).toEqual({ id: group.id, deleted: true });
+    expect(await row("workspace_user_groups", group.id)).toBeFalsy();
+    expect(await row("workspace_user_groups", other.id)).not.toBeNull();
+    expect(await row("workspace_connections", "conn-lifecycle")).toMatchObject({
+      allowed_user_groups_json: JSON.stringify([other.id]),
+    });
+    expect(await row("workspace_connections", "conn-last-group")).toMatchObject(
+      {
+        allowed_user_groups_json: "[]",
+        status: "disabled",
+      },
+    );
+    expect((await access()).available).toBe(false);
+    expect(
+      (
+        await asMember(() =>
+          resolveWorkspaceConnectionForApp({
+            appId: "dispatch",
+            connectionId: "conn-last-group",
+          }),
+        )
+      ).available,
+    ).toBe(false);
+    expect(
+      await workspaceUserGroupsIncludeUser(
+        "org-lifecycle",
+        [group.id],
+        "member@example.com",
+      ),
+    ).toBe(false);
+    expect(await row("lifecycle_shares", "private-resource")).toEqual(
+      beforeShare,
+    );
+    expect(await row("lifecycle_resources", "private-resource")).toMatchObject({
+      payload: "retained payload",
+    });
+    await expect(
+      asOwner(() =>
+        upsertWorkspaceUserGroup({
+          id: group.id,
+          name: group.name,
+          memberEmails: [],
+          isTeam: true,
+        }),
+      ),
+    ).rejects.toThrow(/not found/);
+  });
+
   it("rejects duplicate workspace user group names within an org", async () => {
     const { runWithRequestContext } =
       await import("../server/request-context.js");
@@ -800,6 +1079,9 @@ describe("workspace connection store", () => {
         .prepare("INSERT INTO org_members (id, org_id, email) VALUES (?, ?, ?)")
         .run(id, orgId, email);
     }
+    await pglite
+      .prepare("UPDATE org_members SET role = 'owner' WHERE id IN (?, ?)")
+      .run("team-owner", "other-owner");
     const inOrg = <T>(orgId: string, operation: () => Promise<T>) =>
       runWithRequestContext(
         { userEmail: "owner@example.com", orgId },
@@ -936,7 +1218,7 @@ describe("workspace connection store", () => {
     ).toEqual([replacement]);
   });
 
-  it("rejects a stale update when a group converts to a team before the write", async () => {
+  it("serializes conversion with a concurrent group update", async () => {
     const { runWithRequestContext } =
       await import("../server/request-context.js");
     const { upsertWorkspaceUserGroup } = await import("./groups.js");
@@ -948,6 +1230,9 @@ describe("workspace connection store", () => {
     await pglite
       .prepare("INSERT INTO org_members (id, org_id, email) VALUES (?, ?, ?)")
       .run("race-member", "org-race", "member@example.com");
+    await pglite
+      .prepare("UPDATE org_members SET role = 'owner' WHERE id = ?")
+      .run("race-member");
     const inOrg = <T>(operation: () => Promise<T>) =>
       runWithRequestContext(
         { userEmail: "member@example.com", orgId: "org-race" },
@@ -959,49 +1244,439 @@ describe("workspace connection store", () => {
         memberEmails: ["member@example.com"],
       }),
     );
-    const execute = sharedClient.execute.bind(sharedClient);
-    let converted = false;
-    const spy = vi
-      .spyOn(sharedClient, "execute")
-      .mockImplementation(async (arg) => {
-        const sql = typeof arg === "string" ? arg : arg.sql;
-        if (
-          !converted &&
-          /^UPDATE public\.workspace_user_groups\s/i.test(sql.trim())
-        ) {
-          converted = true;
-          await pglite
-            .prepare(
-              "UPDATE workspace_user_groups SET is_team = true, lead_emails_json = ? WHERE id = ?",
-            )
-            .run('["member@example.com"]', group.id);
-        }
-        return execute(arg);
-      });
+    const results = await Promise.all([
+      inOrg(() =>
+        upsertWorkspaceUserGroup({
+          id: group.id,
+          name: "Finance",
+          memberEmails: group.memberEmails,
+          isTeam: true,
+          leadEmails: ["member@example.com"],
+        }),
+      ),
+      inOrg(() =>
+        upsertWorkspaceUserGroup({
+          id: group.id,
+          name: "Renamed Finance",
+          memberEmails: group.memberEmails,
+        }),
+      ),
+    ]);
+    const row = await pglite
+      .prepare(
+        "SELECT name, is_team, lead_emails_json FROM workspace_user_groups WHERE id = ?",
+      )
+      .get(group.id);
+    expect(results).toHaveLength(2);
+    expect(row).toMatchObject({
+      is_team: true,
+      lead_emails_json: '["member@example.com"]',
+    });
+  });
+
+  it("enforces team roles on direct and action writes and audits only committed deltas", async () => {
+    const { runWithRequestContext } =
+      await import("../server/request-context.js");
+    const {
+      upsertWorkspaceUserGroup,
+      updateWorkspaceUserGroupMembers,
+      setWorkspaceTeamLeads,
+      getWorkspaceTeamForMember,
+    } = await import("./groups.js");
+    const bulk = (
+      await import("./actions/bulk-update-workspace-user-groups.js")
+    ).default;
+    const upsertAction = (
+      await import("./actions/upsert-workspace-user-group.js")
+    ).default;
+    const leadsAction = (await import("./actions/set-workspace-team-leads.js"))
+      .default;
+    await pglite.exec(`CREATE TABLE IF NOT EXISTS org_members (
+      id TEXT PRIMARY KEY, org_id TEXT NOT NULL, email TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member', joined_at BIGINT NOT NULL DEFAULT 0,
+      federation_removal_pending_at INTEGER
+    )`);
+    for (const [id, orgId, role] of [
+      ["owner", "org-policy", "owner"],
+      ["admin", "org-policy", "admin"],
+      ["lead", "org-policy", "member"],
+      ["member", "org-policy", "member"],
+      ["other", "org-policy", "member"],
+      ["extra", "org-policy", "member"],
+      ["outsider", "org-other", "owner"],
+    ]) {
+      await pglite
+        .prepare(
+          "INSERT INTO org_members (id, org_id, email, role) VALUES (?, ?, ?, ?)",
+        )
+        .run(id, orgId, `${id}@example.com`, role);
+    }
+    const as = <T>(
+      actor: string,
+      operation: () => Promise<T>,
+      orgId = "org-policy",
+    ) =>
+      runWithRequestContext(
+        { userEmail: `${actor}@example.com`, orgId },
+        operation,
+      );
+    const team = await as("owner", () =>
+      upsertWorkspaceUserGroup({
+        name: "Policy team",
+        isTeam: true,
+        memberEmails: ["lead@example.com", "member@example.com"],
+        leadEmails: ["lead@example.com"],
+      }),
+    );
+    expect(
+      await getWorkspaceTeamForMember(
+        "org-policy",
+        team.id,
+        "admin@example.com",
+      ),
+    ).toBeNull();
+    expect(
+      await getWorkspaceTeamForMember("org-policy", "", "lead@example.com"),
+    ).toBeNull();
+    expect(
+      await getWorkspaceTeamForMember(
+        "org-policy",
+        team.id,
+        "lead@example.com",
+      ),
+    ).toMatchObject({ id: team.id });
+    await expect(
+      as("member", () =>
+        updateWorkspaceUserGroupMembers({
+          id: team.id,
+          operation: "add",
+          memberEmails: ["other@example.com"],
+        }),
+      ),
+    ).rejects.toThrow(/admins or team leads/);
+    await expect(
+      as("lead", () =>
+        upsertWorkspaceUserGroup({
+          id: team.id,
+          name: "Hijack",
+          memberEmails: [],
+        }),
+      ),
+    ).rejects.toThrow(/admins/);
+    await expect(
+      as("lead", () =>
+        upsertAction.run(
+          { id: team.id, name: "Hijack", memberEmails: [], isTeam: false },
+          { userEmail: "lead@example.com", orgId: "org-policy" },
+        ),
+      ),
+    ).rejects.toThrow(/admins/);
+    await expect(
+      as("lead", () =>
+        updateWorkspaceUserGroupMembers({
+          id: team.id,
+          operation: "remove",
+          memberEmails: ["lead@example.com"],
+        }),
+      ),
+    ).rejects.toThrow(/cannot remove team leads/);
+    await expect(
+      as("lead", () =>
+        updateWorkspaceUserGroupMembers({
+          id: team.id,
+          operation: "add",
+          memberEmails: ["outsider@example.com"],
+        }),
+      ),
+    ).rejects.toThrow(/belong to this workspace/);
+    await expect(
+      as("lead", () =>
+        setWorkspaceTeamLeads({ teamGroupId: team.id, leadEmails: [] }),
+      ),
+    ).rejects.toThrow(/admins/);
+    await expect(
+      as("owner", () =>
+        setWorkspaceTeamLeads({
+          teamGroupId: team.id,
+          leadEmails: ["other@example.com"],
+        }),
+      ),
+    ).rejects.toThrow(/must be group members/);
+    await expect(
+      as("outsider", () =>
+        updateWorkspaceUserGroupMembers({
+          id: team.id,
+          operation: "add",
+          memberEmails: ["other@example.com"],
+        }),
+      ),
+    ).rejects.toThrow(/current workspace members/);
+    await pglite
+      .prepare(
+        "UPDATE org_members SET federation_removal_pending_at = 1 WHERE id = ?",
+      )
+      .run("lead");
+    await expect(
+      as("lead", () =>
+        updateWorkspaceUserGroupMembers({
+          id: team.id,
+          operation: "add",
+          memberEmails: ["other@example.com"],
+        }),
+      ),
+    ).rejects.toThrow(/current workspace members/);
+    await pglite
+      .prepare(
+        "UPDATE org_members SET federation_removal_pending_at = NULL WHERE id = ?",
+      )
+      .run("lead");
+    const added = await as("lead", () =>
+      bulk.run(
+        {
+          groupId: team.id,
+          operation: "add",
+          memberEmails: ["other@example.com"],
+        },
+        { userEmail: "lead@example.com", orgId: "org-policy" },
+      ),
+    );
+    expect(added.memberEmails).toContain("other@example.com");
+    await as("admin", () =>
+      leadsAction.run(
+        {
+          teamGroupId: team.id,
+          leadEmails: ["lead@example.com", "other@example.com"],
+        },
+        { userEmail: "admin@example.com", orgId: "org-policy" },
+      ),
+    );
+    const removed = await as("admin", () =>
+      updateWorkspaceUserGroupMembers({
+        id: team.id,
+        operation: "remove",
+        memberEmails: ["other@example.com"],
+      }),
+    );
+    expect(removed).toMatchObject({
+      leadEmails: ["lead@example.com"],
+      memberEmails: ["lead@example.com", "member@example.com"],
+    });
+    const audits = (await pglite
+      .prepare(
+        "SELECT input FROM agent_audit_log WHERE target_id = ? ORDER BY created_at",
+      )
+      .all(team.id)) as Array<{ input: string }>;
+    expect(audits).toHaveLength(4);
+    expect(audits.map((row) => JSON.parse(row.input))).toContainEqual(
+      expect.objectContaining({
+        removedMembers: ["other@example.com"],
+        removedLeads: ["other@example.com"],
+      }),
+    );
+    const concurrent = await Promise.all([
+      as("lead", () =>
+        updateWorkspaceUserGroupMembers({
+          id: team.id,
+          operation: "add",
+          memberEmails: ["other@example.com"],
+        }),
+      ),
+      as("lead", () =>
+        updateWorkspaceUserGroupMembers({
+          id: team.id,
+          operation: "add",
+          memberEmails: ["extra@example.com"],
+        }),
+      ),
+    ]);
+    expect(concurrent).toHaveLength(2);
+    const afterConcurrent = await getWorkspaceTeamForMember(
+      "org-policy",
+      team.id,
+      "lead@example.com",
+    );
+    expect(afterConcurrent?.memberEmails).toEqual(
+      expect.arrayContaining(["other@example.com", "extra@example.com"]),
+    );
+    expect(afterConcurrent?.leadEmails).toEqual(["lead@example.com"]);
+    const leadRemoved = await as("lead", () =>
+      bulk.run(
+        {
+          groupId: team.id,
+          operation: "remove",
+          memberEmails: ["other@example.com"],
+        },
+        { userEmail: "lead@example.com", orgId: "org-policy" },
+      ),
+    );
+    expect(leadRemoved.memberEmails).not.toContain("other@example.com");
+  });
+
+  it("rechecks locked org authority and recipients after prevalidation and rolls back an audit failure", async () => {
+    const { runWithRequestContext } =
+      await import("../server/request-context.js");
+    const {
+      upsertWorkspaceUserGroup,
+      updateWorkspaceUserGroupMembers,
+      deleteWorkspaceUserGroup,
+    } = await import("./groups.js");
+    await pglite.exec(`CREATE TABLE IF NOT EXISTS org_members (
+      id TEXT PRIMARY KEY, org_id TEXT NOT NULL, email TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member', joined_at BIGINT NOT NULL DEFAULT 0,
+      federation_removal_pending_at INTEGER
+    )`);
+    for (const [id, role] of [
+      ["owner", "owner"],
+      ["recipient", "member"],
+    ]) {
+      await pglite
+        .prepare(
+          "INSERT INTO org_members (id, org_id, email, role) VALUES (?, ?, ?, ?)",
+        )
+        .run(`race-${id}`, "org-locks", `${id}@example.com`, role);
+    }
+    const asOwner = <T>(run: () => Promise<T>) =>
+      runWithRequestContext(
+        { userEmail: "owner@example.com", orgId: "org-locks" },
+        run,
+      );
+    const group = await asOwner(() =>
+      upsertWorkspaceUserGroup({
+        name: "Locked team",
+        isTeam: true,
+        memberEmails: ["owner@example.com"],
+        leadEmails: ["owner@example.com"],
+      }),
+    );
+    const original = sharedClient.transaction!.bind(sharedClient);
+    const auditRows = async () =>
+      (
+        await pglite
+          .prepare("SELECT id FROM agent_audit_log WHERE target_id = ?")
+          .all(group.id)
+      ).length;
+    const beforeAudits = await auditRows();
+
+    for (const email of ["owner@example.com", "recipient@example.com"]) {
+      const statements: Array<{ sql: string; args: unknown[] }> = [];
+      const spy = vi
+        .spyOn(sharedClient, "transaction")
+        .mockImplementation((fn) =>
+          original(async (tx) => {
+            await tx.execute({
+              sql: "UPDATE org_members SET federation_removal_pending_at = 1 WHERE org_id = ? AND LOWER(email) = ?",
+              args: ["org-locks", email],
+            });
+            return fn({
+              execute: (arg) => {
+                const sql = typeof arg === "string" ? arg : arg.sql;
+                statements.push({
+                  sql,
+                  args: typeof arg === "string" ? [] : (arg.args ?? []),
+                });
+                return tx.execute(arg);
+              },
+            });
+          }),
+        );
+      try {
+        await expect(
+          asOwner(() =>
+            updateWorkspaceUserGroupMembers({
+              id: group.id,
+              operation: "add",
+              memberEmails: ["recipient@example.com"],
+            }),
+          ),
+        ).rejects.toThrow(
+          email === "owner@example.com"
+            ? /current workspace members/
+            : /belong to this workspace/,
+        );
+      } finally {
+        spy.mockRestore();
+      }
+      expect(statements[0]?.sql).toMatch(
+        /FROM org_members[\s\S]*ORDER BY LOWER\(email\), id FOR UPDATE/,
+      );
+      expect(statements[0]?.args).toEqual([
+        "org-locks",
+        "owner@example.com",
+        "recipient@example.com",
+      ]);
+      if (email === "recipient@example.com") {
+        expect(statements[1]?.sql).toMatch(
+          /workspace_user_groups[\s\S]*FOR UPDATE/,
+        );
+      }
+      expect(await auditRows()).toBe(beforeAudits);
+      await pglite
+        .prepare(
+          "UPDATE org_members SET federation_removal_pending_at = NULL WHERE org_id = ? AND LOWER(email) = ?",
+        )
+        .run("org-locks", email);
+    }
+
+    const deleteSpy = vi
+      .spyOn(sharedClient, "transaction")
+      .mockImplementation((fn) =>
+        original(async (tx) => {
+          await tx.execute({
+            sql: "UPDATE org_members SET role = 'member' WHERE org_id = ? AND LOWER(email) = ?",
+            args: ["org-locks", "owner@example.com"],
+          });
+          return fn(tx);
+        }),
+      );
     try {
       await expect(
-        inOrg(() =>
-          upsertWorkspaceUserGroup({
+        asOwner(() => deleteWorkspaceUserGroup(group.id)),
+      ).rejects.toThrow(/admins/);
+    } finally {
+      deleteSpy.mockRestore();
+    }
+    expect(
+      await pglite
+        .prepare("SELECT id FROM workspace_user_groups WHERE id = ?")
+        .get(group.id),
+    ).toMatchObject({ id: group.id });
+
+    const spy = vi.spyOn(sharedClient, "transaction").mockImplementation((fn) =>
+      original((tx) =>
+        fn({
+          execute: (arg) => {
+            const sql = typeof arg === "string" ? arg : arg.sql;
+            if (/INSERT INTO agent_audit_log/.test(sql))
+              throw new Error("Audit insert failed");
+            return tx.execute(arg);
+          },
+        }),
+      ),
+    );
+    try {
+      await expect(
+        asOwner(() =>
+          updateWorkspaceUserGroupMembers({
             id: group.id,
-            name: "Renamed Finance",
-            memberEmails: group.memberEmails,
+            operation: "add",
+            memberEmails: ["recipient@example.com"],
           }),
         ),
-      ).rejects.toThrow(/changed while updating/i);
-      expect(converted).toBe(true);
-      const row = await pglite
-        .prepare(
-          "SELECT name, is_team, lead_emails_json FROM workspace_user_groups WHERE id = ?",
-        )
-        .get(group.id);
-      expect(row).toMatchObject({
-        name: "Finance",
-        is_team: true,
-        lead_emails_json: '["member@example.com"]',
-      });
+      ).rejects.toThrow(/Audit insert failed/);
     } finally {
       spy.mockRestore();
     }
+    expect(await auditRows()).toBe(beforeAudits);
+    expect(
+      await pglite
+        .prepare(
+          "SELECT member_emails_json, lead_emails_json FROM workspace_user_groups WHERE id = ?",
+        )
+        .get(group.id),
+    ).toMatchObject({
+      member_emails_json: '["owner@example.com"]',
+      lead_emails_json: '["owner@example.com"]',
+    });
   });
 
   it("normalizes names for writers that do not know the derived column", async () => {

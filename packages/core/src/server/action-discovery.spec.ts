@@ -658,6 +658,7 @@ describe("action discovery", () => {
         "list-workspace-user-groups",
         "upsert-workspace-user-group",
         "bulk-update-workspace-user-groups",
+        "set-workspace-team-leads",
         "delete-workspace-user-group",
       ],
       emailCatalog: [

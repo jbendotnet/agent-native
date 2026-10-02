@@ -295,6 +295,7 @@ export const CORE_ACTION_GROUPS: Record<string, FrameworkToolGroup> = {
   "list-workspace-user-groups": "workspaceUserGroups",
   "upsert-workspace-user-group": "workspaceUserGroups",
   "bulk-update-workspace-user-groups": "workspaceUserGroups",
+  "set-workspace-team-leads": "workspaceUserGroups",
   "delete-workspace-user-group": "workspaceUserGroups",
 
   "create-org-service-token": "orgServiceTokens",

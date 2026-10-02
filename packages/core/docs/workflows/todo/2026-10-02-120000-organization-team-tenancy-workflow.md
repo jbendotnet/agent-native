@@ -9,7 +9,7 @@ This files the six-epic roadmap for the [accepted ADR](../../design/organization
 ## Assumptions
 
 - Core owns the tenancy contract. Shared Toolkit controls consume it, so this roadmap lives in Core's docs scope rather than creating separate product roadmaps.
-- Every document describes future work, not delivered behavior. The ADR controls product decisions; requirements IDs below make the work traceable.
+- The ADR controls product decisions; requirements IDs below make the work traceable. Epic 1's completed children record delivered identity behavior. Later epics and full V1 acceptance remain pending.
 - No new dependency, general resource ownership model, team/member table, resource move, successor ownership, automatic share, or continuous stream revocation is needed.
 
 ## Done condition
@@ -22,7 +22,7 @@ Use `verifying-changes` and `adding-tests-and-ci` for Core runtime and PostgreSQ
 
 ## Lifecycle notes
 
-- This file remains in `todo/`. Epic 1 is closed in `completed/` at the user's request; only its storage child is implemented and verified. Its role-policy and lifecycle children remain unfinished in inner `wip/`. Reopening Epic 1 requires confirmation before executing those children. Epics 2–6 and their child plans remain in outer and inner `wip/`, respectively.
+- This file remains in `todo/`. Epic 1 was reopened at the user's request on 2026-10-02 and remains in outer `in-progress/`. Its storage, role-policy, and lifecycle children are implemented and independently verified in inner `completed/`. Retained-binding integration proof remains required in Epic 6 before release. Epics 2–6 and their child plans remain in outer and inner `wip/`, respectively.
 - Before execution, load and follow `workflow`, `execute-plan`, `plans-organisation`, and `subagent-delegation`. Move this workflow to `in-progress/`.
 - The first child execution moves its whole epic to outer `in-progress/` and that child to inner `in-progress/`. Repair relative links after lifecycle moves, including this index. Move verified children to inner `completed/`; do not mark the entire epic completed without explicit user declaration.
 - Each delegation MUST read the current child plan, its parent `epic.md`, `requirements.md`, and the ADR in full. The leader retains sequencing, documentation, state changes, and signoff.
@@ -30,11 +30,11 @@ Use `verifying-changes` and `adding-tests-and-ci` for Core runtime and PostgreSQ
 
 ## Sequential tranches
 
-Execute whole epics in numerical order: identity → authorization → context → selection UX → sharing → compatibility proof. Every child and independent proof gate in an epic must pass before the next epic starts. A later epic consumes a completed contract, not partial work. Keep requirement IDs unchanged: I, A, C, S, H, R. Lifecycle completion still requires the explicit user declaration described above.
+Execute whole epics in numerical order: identity → authorization → context → selection UX → sharing → compatibility proof. Every child and independent proof gate owned by an epic must pass before the next epic starts. Epic 1's retained-binding integration proof belongs to Epic 6, after authorization and context exist; it remains a release gate, not an Epic 2 start prerequisite. A later epic consumes a completed contract, not partial work. Keep requirement IDs unchanged: I, A, C, S, H, R. Lifecycle completion still requires the explicit user declaration described above.
 
 1. <tranche id="team-identity" owner="leader">
 
-   After confirmation to reopen [Epic 1](../../plans/completed/organization-team-tenancy-01-identity/epic.md), MUST load and follow `execute-plan` to execute its unfinished children in order. Preserve the verified storage child. Delegate implementation to `medium`; verify PostgreSQL mutation invariants and conversion/deletion compatibility before proceeding. No UI may expose team creation before those gates pass.
+   [Epic 1](../../plans/in-progress/organization-team-tenancy-01-identity/epic.md) has three completed, independently verified children. Preserve their storage, role-policy, and conversion/deletion contracts. Retained-binding integration proof remains assigned to Epic 6 before release. No UI may expose team creation before the mutation and compatibility gates pass.
 
    </tranche>
 
