@@ -20,7 +20,7 @@ Creation and projections persist the immutable nullable binding. Direct and SQL 
 
 ## Risks / Dependencies / Open Questions
 
-The three children and identity proof gates in [Epic 1](../../completed/organization-team-tenancy-01-identity/epic.md) are implemented and independently verified. All three Epic 2 children pass, allowing [Epic 3](../../wip/organization-team-tenancy-03-context/epic.md) to start. Retained-binding integration proof belongs to Epic 6 before release, after authorization and context exist. Epic 2 proves binding and authorization through internal creation inputs and existing share-row fixtures; it does not implement context loading, selection UI, or future share actions. Until Epic 3 supplies required context, bound prompt execution fails explicitly rather than running without it. Epic 4 exposes user/agent bound creation only after both epics pass.
+The three children and identity proof gates in [Epic 1](../../completed/organization-team-tenancy-01-identity/epic.md) are implemented and independently verified. All three Epic 2 children pass, and [Epic 3](../../completed/organization-team-tenancy-03-context/epic.md) has completed required context loading. Retained-binding integration proof belongs to Epic 6 before release, after authorization and context exist. Epic 2 proves binding and authorization through internal creation inputs and existing share-row fixtures; it does not implement context loading, selection UI, or future share actions. Epic 3 replaces the temporary bound-execution denial with required context loading and explicit failure when that lookup fails. Epic 4 exposes user/agent bound creation only after both epics pass.
 
 ## Child Plans
 
@@ -30,7 +30,7 @@ The three children and identity proof gates in [Epic 1](../../completed/organiza
 
 ## Success Criteria
 
-Loss of org/team membership denies the next thread or linked-run request even for the owner. Explicit viewers cannot continue/manage. All public bound transcripts/runs are denied. Existing open streams may finish; reconnect/replay must be denied. The complete authorization matrix passes without Epic 3 or later work; authorized bound prompt execution remains unavailable until required context loading is implemented.
+Loss of org/team membership denies the next thread or linked-run request even for the owner. Explicit viewers cannot continue/manage. All public bound transcripts/runs are denied. Existing open streams may finish; reconnect/replay must be denied. The complete authorization matrix passes independently of Epic 3 or later work; authorized bound prompt execution uses the required context loading delivered in Epic 3.
 
 ## Completion evidence
 
@@ -42,4 +42,4 @@ Wrap-up review found and fixed unbound group-share exclusion from SQL list/searc
 pnpm --filter @agent-native/core exec vitest run --maxWorkers=1 --no-file-parallelism src/chat-threads/store.spec.ts src/chat-threads/store.access-projection.spec.ts src/application-state/store.spec.ts src/application-state/script-helpers.spec.ts src/agent/run-ownership.spec.ts src/server/agent-chat-stream.spec.ts src/server/agent-chat-plugin.lifecycle.spec.ts src/server/agent-chat-plugin.shared.spec.ts src/server/agent-chat-plugin.thread-history.spec.ts src/server/agent-chat-ai-setup.spec.ts src/server/agent-chat-plugin.run-routes.spec.ts src/server/agent-chat-plugin.worker-access.spec.ts src/server/agent-teams.spec.ts src/server/agent-teams-process-run.spec.ts src/agent/harness/background.access.spec.ts src/server/release-schema-migrations.spec.ts
 ```
 
-Proof uses focused store/service and mounted H3-route tests, not live PostgreSQL or a deployed environment. Epic 3 context, Epic 4 selection/creation exposure, Epic 5 sharing actions/discovery, and Epic 6 release integration remain separate work.
+Proof uses focused store/service and mounted H3-route tests, not live PostgreSQL or a deployed environment. Epic 3 context was delivered separately. Epic 4 selection/creation exposure, Epic 5 sharing actions/discovery, and Epic 6 release integration remain pending.

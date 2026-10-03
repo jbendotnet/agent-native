@@ -27,6 +27,7 @@ import {
   WORKSPACE_OWNER,
   workspaceResourceOwner,
 } from "../../resources/store.js";
+import { authorizedTeamResourceOwner } from "../../resources/team-access.js";
 import type {
   ContextGovernanceTier,
   ContextManifestSourceRef,
@@ -186,7 +187,7 @@ interface JevMemoryIndexEntry {
   description: string;
   updatedAt: number;
   score: number;
-  scope: "personal" | "current-org";
+  scope: "personal" | "current-org" | "bound-team";
 }
 
 export interface PromptResourceManifestSection {
@@ -238,6 +239,9 @@ function resourceManifestClassification(
     return { provenance: "legacy-app-default", governance: "inherited" };
   }
   if (scope.startsWith("organization")) {
+    return { provenance: "organization", governance: "inherited" };
+  }
+  if (scope.startsWith("bound-team")) {
     return { provenance: "organization", governance: "inherited" };
   }
   if (scope.startsWith("shared")) {
@@ -639,6 +643,9 @@ async function loadAgentsResourceForPrompt(
       { cause: error },
     );
   }
+  if (scope === "bound-team" && agents === undefined) {
+    throw new Error("Unable to read bound team AGENTS.md instructions");
+  }
   if (!agents?.content?.trim()) return null;
   return promptResourceBlock({
     name: "AGENTS.md",
@@ -655,27 +662,43 @@ async function loadInstructionResourcesForPrompt(
   maxChars = SHARED_PROMPT_RESOURCE_MAX_CHARS,
   summaryOnly = false,
   orgId?: string | null,
+  required = false,
 ): Promise<string[]> {
   const resources = await resourceList(owner, "instructions/", { orgId });
+  if (required && !resources)
+    throw new Error("Unable to list bound team instructions");
   const sorted = resources
     .filter((resource) => isAutoLoadedInstructionPath(resource.path))
     .sort((a, b) => a.path.localeCompare(b.path));
 
+  if (required) {
+    const full = await Promise.all(
+      sorted.map((resource) => resourceGet(resource.id, { orgId })),
+    );
+    if (full.some((resource) => !resource))
+      throw new Error("Unable to read bound team instructions");
+  }
   if (summaryOnly) {
     if (sorted.length === 0) return [];
-    const resourceScope = scope.startsWith("workspace")
-      ? "workspace"
-      : scope.startsWith("personal")
-        ? "personal"
-        : "shared";
+    const resourceScope = scope.startsWith("bound-team")
+      ? "team"
+      : scope.startsWith("workspace")
+        ? "workspace"
+        : scope.startsWith("personal")
+          ? "personal"
+          : "shared";
+    const teamHint =
+      resourceScope === "team"
+        ? ` and \`teamGroupId: "${owner.slice("__team__:".length)}"\``
+        : "";
     const listed = sorted.slice(0, PROMPT_INSTRUCTION_SUMMARY_LIMIT);
     const lines = listed.map(
       (resource) =>
-        `- \`${resource.path}\` - ${resourceToolHint("read", `\`path: "${resource.path}"\` and \`scope: "${resourceScope}"\` when it applies`)}`,
+        `- \`${resource.path}\` - ${resourceToolHint("read", `\`path: "${resource.path}"\` and \`scope: "${resourceScope}"\`${teamHint} when it applies`)}`,
     );
     if (sorted.length > listed.length) {
       lines.push(
-        `- ...${sorted.length - listed.length} more instruction files. ${resourceToolHint("list", `\`scope: "${resourceScope}"\` and \`prefix: "instructions/"\``)}`,
+        `- ...${sorted.length - listed.length} more instruction files. ${resourceToolHint("list", `\`scope: "${resourceScope}"\`${teamHint} and \`prefix: "instructions/"\``)}`,
       );
     }
     return [
@@ -690,6 +713,11 @@ async function loadInstructionResourcesForPrompt(
   for (let index = 0; index < sorted.length; index++) {
     const resource = sorted[index]!;
     const full = fullResources[index];
+    if (required && !full) {
+      throw new Error(
+        `Unable to read bound team instructions: ${resource.path}`,
+      );
+    }
     if (!full?.content?.trim()) continue;
     const block = promptResourceBlock({
       name: resource.path,
@@ -721,6 +749,7 @@ class RequiredSkillLabsReadError extends Error {
 async function loadResourceSkillPromptEntries(
   owner: string,
   orgId?: string | null,
+  teamOwner?: string,
 ): Promise<{
   entries: ResourceSkillPromptEntry[];
   total: number;
@@ -728,42 +757,70 @@ async function loadResourceSkillPromptEntries(
 }> {
   try {
     const organizationOwner = sharedResourceOwner(orgId);
-    const resources =
+    const accessible =
       owner === SHARED_OWNER
         ? [
             ...(await resourceList(SHARED_OWNER, "skills/")),
             ...(await resourceList(WORKSPACE_OWNER, "skills/", { orgId })),
           ]
         : await resourceListAccessible(owner, "skills/", { orgId });
+    const resources = teamOwner
+      ? [
+          ...accessible.filter(
+            (resource) =>
+              resource.owner === owner ||
+              resource.owner === organizationOwner ||
+              resource.owner === SHARED_OWNER ||
+              isWorkspaceResourceOwner(resource.owner),
+          ),
+          ...(await resourceList(teamOwner, "skills/", { orgId })),
+        ]
+      : accessible;
     const sorted = resources.sort((a, b) => {
       const ownerOrder =
         (a.owner === owner
           ? 0
-          : a.owner === organizationOwner
+          : a.owner === teamOwner
             ? 1
-            : a.owner === SHARED_OWNER
+            : a.owner === organizationOwner
               ? 2
-              : isWorkspaceResourceOwner(a.owner)
+              : a.owner === SHARED_OWNER
                 ? 3
-                : 4) -
+                : isWorkspaceResourceOwner(a.owner)
+                  ? 4
+                  : 5) -
         (b.owner === owner
           ? 0
-          : b.owner === organizationOwner
+          : b.owner === teamOwner
             ? 1
-            : b.owner === SHARED_OWNER
+            : b.owner === organizationOwner
               ? 2
-              : isWorkspaceResourceOwner(b.owner)
+              : b.owner === SHARED_OWNER
                 ? 3
-                : 4);
+                : isWorkspaceResourceOwner(b.owner)
+                  ? 4
+                  : 5);
       if (ownerOrder !== 0) return ownerOrder;
       return a.path.localeCompare(b.path);
     });
+    if (
+      teamOwner &&
+      sorted
+        .slice(PROMPT_SKILL_METADATA_READ_LIMIT)
+        .some((resource) => resource.owner === teamOwner)
+    ) {
+      throw new Error(
+        "Bound team skill catalog exceeds the metadata read limit",
+      );
+    }
     const skillCandidates = sorted.slice(0, PROMPT_SKILL_METADATA_READ_LIMIT);
     const loaded = await Promise.all(
       skillCandidates.map(async (resource) => ({
         resource,
-        // coercion-ok: an unreadable optional skill is absent from Jev's catalog, not a required prompt failure.
-        full: await resourceGet(resource.id, { orgId }).catch(() => null),
+        full:
+          resource.owner === teamOwner
+            ? await resourceGet(resource.id, { orgId })
+            : await resourceGet(resource.id, { orgId }).catch(() => null), // coercion-ok: non-team skills retain optional reads; bound-team reads fail closed.
       })),
     );
     const parsed = loaded.map(({ resource, full }) => ({
@@ -771,6 +828,12 @@ async function loadResourceSkillPromptEntries(
       full,
       meta: full?.content ? parseSkillFrontmatter(full.content) : null,
     }));
+    if (
+      teamOwner &&
+      parsed.some(({ resource, full }) => resource.owner === teamOwner && !full)
+    ) {
+      throw new Error("Unable to read bound team skill body");
+    }
     const requiredLabs = parsed.flatMap(({ meta }) =>
       meta?.requiresLab ? [meta.requiresLab] : [],
     );
@@ -798,7 +861,10 @@ async function loadResourceSkillPromptEntries(
       const name = meta.name || getSkillNameFromPath(resource.path);
       if (!name || seen.has(name)) continue;
       seen.add(name);
-      const scope = resourceScopeForOwner(resource.owner, owner);
+      const scope =
+        resource.owner === teamOwner
+          ? "team"
+          : resourceScopeForOwner(resource.owner, owner);
       const description = compactPromptLine(
         meta.description || "(no description)",
         PROMPT_SUMMARY_DESCRIPTION_MAX_CHARS,
@@ -807,7 +873,7 @@ async function loadResourceSkillPromptEntries(
     }
     return { entries, total: sorted.length, metadataRead: loaded.length };
   } catch (error) {
-    if (error instanceof RequiredSkillLabsReadError) throw error;
+    if (teamOwner || error instanceof RequiredSkillLabsReadError) throw error;
     return { entries: [], total: 0, metadataRead: 0 };
   }
 }
@@ -815,18 +881,19 @@ async function loadResourceSkillPromptEntries(
 async function loadResourceSkillsPromptBlock(
   owner: string,
   orgId?: string | null,
+  teamOwner?: string,
+  preloaded?: Awaited<ReturnType<typeof loadResourceSkillPromptEntries>> | null,
 ): Promise<string | null> {
-  const { entries, total, metadataRead } = await loadResourceSkillPromptEntries(
-    owner,
-    orgId,
-  );
+  const { entries, total, metadataRead } =
+    preloaded ??
+    (await loadResourceSkillPromptEntries(owner, orgId, teamOwner));
   const lines = entries
     .slice(0, PROMPT_SKILL_SUMMARY_LIMIT)
     .map(
       ({ resource, name, description, scope }) =>
         `- \`${name}\` at resource \`${resource.path}\` (${scope}) - ${ensureSentence(description)} ${resourceToolHint(
           "read",
-          `\`path: "${resource.path}"\` and \`scope: "${scope}"\` before starting a task it applies to`,
+          `\`path: "${resource.path}"\` and \`scope: "${scope}"\`${scope === "team" ? ` and \`teamGroupId: "${teamOwner?.slice("__team__:".length)}"\`` : ""} before starting a task it applies to`,
         )}`,
     );
   if (lines.length === 0) return null;
@@ -834,6 +901,11 @@ async function loadResourceSkillsPromptBlock(
     lines.push(
       `- ...more skills omitted from the startup summary. ${resourceToolHint("list", '`prefix: "skills/"` to inspect the full catalog')}`,
     );
+    if (teamOwner) {
+      lines.push(
+        `- To discover omitted bound-team skills, ${resourceToolHint("list", `\`scope: "team"\`, \`teamGroupId: "${teamOwner.slice("__team__:".length)}"\`, and \`prefix: "skills/"\``)} Check exact names against personal skills with \`scope: "personal"\` and \`prefix: "skills/"\` before reading a team skill: personal winners override team skills. Team lists include losing collisions.`,
+      );
+    }
   }
   return `<resource-skills>\nThe following workspace skills are available in addition to codebase skills. They may come from SQL resources, Dispatch workspace resources, or local file mode. Read a matching skill before starting a task it applies to.\n\n${lines.join("\n")}\n</resource-skills>`;
 }
@@ -997,6 +1069,7 @@ function memoryRelevanceScore(request: string, text: string): number {
 async function collectJevMemoryPromptCandidates(input: {
   owner?: string;
   orgId?: string | null;
+  teamOwner?: string;
   request: string;
   signal: AbortSignal;
 }): Promise<{ candidates: JevPromptCandidate[]; fallbackIds: string[] }> {
@@ -1020,6 +1093,15 @@ async function collectJevMemoryPromptCandidates(input: {
             },
           ]
         : []),
+      ...(input.teamOwner
+        ? [
+            {
+              scope: "bound-team" as const,
+              owner: input.teamOwner,
+              path: "memory/MEMORY.md",
+            },
+          ]
+        : []),
     ];
     const indexes = await Promise.all(
       indexPaths.map(({ owner, path }) =>
@@ -1027,6 +1109,9 @@ async function collectJevMemoryPromptCandidates(input: {
       ),
     );
     input.signal.throwIfAborted();
+    if (input.teamOwner && indexes.at(-1) === undefined) {
+      throw new Error("Unable to read bound team memory index");
+    }
     const memories = indexes
       .flatMap((index, indexNumber) => {
         if (!index?.content) return [];
@@ -1054,10 +1139,13 @@ async function collectJevMemoryPromptCandidates(input: {
       .slice(0, JEV_MEMORY_CANDIDATE_LIMIT);
     const candidates = memories.map((memory, index): JevPromptCandidate => {
       const isOrgMemory = memory.scope === "current-org";
-      const scope = isOrgMemory ? "current-org" : "personal";
-      const label = isOrgMemory
-        ? "Current organization memory"
-        : "Personal memory";
+      const scope = memory.scope;
+      const label =
+        scope === "bound-team"
+          ? "Bound team memory"
+          : isOrgMemory
+            ? "Current organization memory"
+            : "Personal memory";
       return {
         id: `${scope}-memory-${index}`,
         kind: "memory",
@@ -1077,6 +1165,7 @@ async function collectJevMemoryPromptCandidates(input: {
       fallbackIds: fallbackIndex >= 0 ? [candidates[fallbackIndex]!.id] : [],
     };
   } catch (error) {
+    if (input.teamOwner) throw error;
     console.warn(
       "[agent] Jev memory context unavailable; continuing with the normal memory index.",
       error instanceof Error ? error.message : "unknown error",
@@ -1124,6 +1213,7 @@ async function loadSelectedMemoryBodies(input: {
   selectedIds: readonly string[];
   owner?: string;
   orgId?: string | null;
+  teamOwner?: string;
   deadlineAt: number;
 }): Promise<JevPromptCandidate[]> {
   if (!input.owner || input.owner === SHARED_OWNER) return input.candidates;
@@ -1144,11 +1234,18 @@ async function loadSelectedMemoryBodies(input: {
         const owner =
           candidate.scope === "current-org"
             ? sharedResourceOwner(input.orgId)
-            : input.owner;
+            : candidate.scope === "bound-team"
+              ? input.teamOwner
+              : input.owner;
         const resource = await resourceGetByPath(owner!, candidate.path!, {
           orgId: input.orgId,
         });
         signal.throwIfAborted();
+        if (candidate.scope === "bound-team" && !resource) {
+          throw new Error(
+            `Unable to read bound team memory body: ${candidate.path}`,
+          );
+        }
         entries.push(
           resource?.content.trim()
             ? { id: candidate.id, content: resource.content }
@@ -1158,13 +1255,20 @@ async function loadSelectedMemoryBodies(input: {
       return entries;
     }, input.deadlineAt);
   } catch (error) {
+    if (input.teamOwner) throw error;
     console.warn(
       "[agent] Selected memory bodies unavailable; continuing without them.",
       error instanceof Error ? error.message : "unknown error",
     );
     return input.candidates;
   }
-  if (loaded.status === "expired") return input.candidates;
+  if (loaded.status === "expired") {
+    if (input.teamOwner)
+      throw new Error(
+        "Bound team memory body lookup exceeded the prompt budget",
+      );
+    return input.candidates;
+  }
   const contentById = new Map(
     loaded.value.flatMap((entry) => (entry ? [[entry.id, entry.content]] : [])),
   );
@@ -1232,6 +1336,7 @@ export async function preloadJevContextForPrompt(options: {
   appId?: string;
   owner?: string;
   orgId?: string | null;
+  teamGroupId?: string | null;
   apiKey?: string;
   personalApiKey?: string;
   builderAuth?: BuilderGatewayAuth | null;
@@ -1249,6 +1354,14 @@ export async function preloadJevContextForPrompt(options: {
   if (!request || options.maxChars === 0 || options.dispatchToBackground) {
     return "";
   }
+  const boundTeamId = options.teamGroupId;
+  const teamOwner = boundTeamId
+    ? await authorizedTeamResourceOwner(
+        boundTeamId,
+        options.orgId,
+        options.owner,
+      )
+    : undefined;
 
   const deadlineAt =
     options.contextPrefetchDeadlineAt ?? Date.now() + JEV_PRELOAD_BUDGET_MS;
@@ -1273,6 +1386,7 @@ export async function preloadJevContextForPrompt(options: {
           collectJevMemoryPromptCandidates({
             owner: options.owner,
             orgId: options.orgId,
+            teamOwner,
             request,
             signal,
           }),
@@ -1283,11 +1397,16 @@ export async function preloadJevContextForPrompt(options: {
       runtimeCandidates = collection.value[0];
       memoryContext = collection.value[1];
     } else {
+      if (teamOwner)
+        throw new Error(
+          "Bound team memory index lookup exceeded the prompt budget",
+        );
       console.warn(
         "[agent] Prompt context candidates exceeded the preload budget; keeping Analytics retrieval fallback.",
       );
     }
   } catch (error) {
+    if (teamOwner) throw error;
     console.warn(
       "[agent] Prompt context candidates unavailable; keeping Analytics retrieval fallback.",
       error instanceof Error ? error.message : "unknown error",
@@ -1448,6 +1567,7 @@ export async function preloadJevContextForPrompt(options: {
     selectedIds,
     owner: options.owner,
     orgId: options.orgId,
+    teamOwner,
     deadlineAt,
   });
   const bodyById = new Map(
@@ -1551,8 +1671,15 @@ export async function loadResourcesForPrompt(
   compact = false,
   selfAppId?: string,
   orgId: string | null = getRequestOrgId() ?? null,
-  opts?: { disabledFrameworkGroups?: ReadonlySet<FrameworkToolGroup> },
+  opts?: {
+    disabledFrameworkGroups?: ReadonlySet<FrameworkToolGroup>;
+    teamGroupId?: string | null;
+  },
 ): Promise<string> {
+  const boundTeamId = opts?.teamGroupId;
+  const teamOwner = boundTeamId
+    ? await authorizedTeamResourceOwner(boundTeamId, orgId, owner)
+    : undefined;
   await ensurePersonalDefaults(owner);
 
   const sections: PromptSection[] = [];
@@ -1606,12 +1733,20 @@ export async function loadResourcesForPrompt(
     addSection(block);
   }
 
-  const runtimeSkills = await getRuntimeSkillsForUser(
-    bundle,
-    owner === SHARED_OWNER
-      ? (getRequestUserEmail() ?? getRequestRunContext()?.owner)
-      : owner,
+  const resourceSkills = teamOwner
+    ? await loadResourceSkillPromptEntries(owner, orgId, teamOwner)
+    : null;
+  const resourceSkillNames = new Set(
+    resourceSkills?.entries.map((entry) => entry.name),
   );
+  const runtimeSkills = (
+    await getRuntimeSkillsForUser(
+      bundle,
+      owner === SHARED_OWNER
+        ? (getRequestUserEmail() ?? getRequestRunContext()?.owner)
+        : owner,
+    )
+  ).filter((skill) => !resourceSkillNames.has(skill.meta.name));
   if (!compact) {
     const skillsBlock = generateSkillsPromptBlock(bundle, runtimeSkills);
     addSection(skillsBlock);
@@ -1691,6 +1826,29 @@ export async function loadResourcesForPrompt(
     );
   }
 
+  if (teamOwner) {
+    addSection(
+      await loadAgentsResourceForPrompt(
+        teamOwner,
+        "bound-team",
+        promptResourceMaxChars,
+        orgId,
+      ),
+      "required",
+    );
+    addSections(
+      await loadInstructionResourcesForPrompt(
+        teamOwner,
+        "bound-team-instruction",
+        promptResourceMaxChars,
+        compact,
+        orgId,
+        true,
+      ),
+      "required",
+    );
+  }
+
   if (owner !== SHARED_OWNER && !isWorkspaceResourceOwner(owner)) {
     const personalAgents = await loadAgentsResourceForPrompt(
       owner,
@@ -1739,7 +1897,12 @@ export async function loadResourcesForPrompt(
     }
   }
 
-  const resourceSkillsBlock = await loadResourceSkillsPromptBlock(owner, orgId);
+  const resourceSkillsBlock = await loadResourceSkillsPromptBlock(
+    owner,
+    orgId,
+    teamOwner,
+    resourceSkills,
+  );
   addSection(resourceSkillsBlock);
 
   let sharedLearnings: Awaited<ReturnType<typeof resourceGetByPath>> = null;
@@ -1752,6 +1915,47 @@ export async function loadResourcesForPrompt(
         : null) ??
       (await resourceGetByPath(SHARED_OWNER, "LEARNINGS.md", { orgId }));
   } catch {}
+
+  if (organizationOwner !== SHARED_OWNER) {
+    const organizationMemory = await resourceGetByPath(
+      organizationOwner,
+      "memory/MEMORY.md",
+      { orgId },
+    ).catch((error: unknown) => {
+      if (teamOwner) throw error;
+      return null;
+    });
+    if (organizationMemory?.content.trim()) {
+      addSection(
+        promptResourceBlock({
+          name: "memory/MEMORY.md",
+          scope: "organization",
+          path: "memory/MEMORY.md",
+          content: organizationMemory.content,
+          maxChars: promptResourceMaxChars,
+        }),
+      );
+    }
+  }
+  if (teamOwner) {
+    const teamMemory = await resourceGetByPath(teamOwner, "memory/MEMORY.md", {
+      orgId,
+    });
+    if (teamMemory === undefined)
+      throw new Error("Unable to read bound team memory index");
+    if (teamMemory?.content.trim()) {
+      addSection(
+        promptResourceBlock({
+          name: "memory/MEMORY.md",
+          scope: "bound-team",
+          path: "memory/MEMORY.md",
+          content: teamMemory.content,
+          maxChars: promptResourceMaxChars,
+        }),
+        "required",
+      );
+    }
+  }
 
   if (compact) {
     if (sharedLearnings?.content?.trim()) {

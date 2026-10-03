@@ -1165,17 +1165,6 @@ export function resolveAgentCheckpointPaths(
   return resolved;
 }
 
-export function assertBoundThreadPromptContext(
-  teamGroupId: string | null,
-): void {
-  if (teamGroupId) {
-    throw createError({
-      statusCode: 403,
-      statusMessage: "Team-bound chat execution requires team context support",
-    });
-  }
-}
-
 export function createAgentChatPlugin(
   options?: AgentChatPluginOptions,
 ): NitroPluginDef {
@@ -3834,8 +3823,11 @@ export function createAgentChatPlugin(
               statusMessage: "Thread not found",
             });
           }
-          if (!details.failure)
-            assertBoundThreadPromptContext(access.teamGroupId);
+          const runCtx = ensureRequestRunContext();
+          if (runCtx) {
+            runCtx.threadId = threadId;
+            runCtx.boundTeamGroupId = access.teamGroupId;
+          }
           if (options?.appId) {
             await setThreadSourceIfMissing(threadId, ownerEmail, {
               appId: options.appId,
@@ -4268,6 +4260,39 @@ export function createAgentChatPlugin(
         return { owner, extra };
       };
 
+      const boundTeamForPrompt = async (
+        owner: string,
+      ): Promise<string | null> => {
+        const runCtx = getRequestRunContext();
+        if (runCtx?.boundTeamGroupId !== undefined)
+          return runCtx.boundTeamGroupId;
+        if (!runCtx?.threadId) return null;
+        const access = await resolveThreadAccess(
+          owner,
+          runCtx.threadId,
+          "editor",
+          {
+            orgId: getRequestOrgId(),
+          },
+        );
+        if (!access)
+          throw createError({
+            statusCode: 404,
+            statusMessage: "Thread not found",
+          });
+        runCtx.boundTeamGroupId = access.teamGroupId;
+        return access.teamGroupId;
+      };
+
+      const loadBoundResourcesForPrompt = async (
+        owner: string,
+        compact: boolean,
+      ) =>
+        loadResourcesForPrompt(owner, compact, options?.appId, undefined, {
+          disabledFrameworkGroups,
+          teamGroupId: await boundTeamForPrompt(owner),
+        });
+
       const setSystemPromptOnContext = (prompt: string): string => {
         const runCtx = ensureRequestRunContext();
         if (runCtx) runCtx.systemPrompt = prompt;
@@ -4484,13 +4509,7 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
               codeEditingSurfaceRestriction,
               `${requestProdCodeExecPromptNote}${hostedHarnessPromptNote ? `\n\n${hostedHarnessPromptNote}` : ""}`,
             );
-            const resources = await loadResourcesForPrompt(
-              owner,
-              true,
-              options?.appId,
-              undefined,
-              { disabledFrameworkGroups },
-            );
+            const resources = await loadBoundResourcesForPrompt(owner, true);
             await emitContextXraySystemSections(event, {
               frameworkPrompt: requestLeanPrompt.slice(
                 0,
@@ -4518,12 +4537,9 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
               }),
             );
           }
-          const resources = await loadResourcesForPrompt(
+          const resources = await loadBoundResourcesForPrompt(
             owner,
             lazyContext,
-            options?.appId,
-            undefined,
-            { disabledFrameworkGroups },
           );
           // In lazy context mode, skip embedding the full schema. When database
           // tools are enabled the agent can call `db-schema` on demand.
@@ -4567,6 +4583,7 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
         model: resolveConfiguredAgentModel(options),
         appId: options?.appId,
         hostedHarnessConfig,
+        engine: options?.engine,
         apiKey: options?.apiKey,
         ...resolveInteractiveAgentRunOptions(options),
         finalResponseGuard: options?.finalResponseGuard,
@@ -4586,7 +4603,11 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
                   statusMessage: "Thread not found",
                 });
               }
-              assertBoundThreadPromptContext(access.teamGroupId);
+              const runCtx = ensureRequestRunContext();
+              if (runCtx) {
+                runCtx.threadId = details.threadId;
+                runCtx.boundTeamGroupId = access.teamGroupId;
+              }
               if (
                 threadScopeMismatch(
                   existingThread.scope,
@@ -4898,13 +4919,7 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
             // cached prompt prefix as possible. See the prod handler above
             // for the same pattern.
             if (leanPrompt) {
-              const resources = await loadResourcesForPrompt(
-                owner,
-                true,
-                options?.appId,
-                undefined,
-                { disabledFrameworkGroups },
-              );
+              const resources = await loadBoundResourcesForPrompt(owner, true);
               await emitContextXraySystemSections(event, {
                 frameworkPrompt: requestLeanPrompt.slice(
                   0,
@@ -4929,12 +4944,9 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
                 }),
               );
             }
-            const resources = await loadResourcesForPrompt(
+            const resources = await loadBoundResourcesForPrompt(
               owner,
               lazyContext,
-              options?.appId,
-              undefined,
-              { disabledFrameworkGroups },
             );
             const schemaBlock =
               lazyContext || !databaseToolsEnabled
@@ -4966,6 +4978,7 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
           },
           model: resolveConfiguredAgentModel(options),
           appId: options?.appId,
+          engine: options?.engine,
           apiKey: options?.apiKey,
           ...resolveInteractiveAgentRunOptions(options),
           jevContextCompact: leanPrompt || lazyContext,
@@ -4986,7 +4999,11 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
                     statusMessage: "Thread not found",
                   });
                 }
-                assertBoundThreadPromptContext(access.teamGroupId);
+                const runCtx = ensureRequestRunContext();
+                if (runCtx) {
+                  runCtx.threadId = details.threadId;
+                  runCtx.boundTeamGroupId = access.teamGroupId;
+                }
                 if (
                   threadScopeMismatch(
                     existingThread.scope,

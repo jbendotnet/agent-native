@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { BuiltinCapability } from "./use-builtin-capabilities.js";
 import {
   resourceDownloadUrl,
+  resourceListUrl,
+  resourceTreeUrl,
+  resourceUrl,
   withAgentScratchFolder,
   withMcpServersFolder,
   type TreeNode,
@@ -39,6 +42,28 @@ describe("resourceDownloadUrl", () => {
   it("constructs an attachment URL without exposing the resource id as query syntax", () => {
     expect(resourceDownloadUrl("resource/with?query")).toBe(
       "/_agent-native/resources/resource%2Fwith%3Fquery?download=1",
+    );
+    expect(resourceDownloadUrl("team/id?", "team-a")).toBe(
+      "/_agent-native/resources/team%2Fid%3F?download=1&teamGroupId=team-a",
+    );
+  });
+});
+
+describe("team resource client transport", () => {
+  it("encodes team targets, path prefixes, and resource IDs", () => {
+    expect(resourceListUrl("team", "team-a", "skills/")).toBe(
+      "/_agent-native/resources?scope=team&teamGroupId=team-a&prefix=skills%2F",
+    );
+    expect(
+      resourceTreeUrl("team", {
+        teamGroupId: "team-a",
+        includeAgentScratch: true,
+      }),
+    ).toBe(
+      "/_agent-native/resources/tree?scope=team&teamGroupId=team-a&includeAgentScratch=true",
+    );
+    expect(resourceUrl("id/with?query", "team-a")).toBe(
+      "/_agent-native/resources/id%2Fwith%3Fquery?teamGroupId=team-a",
     );
   });
 });

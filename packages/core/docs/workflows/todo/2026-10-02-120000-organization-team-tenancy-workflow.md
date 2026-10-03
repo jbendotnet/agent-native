@@ -9,7 +9,7 @@ This files the six-epic roadmap for the [accepted ADR](../../design/organization
 ## Assumptions
 
 - Core owns the tenancy contract. Shared Toolkit controls consume it, so this roadmap lives in Core's docs scope rather than creating separate product roadmaps.
-- The ADR controls product decisions; requirements IDs below make the work traceable. Epic 1's completed children record delivered identity behavior. Epic 2 records verified authorization behavior. Epics 3–6 and full V1 acceptance remain pending.
+- The ADR controls product decisions; requirements IDs below make the work traceable. Epic 1's completed children record delivered identity behavior. Epic 2 records verified authorization behavior. Epic 3 is complete with verified resource operations and bound prompt context; Epics 4–6 and full V1 acceptance remain pending.
 - No new dependency, general resource ownership model, team/member table, resource move, successor ownership, automatic share, or continuous stream revocation is needed.
 
 ## Done condition
@@ -22,7 +22,7 @@ Use `verifying-changes` and `adding-tests-and-ci` for Core runtime and PostgreSQ
 
 ## Lifecycle notes
 
-- This file remains in `todo/`. Epic 1's status records reopening at the user's request on 2026-10-02, although its directory is currently filed in outer `completed/`. Its storage, role-policy, and lifecycle children are implemented and independently verified in inner `completed/`. Epic 2 was completed at the user's request on 2026-10-03 and is filed in outer `completed/`, preserving its three completed children. Retained-binding integration proof remains required in Epic 6 before release. Epics 3–6 remain pending.
+- This file remains in `todo/` because execution was requested for individual child plans, not this whole workflow. Epic 1's status records reopening at the user's request on 2026-10-02, although its directory is currently filed in outer `completed/`. Its storage, role-policy, and lifecycle children are implemented and independently verified in inner `completed/`. Epic 2 was completed at the user's request on 2026-10-03 and is filed in outer `completed/`, preserving its three completed children. Epic 3 was completed at the user's request on 2026-10-03 and is filed in outer `completed/`, preserving both independently verified children; its proof gates satisfy the context prerequisite for Epic 4. Epics 4–6 remain pending. Retained-binding integration proof remains required in Epic 6 before release.
 - Before execution, load and follow `workflow`, `execute-plan`, `plans-organisation`, and `subagent-delegation`. Move this workflow to `in-progress/`.
 - The first child execution moves its whole epic to outer `in-progress/` and that child to inner `in-progress/`. Repair relative links after lifecycle moves, including this index. Move verified children to inner `completed/`; do not mark the entire epic completed without explicit user declaration.
 - Each delegation MUST read the current child plan, its parent `epic.md`, `requirements.md`, and the ADR in full. The leader retains sequencing, documentation, state changes, and signoff.
@@ -40,13 +40,15 @@ Execute whole epics in numerical order: identity → authorization → context �
 
 2. <tranche id="conversation-security" owner="leader">
 
-   [Epic 2](../../plans/completed/organization-team-tenancy-02-authorization/epic.md) is complete: immutable creation binding and direct/list policy, public token exclusion, and linked-run/background access. Its 16-file, 209-test authorization matrix covers internal creation inputs, linked-run fixtures, seeded existing group-share rows, and denial after current membership changes. Bound prompt execution remains explicitly rejected until Epic 3 supplies required context; user/agent bound creation is exposed only in Epic 4. Later context, UI, and share actions are not prerequisites for Epic 2 completion.
+   [Epic 2](../../plans/completed/organization-team-tenancy-02-authorization/epic.md) is complete: immutable creation binding and direct/list policy, public token exclusion, and linked-run/background access. Its 16-file, 209-test authorization matrix covers internal creation inputs, linked-run fixtures, seeded existing group-share rows, and denial after current membership changes. Epic 3 has replaced the temporary bound-execution rejection with required context loading; user/agent bound creation is exposed only in Epic 4. Later context, UI, and share actions are not prerequisites for Epic 2 completion.
 
    </tranche>
 
 3. <tranche id="team-context" owner="leader">
 
-   MUST load and follow `execute-plan` for [Epic 3](../../plans/wip/organization-team-tenancy-03-context/epic.md) only after all Epic 2 children and proof gates pass: member-authorized resource operations, then prompt precedence and labeled memory. Binding and current-access checks come from completed Epic 2, never from the active preference on a later turn. Replace the pre-context execution denial only when required context loads correctly in normal/background paths. A required team lookup failure must stop the turn. Prove context without waiting for selection UI or share actions, and rerun authorization checks before proceeding.
+   [Epic 3](../../plans/completed/organization-team-tenancy-03-context/epic.md) is complete: member-authorized resource operations, prompt precedence, and labeled memory. Binding and current-access checks come from completed Epic 2, never from the active preference on a later turn. Required context loads in normal/background paths, replacing the pre-context execution denial. A required team lookup failure stops the turn. Context proof does not depend on selection UI or share actions; the authorization matrix was rerun before completion.
+
+   [C-01 resource operations](../../plans/completed/organization-team-tenancy-03-context/completed/01-team-resource-access.md) completed with independent 7-file/515-test proof, Core typecheck, and scoped formatting on 2026-10-03. Proof covers mounted HTTP and callable agent operations with the real membership assertion and mocked storage. [C-02–C-04 bound prompt context](../../plans/completed/organization-team-tenancy-03-context/completed/02-bound-prompt-context.md) completed with independent 25-file/792-test context and authorization proof, plus assembled normal/background prompt and failed-turn review. Both context children pass; the epic was explicitly completed on 2026-10-03. Live PostgreSQL, deployment, and retained-binding release integration remain unproved.
 
    </tranche>
 

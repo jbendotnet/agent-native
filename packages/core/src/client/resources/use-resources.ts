@@ -82,7 +82,12 @@ export interface TreeNode {
   };
 }
 
-export type ResourceScope = "personal" | "shared" | "workspace" | "all";
+export type ResourceScope =
+  | "personal"
+  | "shared"
+  | "team"
+  | "workspace"
+  | "all";
 export type EffectiveResourceScope = "workspace" | "shared" | "personal";
 
 export interface EffectiveResourceLayer {
@@ -247,24 +252,57 @@ async function fetchJson<T>(url: string): Promise<T> {
   return res.json();
 }
 
-export function resourceDownloadUrl(id: string): string {
+export function resourceListUrl(
+  scope: ResourceScope,
+  teamGroupId?: string,
+  prefix?: string,
+): string {
+  const query = new URLSearchParams({ scope });
+  if (teamGroupId) query.set("teamGroupId", teamGroupId);
+  if (prefix) query.set("prefix", prefix);
+  return agentNativePath(`/_agent-native/resources?${query}`);
+}
+
+export function resourceTreeUrl(
+  scope: ResourceScope,
+  opts?: { teamGroupId?: string; includeAgentScratch?: boolean },
+): string {
+  const query = new URLSearchParams({ scope });
+  if (opts?.teamGroupId) query.set("teamGroupId", opts.teamGroupId);
+  if (opts?.includeAgentScratch) query.set("includeAgentScratch", "true");
+  return agentNativePath(`/_agent-native/resources/tree?${query}`);
+}
+
+export function resourceUrl(id: string, teamGroupId?: string): string {
+  const query = teamGroupId ? `?${new URLSearchParams({ teamGroupId })}` : "";
   return agentNativePath(
-    `/_agent-native/resources/${encodeURIComponent(id)}?download=1`,
+    `/_agent-native/resources/${encodeURIComponent(id)}${query}`,
+  );
+}
+
+export function resourceDownloadUrl(id: string, teamGroupId?: string): string {
+  const query = new URLSearchParams({ download: "1" });
+  if (teamGroupId) query.set("teamGroupId", teamGroupId);
+  return agentNativePath(
+    `/_agent-native/resources/${encodeURIComponent(id)}?${query}`,
   );
 }
 
 // Agent resource tools (save-memory, resources write) reach the client only as
 // `action` change events; folding that counter into the key is what makes an
 // agent's write show up without a reload.
-export function useResources(scope: ResourceScope = "personal") {
-  const query = new URLSearchParams({ scope });
+export function useResources(
+  scope: ResourceScope = "personal",
+  teamGroupId?: string,
+  prefix?: string,
+) {
   const agentWrites = useChangeVersion("action");
   return useQuery<ResourceMeta[]>({
-    queryKey: ["resources", "list", scope, agentWrites],
-    placeholderData: keepPreviousData,
+    queryKey: ["resources", "list", scope, teamGroupId, prefix, agentWrites],
+    placeholderData: scope === "team" ? undefined : keepPreviousData,
     queryFn: async () => {
       const data = await fetchJson<{ resources: ResourceMeta[] }>(
-        agentNativePath(`/_agent-native/resources?${query.toString()}`),
+        resourceListUrl(scope, teamGroupId, prefix),
       );
       return data.resources ?? [];
     },
@@ -273,7 +311,7 @@ export function useResources(scope: ResourceScope = "personal") {
 
 export function useResourceTree(
   scope: ResourceScope = "personal",
-  opts?: { includeAgentScratch?: boolean },
+  opts?: { includeAgentScratch?: boolean; teamGroupId?: string },
 ) {
   const agentWrites = useChangeVersion("action");
   return useQuery<TreeNode[]>({
@@ -281,25 +319,24 @@ export function useResourceTree(
       "resources",
       "tree",
       scope,
+      opts?.teamGroupId,
       opts?.includeAgentScratch ?? false,
       agentWrites,
     ],
-    placeholderData: keepPreviousData,
+    placeholderData: scope === "team" ? undefined : keepPreviousData,
     queryFn: async () => {
-      const query = new URLSearchParams({ scope });
-      if (opts?.includeAgentScratch) query.set("includeAgentScratch", "true");
       const data = await fetchJson<{ tree: TreeNode[] }>(
-        agentNativePath(`/_agent-native/resources/tree?${query.toString()}`),
+        resourceTreeUrl(scope, opts),
       );
       return data.tree ?? [];
     },
   });
 }
 
-export function useResource(id: string | null) {
+export function useResource(id: string | null, teamGroupId?: string) {
   return useQuery<Resource>({
-    queryKey: ["resource", id],
-    queryFn: () => fetchJson(agentNativePath(`/_agent-native/resources/${id}`)),
+    queryKey: ["resource", id, teamGroupId],
+    queryFn: () => fetchJson(resourceUrl(id ?? "", teamGroupId)),
     enabled: !!id,
   });
 }
@@ -325,6 +362,7 @@ export function useCreateResource() {
       content?: string;
       mimeType?: string;
       shared?: boolean;
+      teamGroupId?: string;
     }) => {
       const res = await fetch(agentNativePath("/_agent-native/resources"), {
         method: "POST",
@@ -348,18 +386,16 @@ export function useUpdateResource() {
       ...body
     }: {
       id: string;
+      teamGroupId?: string;
       content?: string;
       path?: string;
       mimeType?: string;
     }) => {
-      const res = await fetch(
-        agentNativePath(`/_agent-native/resources/${id}`),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
+      const res = await fetch(resourceUrl(id), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
       if (!res.ok) throw new Error(`Update failed: ${res.statusText}`);
       return res.json() as Promise<Resource>;
     },
@@ -375,9 +411,15 @@ export function useUpdateResource() {
 export function useDeleteResource() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
+    mutationFn: async (
+      target: string | { id: string; teamGroupId: string },
+    ) => {
+      const id = typeof target === "string" ? target : target.id;
       const res = await fetch(
-        agentNativePath(`/_agent-native/resources/${id}`),
+        resourceUrl(
+          id,
+          typeof target === "string" ? undefined : target.teamGroupId,
+        ),
         {
           method: "DELETE",
           headers: { "Content-Type": "application/json" },
@@ -400,6 +442,8 @@ export type ResourcePackExportScope =
 export function resourcePackScopeFromPanel(
   scope: ResourceScope,
 ): ResourcePackExportScope {
+  if (scope === "team")
+    throw new Error("Team resource packs are not supported");
   if (scope === "shared") return "organization";
   if (scope === "all") return "accessible";
   return scope;

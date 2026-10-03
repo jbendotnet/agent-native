@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   getRuntimeSkillsForUser: vi.fn(),
   getEnabledSkillLabsForUser: vi.fn(),
   getSession: vi.fn(),
+  authorizedTeamResourceOwner: vi.fn(),
 }));
 
 const routeHarness = vi.hoisted(() => ({
@@ -56,6 +57,11 @@ vi.mock("../resources/store.js", () => ({
     mocks.resourceListAccessible(...args),
   resourceGet: (...args: any[]) => mocks.resourceGet(...args),
   resourcePut: (...args: any[]) => mocks.resourcePut(...args),
+}));
+
+vi.mock("../resources/team-access.js", () => ({
+  authorizedTeamResourceOwner: (...args: unknown[]) =>
+    mocks.authorizedTeamResourceOwner(...args),
 }));
 
 vi.mock("./agent-discovery.js", () => ({
@@ -223,6 +229,18 @@ beforeEach(() => {
   vi.clearAllMocks();
   routeHarness.initPromises.length = 0;
   mocks.getSession.mockResolvedValue(null);
+  mocks.authorizedTeamResourceOwner.mockImplementation(
+    async (id: string, orgId: string | null, email: string) => {
+      if (
+        orgId !== "org-a" ||
+        email !== "user@example.test" ||
+        !["team-a", "team-b"].includes(id)
+      ) {
+        throw new Error("Team not found or access denied");
+      }
+      return `__team__:${id}`;
+    },
+  );
   mocks.loadAgentsBundle.mockResolvedValue({
     workspaceAgentsMd: "",
     agentsMd: "",
@@ -788,6 +806,315 @@ describe("promptResourceManifestSections", () => {
 });
 
 describe("loadResourcesForPrompt", () => {
+  function teamFixture() {
+    const rows = [
+      ...[
+        "__workspace__:__organization__:org-a",
+        "__shared__",
+        "__organization__:org-a",
+        "__team__:team-a",
+        "__team__:team-b",
+        "user@example.test",
+      ].flatMap((owner, index) => [
+        {
+          id: `${index}-agents`,
+          owner,
+          path: "AGENTS.md",
+          content: `# Guidance ${owner}`,
+        },
+        {
+          id: `${index}-instruction`,
+          owner,
+          path: "instructions/guide.md",
+          content: `# Guide ${owner}`,
+        },
+        {
+          id: `${index}-skill`,
+          owner,
+          path: "skills/voice/SKILL.md",
+          content: `---\nname: voice\ndescription: Voice ${owner}\n---\n# Voice`,
+        },
+        {
+          id: `${index}-memory`,
+          owner,
+          path: "memory/MEMORY.md",
+          content: `# Memory ${owner}\n- [facts](facts.md) — Facts about ${owner}.`,
+        },
+      ]),
+    ].map((row) => ({ ...row, mimeType: "text/markdown" }));
+    mocks.resourceGetByPath.mockImplementation(
+      async (owner: string, path: string) =>
+        rows.find((row) => row.owner === owner && row.path === path) ?? null,
+    );
+    mocks.resourceGet.mockImplementation(
+      async (id: string) => rows.find((row) => row.id === id) ?? null,
+    );
+    mocks.resourceList.mockImplementation(
+      async (owner: string, prefix?: string) =>
+        rows
+          .filter(
+            (row) =>
+              row.owner === owner && (!prefix || row.path.startsWith(prefix)),
+          )
+          .map(({ content: _content, ...row }) => row),
+    );
+    mocks.resourceListAccessible.mockImplementation(
+      async (_owner: string, prefix: string) =>
+        rows
+          .filter((row) => row.path.startsWith(prefix))
+          .map(({ content: _content, ...row }) => row),
+    );
+    return rows;
+  }
+
+  it.each([false, true])(
+    "loads only the bound team's instructions and exact-name skills (compact=%s)",
+    async (compact) => {
+      teamFixture();
+      const prompt = await loadResourcesForPrompt(
+        "user@example.test",
+        compact,
+        "app",
+        "org-a",
+        { teamGroupId: "team-a" },
+      );
+      expect(prompt).toContain("Guidance __team__:team-a");
+      expect(prompt).not.toContain("Guidance __team__:team-b");
+      const scopes = [
+        "__workspace__:__organization__:org-a",
+        "__shared__",
+        "__organization__:org-a",
+        "__team__:team-a",
+        "user@example.test",
+      ];
+      expect(
+        scopes.map((scope) => prompt.indexOf(`Guidance ${scope}`)),
+      ).toEqual(
+        [...scopes.map((scope) => prompt.indexOf(`Guidance ${scope}`))].sort(
+          (a, b) => a - b,
+        ),
+      );
+      expect(prompt).toContain("Memory __team__:team-a");
+      expect(prompt).not.toContain("Memory __team__:team-b");
+      expect(prompt).toContain("Voice user@example.test");
+      expect(prompt).not.toContain("Voice __team__:team-a");
+      expect(promptResourceManifestSections(prompt)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            sourceRef: { path: "memory/MEMORY.md", scope: "bound-team" },
+          }),
+        ]),
+      );
+      expect(mocks.resourceList).toHaveBeenCalledWith(
+        "__team__:team-a",
+        "skills/",
+        { orgId: "org-a" },
+      );
+      expect(mocks.resourceList).not.toHaveBeenCalledWith(
+        "__team__:team-b",
+        "skills/",
+        expect.anything(),
+      );
+    },
+  );
+
+  it("points omitted bound-team skill winners at the authorized scoped catalog", async () => {
+    const rows = teamFixture();
+    for (let index = 0; index < 40; index++) {
+      const name = `skill-${String(index).padStart(2, "0")}`;
+      rows.push({
+        id: `personal-${name}`,
+        owner: "user@example.test",
+        path: `skills/${name}/SKILL.md`,
+        mimeType: "text/markdown",
+        content: `---\nname: ${name}\ndescription: Personal ${name}\n---\n# ${name}`,
+      });
+    }
+    rows.push({
+      id: "team-overflow",
+      owner: "__team__:team-a",
+      path: "skills/team-overflow/SKILL.md",
+      mimeType: "text/markdown",
+      content:
+        "---\nname: team-overflow\ndescription: Team overflow skill\n---\n# Team overflow",
+    });
+
+    const prompt = await loadResourcesForPrompt(
+      "user@example.test",
+      true,
+      "app",
+      "org-a",
+      { teamGroupId: "team-a" },
+    );
+    expect(prompt).not.toContain("`team-overflow` at resource");
+    expect(prompt).toContain('`scope: "team"`');
+    expect(prompt).toContain('`teamGroupId: "team-a"`');
+    expect(prompt).toContain('`scope: "personal"`');
+    expect(prompt).toContain("personal winners override team skills");
+    const catalog = await mocks.resourceList("__team__:team-a", "skills/", {
+      orgId: "org-a",
+    });
+    expect(catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "skills/team-overflow/SKILL.md" }),
+      ]),
+    );
+    expect(
+      await mocks.resourceGetByPath(
+        "__team__:team-a",
+        "skills/team-overflow/SKILL.md",
+        { orgId: "org-a" },
+      ),
+    ).toMatchObject({
+      content: expect.stringContaining("Team overflow skill"),
+    });
+    expect(prompt).not.toContain('`teamGroupId: "team-b"`');
+  });
+
+  it("keeps the existing generic overflow hint without a team binding", async () => {
+    const rows = teamFixture();
+    for (let index = 0; index < 41; index++) {
+      const name = `skill-${String(index).padStart(2, "0")}`;
+      rows.push({
+        id: `personal-${name}`,
+        owner: "user@example.test",
+        path: `skills/${name}/SKILL.md`,
+        mimeType: "text/markdown",
+        content: `---\nname: ${name}\ndescription: Personal ${name}\n---\n# ${name}`,
+      });
+    }
+    const prompt = await loadResourcesForPrompt(
+      "user@example.test",
+      true,
+      "app",
+      "org-a",
+      { teamGroupId: null },
+    );
+    expect(prompt).toContain('`prefix: "skills/"` to inspect the full catalog');
+    expect(prompt).not.toContain("To discover omitted bound-team skills");
+  });
+
+  it("keeps unbound and legacy prompts free of team context", async () => {
+    teamFixture();
+    const prompt = await loadResourcesForPrompt(
+      "user@example.test",
+      false,
+      "app",
+      "org-a",
+      { teamGroupId: null },
+    );
+    expect(prompt).not.toContain("Guidance __team__:");
+    expect(prompt).not.toContain("Memory __team__:");
+  });
+
+  it.each([
+    ["__team__:team-a", ["user@example.test"]],
+    ["__organization__:org-a", ["user@example.test", "__team__:team-a"]],
+    [
+      "__shared__",
+      ["user@example.test", "__team__:team-a", "__organization__:org-a"],
+    ],
+    [
+      "__workspace__:__organization__:org-a",
+      [
+        "user@example.test",
+        "__team__:team-a",
+        "__organization__:org-a",
+        "__shared__",
+      ],
+    ],
+  ])(
+    "selects the exact-name %s skill after higher-priority owners are absent",
+    async (expectedOwner, absent) => {
+      const rows = teamFixture();
+      for (const owner of absent) {
+        const index = rows.findIndex(
+          (row) => row.owner === owner && row.path === "skills/voice/SKILL.md",
+        );
+        rows.splice(index, 1);
+      }
+      const prompt = await loadResourcesForPrompt(
+        "user@example.test",
+        true,
+        "app",
+        "org-a",
+        { teamGroupId: "team-a" },
+      );
+      expect(prompt).toContain(`Voice ${expectedOwner}`);
+      expect(prompt.match(/`voice` at resource/g)).toHaveLength(1);
+      expect(prompt).not.toContain("Voice __team__:team-b");
+    },
+  );
+
+  it.each(["instructions/", "skills/", "AGENTS.md", "memory/MEMORY.md"])(
+    "fails a required team %s read rather than accepting empty context",
+    async (path) => {
+      teamFixture();
+      if (!path.endsWith("/"))
+        mocks.resourceGetByPath.mockImplementation(
+          async (owner: string, resourcePath: string) => {
+            if (owner === "__team__:team-a" && resourcePath === path)
+              throw new Error("required team body unavailable");
+            return null;
+          },
+        );
+      // The list failure may occur on an earlier optional owner. A team-specific rejection is asserted below separately.
+      if (path.endsWith("/"))
+        mocks.resourceList.mockImplementation(
+          async (owner: string, prefix: string) => {
+            if (owner === "__team__:team-a" && prefix === path)
+              throw new Error("required team list unavailable");
+            return [];
+          },
+        );
+      await expect(
+        loadResourcesForPrompt("user@example.test", true, "app", "org-a", {
+          teamGroupId: "team-a",
+        }),
+      ).rejects.toThrow(
+        path === "AGENTS.md"
+          ? /Unable to read durable AGENTS.md instructions for bound-team/
+          : /required team (list|body) unavailable/,
+      );
+    },
+  );
+
+  it("distinguishes an authorized empty team from a revoked membership", async () => {
+    teamFixture();
+    mocks.resourceList.mockImplementation(async () => []);
+    mocks.resourceGetByPath.mockImplementation(async () => null);
+    await expect(
+      loadResourcesForPrompt("user@example.test", true, "app", "org-a", {
+        teamGroupId: "team-a",
+      }),
+    ).resolves.toContain("context-note");
+    mocks.authorizedTeamResourceOwner.mockRejectedValueOnce(
+      new Error("Team not found or access denied"),
+    );
+    await expect(
+      loadResourcesForPrompt("user@example.test", true, "app", "org-a", {
+        teamGroupId: "team-a",
+      }),
+    ).rejects.toThrow("Team not found or access denied");
+  });
+
+  it.each(["skills/voice/SKILL.md", "instructions/guide.md"])(
+    "fails when a listed team %s body disappears",
+    async (path) => {
+      const rows = teamFixture();
+      const resource = rows.find(
+        (row) => row.owner === "__team__:team-a" && row.path === path,
+      )!;
+      mocks.resourceGet.mockImplementation(async (id: string) =>
+        id === resource.id ? null : (rows.find((row) => row.id === id) ?? null),
+      );
+      await expect(
+        loadResourcesForPrompt("user@example.test", true, "app", "org-a", {
+          teamGroupId: "team-a",
+        }),
+      ).rejects.toThrow(/Unable to read bound team/);
+    },
+  );
   it("fails the prompt build when Lab-gated skill state cannot be read", async () => {
     const failure = new Error("Labs settings unavailable");
     mocks.getRuntimeSkillsForUser.mockRejectedValueOnce(failure);
