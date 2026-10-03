@@ -1,7 +1,20 @@
+import { PGlite } from "@electric-sql/pglite";
+import type { H3Event } from "h3";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const executeMock = vi.hoisted(() => vi.fn());
 const emitChatThreadChangeMock = vi.hoisted(() => vi.fn());
+const getWorkspaceTeamForMemberMock = vi.hoisted(() => vi.fn());
+const resolveAccessMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../sharing/access.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../sharing/access.js")>()),
+  resolveAccess: resolveAccessMock,
+}));
+
+vi.mock("../workspace-connections/groups.js", () => ({
+  getWorkspaceTeamForMember: getWorkspaceTeamForMemberMock,
+}));
 
 vi.mock("../db/client.js", () => ({
   getDbExec: () => ({ execute: executeMock }),
@@ -21,14 +34,18 @@ import {
   applySubmittedUserMessage,
   buildUserMessage,
 } from "../agent/thread-data-builder.js";
+import { handleSharedThreadRequest } from "../server/agent-chat/shared-thread.js";
 import {
   adoptThreadScopeIfUnscoped,
+  createThread,
   createThreadShareLink,
   forkThread,
   getThreadByShareToken,
   grantThreadUserShare,
   listThreads,
   renameThread,
+  resolveThreadAccess,
+  resolveThreadsAccess,
   resolveRunThreadScope,
   revokeThreadShareLink,
   searchThreads,
@@ -58,6 +75,7 @@ type ChatThreadRow = {
   source_app_id?: string | null;
   source_url?: string | null;
   org_id?: string | null;
+  team_group_id?: string | null;
   visibility?: "private" | "org" | "public";
 };
 
@@ -104,6 +122,7 @@ describe("chat thread store", () => {
     transientThreadDataUpdateFailures = 0;
     shareRows = [];
     executeMock.mockReset();
+    resolveAccessMock.mockReset();
     emitChatThreadChangeMock.mockReset();
     executeMock.mockImplementation(async (query: string | any) => {
       const sql = typeof query === "string" ? query : query.sql;
@@ -114,7 +133,7 @@ describe("chat thread store", () => {
       if (/SELECT id, owner_email, thread_data, message_count/i.test(sql)) {
         return { rows: [], rowsAffected: 0 };
       }
-      if (/WHERE thread_data LIKE \?/i.test(sql)) {
+      if (/thread_data LIKE \?/i.test(sql)) {
         const pattern = String(args[0] ?? "").replace(/%/g, "");
         return {
           rows: row && row.thread_data.includes(pattern) ? [row] : [],
@@ -216,6 +235,251 @@ describe("chat thread store", () => {
       }
       throw new Error(`Unexpected SQL: ${sql}`);
     });
+  });
+
+  it("validates a marked team and current organization before inserting a bound thread", async () => {
+    getWorkspaceTeamForMemberMock.mockReset();
+    executeMock.mockClear();
+    await expect(
+      createThread("user@example.com", {
+        id: "bound-1",
+        orgId: "org-1",
+        teamGroupId: "ordinary-group",
+      }),
+    ).rejects.toThrow("current member");
+    expect(
+      executeMock.mock.calls.some(([query]) =>
+        String(query?.sql ?? query).includes("INSERT INTO chat_threads"),
+      ),
+    ).toBe(false);
+
+    getWorkspaceTeamForMemberMock.mockResolvedValue({
+      id: "team-1",
+      isTeam: true,
+    });
+    executeMock.mockImplementation(async () => ({ rows: [], rowsAffected: 1 }));
+    const created = await createThread("user@example.com", {
+      id: "bound-1",
+      orgId: "org-1",
+      teamGroupId: "team-1",
+    });
+    expect(created.teamGroupId).toBe("team-1");
+    expect(getWorkspaceTeamForMemberMock).toHaveBeenCalledWith(
+      "org-1",
+      "team-1",
+      "user@example.com",
+    );
+    expect(
+      executeMock.mock.calls.find(([query]) =>
+        String(query?.sql ?? query).includes("INSERT INTO chat_threads"),
+      )?.[0].args,
+    ).toContain("team-1");
+  });
+
+  it("applies current team and org membership to list, search and bulk SQL without hydrating list transcripts", async () => {
+    executeMock.mockImplementation(async () => ({ rows: [], rowsAffected: 0 }));
+    await listThreads("user@example.com", { orgId: "org-1" });
+    await searchThreads("user@example.com", "topic", 10, { orgId: "org-1" });
+    await resolveThreadsAccess("user@example.com", ["thread-1"], {
+      orgId: "org-1",
+    });
+    const accessQueries = executeMock.mock.calls.filter(([query]) =>
+      String(query?.sql ?? query).includes("FROM chat_threads WHERE"),
+    );
+    expect(accessQueries).toHaveLength(3);
+    for (const [query] of accessQueries) {
+      expect(query.sql).toContain("team.is_team = true");
+      expect(query.sql).toContain("m.federation_removal_pending_at IS NULL");
+      expect(query.sql).toContain("team_group_id IS NULL OR");
+      expect(query.sql).toContain("principal_type = 'group'");
+      expect(query.args).toContain("org-1");
+    }
+    expect(accessQueries[0]?.[0].sql).not.toContain(
+      "SELECT id, title, preview, thread_data",
+    );
+    expect(accessQueries[1]?.[0].sql).not.toContain(
+      "SELECT id, title, preview, thread_data",
+    );
+  });
+
+  it("creates forks with a separately validated binding and leaves updates immutable", async () => {
+    row = { ...row!, org_id: "org-1", team_group_id: "old-team" };
+    getWorkspaceTeamForMemberMock.mockReset();
+    executeMock.mockImplementation(
+      async (query: { sql: string; args: unknown[] }) => ({
+        rows: query.sql.includes("FROM chat_threads WHERE id = ?") ? [row] : [],
+        rowsAffected: 1,
+      }),
+    );
+    const unboundFork = await forkThread("thread-1", "user@example.com", {
+      id: "fork-1",
+    });
+    expect(unboundFork?.teamGroupId).toBeNull();
+    expect(getWorkspaceTeamForMemberMock).not.toHaveBeenCalled();
+
+    await expect(
+      forkThread("thread-1", "user@example.com", {
+        id: "fork-2",
+        teamGroupId: "forged-team",
+      }),
+    ).rejects.toThrow("current member");
+    expect(
+      executeMock.mock.calls.filter(([query]) =>
+        query.sql.includes("INSERT INTO chat_threads"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      executeMock.mock.calls.filter(
+        ([query]) =>
+          query.sql.includes("UPDATE chat_threads") &&
+          query.sql.includes("team_group_id"),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("revokes projected list, search and bulk access on team or org removal and deletion", async () => {
+    const db = new PGlite();
+    try {
+      await db.exec(`
+        CREATE TABLE chat_threads (id TEXT PRIMARY KEY, owner_email TEXT, title TEXT, preview TEXT, thread_data TEXT, message_count INTEGER, created_at BIGINT, updated_at BIGINT, scope_type TEXT, scope_id TEXT, scope_label TEXT, pinned_at BIGINT, archived_at BIGINT, source_platform TEXT, source_app_id TEXT, source_url TEXT, org_id TEXT, team_group_id TEXT, visibility TEXT);
+        CREATE TABLE chat_thread_shares (resource_id TEXT, principal_type TEXT, principal_id TEXT, role TEXT);
+        CREATE TABLE org_members (org_id TEXT, email TEXT, federation_removal_pending_at BIGINT);
+        CREATE TABLE workspace_user_groups (id TEXT, org_id TEXT, is_team BOOLEAN, member_emails_json TEXT);
+        INSERT INTO chat_threads (id, owner_email, title, preview, thread_data, message_count, created_at, updated_at, org_id, team_group_id, visibility) VALUES ('bound', 'owner@example.com', 'topic', 'topic', '{}', 1, 1, 1, 'org-1', 'team-1', 'private'), ('legacy', 'owner@example.com', 'topic', 'topic', '{}', 1, 1, 1, 'org-1', NULL, 'private');
+        INSERT INTO org_members (org_id, email) VALUES ('org-1', 'owner@example.com'), ('org-1', 'viewer@example.com'), ('org-1', 'lead@example.com'), ('org-1', 'admin@example.com');
+        INSERT INTO workspace_user_groups VALUES ('team-1', 'org-1', true, '["owner@example.com","viewer@example.com","lead@example.com"]');
+        INSERT INTO chat_thread_shares VALUES ('bound', 'group', 'team-1', 'viewer');
+      `);
+      executeMock.mockImplementation(
+        async (query: { sql: string; args: unknown[] }) => {
+          let index = 0;
+          const sql = query.sql.replace(/\?/g, () => `$${++index}`);
+          const result = await db.query(sql, query.args);
+          return { rows: result.rows, rowsAffected: result.affectedRows ?? 0 };
+        },
+      );
+      const visible = async (email: string) => ({
+        list: (await listThreads(email, { orgId: "org-1" })).map(
+          (thread) => thread.id,
+        ),
+        search: (
+          await searchThreads(email, "topic", 10, { orgId: "org-1" })
+        ).map((thread) => thread.id),
+        bulk: [
+          ...(
+            await resolveThreadsAccess(email, ["bound", "legacy"], {
+              orgId: "org-1",
+            })
+          ).keys(),
+        ],
+      });
+      expect(await visible("owner@example.com")).toEqual({
+        list: ["bound", "legacy"],
+        search: ["bound", "legacy"],
+        bulk: ["bound", "legacy"],
+      });
+      expect(await visible("viewer@example.com")).toEqual({
+        list: ["bound"],
+        search: ["bound"],
+        bulk: ["bound"],
+      });
+      expect(await visible("lead@example.com")).toEqual({
+        list: ["bound"],
+        search: ["bound"],
+        bulk: ["bound"],
+      });
+      expect(await visible("admin@example.com")).toEqual({
+        list: [],
+        search: [],
+        bulk: [],
+      });
+      await db.exec(
+        `INSERT INTO chat_thread_shares VALUES ('legacy', 'group', 'team-1', 'viewer')`,
+      );
+      resolveAccessMock.mockResolvedValue({
+        role: "viewer",
+        resource: { id: "legacy" },
+      });
+      expect(
+        (
+          await resolveThreadAccess("viewer@example.com", "legacy", "viewer", {
+            orgId: "org-1",
+          })
+        )?.id,
+      ).toBe("legacy");
+      expect(await visible("viewer@example.com")).toEqual({
+        list: ["bound", "legacy"],
+        search: ["bound", "legacy"],
+        bulk: ["bound", "legacy"],
+      });
+      expect(await visible("owner@example.com")).toEqual({
+        list: ["bound", "legacy"],
+        search: ["bound", "legacy"],
+        bulk: ["bound", "legacy"],
+      });
+      resolveAccessMock.mockResolvedValue(null);
+      await db.exec(
+        `DELETE FROM chat_thread_shares; INSERT INTO chat_thread_shares VALUES ('bound', 'user', 'viewer@example.com', 'viewer')`,
+      );
+      expect(
+        await resolveThreadAccess("viewer@example.com", "legacy", "viewer", {
+          orgId: "org-1",
+        }),
+      ).toBeNull();
+      expect(await visible("viewer@example.com")).toEqual({
+        list: ["bound"],
+        search: ["bound"],
+        bulk: ["bound"],
+      });
+      expect(await visible("lead@example.com")).toEqual({
+        list: [],
+        search: [],
+        bulk: [],
+      });
+      await db.exec(
+        `UPDATE workspace_user_groups SET member_emails_json = '["viewer@example.com","lead@example.com"]' WHERE id = 'team-1'`,
+      );
+      expect(await visible("owner@example.com")).toEqual({
+        list: ["legacy"],
+        search: ["legacy"],
+        bulk: ["legacy"],
+      });
+      await db.exec(
+        `UPDATE workspace_user_groups SET member_emails_json = '["owner@example.com","viewer@example.com","lead@example.com"]' WHERE id = 'team-1'`,
+      );
+      expect(await visible("owner@example.com")).toEqual({
+        list: ["bound", "legacy"],
+        search: ["bound", "legacy"],
+        bulk: ["bound", "legacy"],
+      });
+      await db.exec(
+        `UPDATE workspace_user_groups SET member_emails_json = '["owner@example.com","lead@example.com"]' WHERE id = 'team-1'`,
+      );
+      await db.exec(
+        `INSERT INTO chat_thread_shares VALUES ('legacy', 'group', 'team-1', 'viewer')`,
+      );
+      expect(await visible("viewer@example.com")).toEqual({
+        list: [],
+        search: [],
+        bulk: [],
+      });
+      await db.exec(
+        `UPDATE workspace_user_groups SET member_emails_json = '["owner@example.com","viewer@example.com","lead@example.com"]' WHERE id = 'team-1'; DELETE FROM org_members WHERE email = 'viewer@example.com'`,
+      );
+      expect(await visible("viewer@example.com")).toEqual({
+        list: [],
+        search: [],
+        bulk: [],
+      });
+      await db.exec(`DELETE FROM workspace_user_groups WHERE id = 'team-1'`);
+      expect(await visible("owner@example.com")).toEqual({
+        list: ["legacy"],
+        search: ["legacy"],
+        bulk: ["legacy"],
+      });
+    } finally {
+      await db.close();
+    }
   });
 
   it("grants a non-owner an explicit share so integration deep links resolve", async () => {
@@ -707,6 +971,13 @@ describe("chat thread store", () => {
   });
 
   it("creates, resolves, and revokes read-only share links", async () => {
+    shareRows.push({
+      id: "group-share-1",
+      resource_id: "thread-1",
+      principal_id: "team-1",
+      role: "viewer",
+      created_by: "user@example.com",
+    });
     const link = await createThreadShareLink("thread-1", {
       ownerEmail: "user@example.com",
     });
@@ -726,6 +997,63 @@ describe("chat thread store", () => {
     expect(revoked?.enabled).toBe(false);
     expect(await getThreadByShareToken(link!.token)).toBeNull();
   });
+
+  it("refuses issuance for a bound thread without changing its share state", async () => {
+    row = { ...row!, team_group_id: "deleted-team" };
+    expect(await createThreadShareLink("thread-1")).toBeNull();
+    expect(row.thread_data).not.toContain('"_share"');
+    expect(row.share_token_hash).toBeUndefined();
+  });
+
+  it.each(["indexed", "legacy"])(
+    "refuses %s pre-existing tokens after binding, even after membership loss or team deletion",
+    async (lookup) => {
+      const link = await createThreadShareLink("thread-1");
+      expect(link?.token).toEqual(expect.any(String));
+      if (lookup === "legacy") row = { ...row!, share_token_hash: null };
+      row = { ...row!, team_group_id: "team-1" };
+      getWorkspaceTeamForMemberMock.mockResolvedValue(null);
+
+      expect(await getThreadByShareToken(link!.token)).toBeNull();
+      expect(getWorkspaceTeamForMemberMock).not.toHaveBeenCalled();
+      if (lookup === "legacy") expect(row.share_token_hash).toBeNull();
+
+      row = { ...row!, team_group_id: "deleted-team" };
+      expect(await getThreadByShareToken(link!.token)).toBeNull();
+      row = null;
+      expect(await getThreadByShareToken(link!.token)).toBeNull();
+    },
+  );
+
+  it.each(["indexed", "legacy"])(
+    "denies an anonymous %s token over HTTP before transcript or run enrichment",
+    async (lookup) => {
+      const link = await createThreadShareLink("thread-1");
+      if (lookup === "legacy") row = { ...row!, share_token_hash: null };
+      row = { ...row!, team_group_id: "deleted-team" };
+      const path = `/_agent-native/agent-chat/shared/${link!.token}`;
+      const event = {
+        path,
+        req: {
+          method: "GET",
+          headers: new Headers({ accept: "application/json" }),
+        },
+        res: { status: 200, headers: new Headers() },
+        node: { req: { url: path, headers: {} } },
+        context: {},
+      } as unknown as H3Event;
+      const listRunsForThread = vi.fn(async () => []);
+      const result = await handleSharedThreadRequest(event, {
+        getThreadByShareToken,
+        listRunsForThread,
+      });
+
+      expect(event.res.status).toBe(404);
+      expect(JSON.stringify(result)).not.toContain("make this slide better");
+      expect(JSON.stringify(result)).not.toContain("run-1");
+      expect(listRunsForThread).not.toHaveBeenCalled();
+    },
+  );
 
   it("searches thread text with literal LIKE metacharacters", async () => {
     executeMock.mockImplementation(async (query: string | any) => {
@@ -750,7 +1078,7 @@ describe("chat thread store", () => {
     expect(searchCall).toBeTruthy();
     const query = searchCall![0] as { sql: string; args: unknown[] };
     expect(query.sql).toContain("LIKE ? ESCAPE '!'");
-    expect(query.args.slice(2, 5)).toEqual([
+    expect(query.args.slice(-4, -1)).toEqual([
       "%100!%!_done%",
       "%100!%!_done%",
       "%100!%!_done%",

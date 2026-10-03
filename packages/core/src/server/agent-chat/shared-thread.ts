@@ -239,7 +239,7 @@ export async function handleSharedThreadRequest(
   }
 
   const thread = await deps.getThreadByShareToken(token);
-  if (!thread) {
+  if (!thread || thread.teamGroupId !== null) {
     return sharedThreadError(event, 404, "Shared thread not found");
   }
 

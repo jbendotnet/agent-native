@@ -410,6 +410,9 @@ function sharedThread(overrides: Partial<ChatThread> = {}): ChatThread {
     scope: { type: "deck", id: "deck-1", label: "Launch" },
     pinnedAt: null,
     archivedAt: null,
+    orgId: null,
+    teamGroupId: null,
+    visibility: "private",
     ...overrides,
   };
 }
@@ -869,4 +872,25 @@ describe("shared thread route", () => {
     expect(event.res.headers.get("content-type")).toContain("text/html");
     expect(result).toContain("Shared thread not found");
   });
+
+  it.each(["application/json", "text/html"])(
+    "refuses bound public %s before transcript and linked-run enrichment",
+    async (accept) => {
+      const event = createSharedThreadEvent(
+        "/_agent-native/agent-chat/shared/pre-existing-token",
+        { accept },
+      );
+      const listRunsForThread = vi.fn(async () => [run]);
+      const result = await handleSharedThreadRequest(event, {
+        getThreadByShareToken: vi.fn(async () =>
+          sharedThread({ teamGroupId: "deleted-team" }),
+        ),
+        listRunsForThread,
+      });
+      expect(event.res.status).toBe(404);
+      expect(JSON.stringify(result)).not.toContain("Deploy recap");
+      expect(JSON.stringify(result)).not.toContain("run-1");
+      expect(listRunsForThread).not.toHaveBeenCalled();
+    },
+  );
 });

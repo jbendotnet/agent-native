@@ -18,7 +18,7 @@ Reuse agent `resources` under `__team__:<group-id>`. No copied org resources/cre
 
 ## Risks / Dependencies / Open Questions
 
-Start only after all children and proof gates in [Epic 2](../organization-team-tenancy-02-authorization/epic.md) pass, using its completed binding and authorization contract and [Epic 1](../../completed/organization-team-tenancy-01-identity/epic.md) membership helpers. Complete both context children before Epic 4 starts. Required team lookup failures cannot inherit the current best-effort omission behavior. UI context editing is delivered in Epic 4 and is not a prerequisite for context proof.
+Start only after all children and proof gates in [Epic 2](../../completed/organization-team-tenancy-02-authorization/epic.md) pass, using its completed binding and authorization contract and [Epic 1](../../completed/organization-team-tenancy-01-identity/epic.md) membership helpers. Complete both context children before Epic 4 starts. Required team lookup failures cannot inherit the current best-effort omission behavior. UI context editing is delivered in Epic 4 and is not a prerequisite for context proof.
 
 ## Child Plans
 

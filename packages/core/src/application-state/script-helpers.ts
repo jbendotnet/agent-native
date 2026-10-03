@@ -10,6 +10,7 @@ import {
   appStateCompareAndSet,
   appStateCompareAndSetMany,
   appStateList,
+  appStateListByKeyPrefix,
   appStateDeleteByPrefix,
   type AppStateCompareAndSetOperation,
 } from "./store.js";
@@ -89,9 +90,33 @@ export async function compareAndSetManyAppState(
 
 export async function listAppState(
   prefix: string,
+  limit?: number,
 ): Promise<Array<{ key: string; value: Record<string, unknown> }>> {
   const sessionId = await resolveSessionId();
-  return appStateList(sessionId, prefix);
+  return limit === undefined
+    ? appStateList(sessionId, prefix)
+    : appStateList(sessionId, prefix, limit);
+}
+
+export async function listAppStateAcrossSessions(
+  prefix: string,
+  limit: number,
+  exact = false,
+  scope?: { userEmail: string; orgId?: string | null },
+): Promise<Array<{ key: string; value: Record<string, unknown> }>> {
+  const sessionId = scope ? await resolveSessionId() : null;
+  if (scope && sessionId !== scope.userEmail) {
+    throw new Error("Task list caller does not match the current session");
+  }
+  const rows = await appStateListByKeyPrefix(
+    prefix,
+    limit,
+    exact,
+    scope && sessionId
+      ? { userEmail: scope.userEmail, orgId: scope.orgId ?? null }
+      : undefined,
+  );
+  return rows.map(({ key, value }) => ({ key, value }));
 }
 
 export async function deleteAppStateByPrefix(prefix: string): Promise<number> {

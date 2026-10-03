@@ -56,6 +56,7 @@ const {
   appStateCompareAndSet,
   appStateCompareAndSetMany,
   appStateList,
+  appStateListByKeyPrefix,
   appStateDeleteByPrefix,
 } = await import("./store.js");
 
@@ -109,6 +110,100 @@ describe("application-state store", () => {
     const rows = await appStateList(SESSION, "compose_");
 
     expect(rows).toEqual([{ key: "compose_draft", value: { id: "draft" } }]);
+  });
+
+  it("bounds projected session reads and resolves an exact task key across sessions", async () => {
+    await appStatePut(SESSION, "agent-task:t-10", { id: "other" });
+    await appStatePut("other@example.com", "agent-task:t-1", { id: "shared" });
+    await appStatePut(SESSION, "agent-task:t-11", { id: "third" });
+    rawClient.execute.mockClear();
+
+    expect(await appStateList(SESSION, "agent-task:", 1)).toHaveLength(1);
+    expect(rawClient.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sql: expect.stringContaining(
+          "SELECT key, value FROM application_state",
+        ),
+        args: [SESSION, "agent-task:%", 1],
+      }),
+    );
+    expect(await appStateListByKeyPrefix("agent-task:t-1", 3, true)).toEqual([
+      {
+        sessionId: "other@example.com",
+        key: "agent-task:t-1",
+        value: { id: "shared" },
+      },
+    ]);
+    expect(await appStateListByKeyPrefix("agent-task:t-1", 3)).toHaveLength(3);
+  });
+
+  it("limits after current-org and full thread access, not same-session other-org or inaccessible shares", async () => {
+    await postgres.exec(`CREATE TABLE chat_threads (id TEXT PRIMARY KEY, org_id TEXT, owner_email TEXT, visibility TEXT, team_group_id TEXT);
+      CREATE TABLE chat_thread_shares (resource_id TEXT, principal_type TEXT, principal_id TEXT, role TEXT);
+      CREATE TABLE workspace_user_groups (id TEXT, org_id TEXT, member_emails_json TEXT, is_team BOOLEAN);
+      CREATE TABLE org_members (org_id TEXT, email TEXT, federation_removal_pending_at BIGINT);
+      INSERT INTO chat_threads VALUES ('shared-thread', 'org-a', 'other@example.com', 'private', 'team-a');
+      INSERT INTO chat_threads VALUES ('owned-thread', 'org-a', 'alice@example.com', 'private', NULL);
+      INSERT INTO chat_thread_shares VALUES ('shared-thread', 'group', 'team-a', 'viewer');
+      INSERT INTO workspace_user_groups VALUES ('team-a', 'org-a', '["alice@example.com"]', true);
+      INSERT INTO org_members VALUES ('org-a', 'alice@example.com', NULL);`);
+    for (let i = 0; i < 201; i += 1) {
+      await appStatePut("unrelated@example.com", `agent-task:unrelated-${i}`, {
+        threadId: `private-${i}`,
+        ownerEmail: "unrelated@example.com",
+        orgId: "org-a",
+      });
+    }
+    await postgres.exec(`INSERT INTO workspace_user_groups VALUES ('team-b', 'org-a', '["other@example.com"]', true);
+      INSERT INTO chat_threads VALUES ${Array.from({ length: 201 }, (_, i) => `('other-org-${i}', 'org-b', 'alice@example.com', 'private', NULL)`).join(", ")};
+      INSERT INTO chat_threads VALUES ${Array.from({ length: 201 }, (_, i) => `('inaccessible-${i}', 'org-a', 'other@example.com', 'private', 'team-b')`).join(", ")};
+      INSERT INTO chat_thread_shares VALUES ${Array.from({ length: 201 }, (_, i) => `('inaccessible-${i}', 'group', 'team-a', 'viewer')`).join(", ")};`);
+    for (let i = 0; i < 201; i += 1) {
+      await appStatePut(SESSION, `agent-task:other-org-${i}`, {
+        threadId: `other-org-${i}`,
+        ownerEmail: SESSION,
+        orgId: "org-b",
+      });
+      await appStatePut("other@example.com", `agent-task:inaccessible-${i}`, {
+        threadId: `inaccessible-${i}`,
+        ownerEmail: "other@example.com",
+        orgId: "org-a",
+      });
+    }
+    await appStatePut(SESSION, "agent-task:owned", {
+      threadId: "owned-thread",
+      ownerEmail: SESSION,
+    });
+    await appStatePut("other@example.com", "agent-task:shared", {
+      threadId: "shared-thread",
+      ownerEmail: "other@example.com",
+    });
+
+    const rows = await appStateListByKeyPrefix("agent-task:", 3, false, {
+      sessionId: SESSION,
+      userEmail: SESSION,
+      orgId: "org-a",
+    });
+    expect(rows.map((row) => row.key).sort()).toEqual([
+      "agent-task:owned",
+      "agent-task:shared",
+    ]);
+    await appStatePut("other@example.com", "agent-task:shared-more", {
+      threadId: "shared-thread",
+      ownerEmail: "other@example.com",
+    });
+    expect(
+      await appStateListByKeyPrefix("agent-task:shared", 2, true, {
+        userEmail: SESSION,
+        orgId: "org-a",
+      }),
+    ).toEqual([
+      {
+        sessionId: "other@example.com",
+        key: "agent-task:shared",
+        value: { threadId: "shared-thread", ownerEmail: "other@example.com" },
+      },
+    ]);
   });
 
   it("reads several exact keys in one query and preserves missing keys", async () => {

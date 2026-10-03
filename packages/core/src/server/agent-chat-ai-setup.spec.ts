@@ -239,6 +239,19 @@ describe("Agent-Native chat AI setup gate", () => {
     expect(
       invokeBlock.indexOf("await recordSetupRequiredTurn(event, error);"),
     ).toBeLessThan(invokeBlock.indexOf("throw error;"));
+    const fallback = plugin.slice(
+      plugin.indexOf("const recordSetupRequiredTurn = async"),
+      invokeStart,
+    );
+    expect(fallback).toContain("teamGroupId: body.teamGroupId");
+    expect(fallback).toContain("await recordUnstartedTurn({");
+    const recordUnstartedTurn = plugin.slice(
+      plugin.indexOf("const recordUnstartedTurn = async"),
+      plugin.indexOf("// ─── Agent Teams:"),
+    );
+    expect(recordUnstartedTurn).toContain(
+      "await persistSubmittedUserMessage(details);",
+    );
 
     const queueStart = plugin.indexOf("// POST /threads/:id/queued");
     const queueEnd = plugin.indexOf('isThreadSubroute("rename")', queueStart);
