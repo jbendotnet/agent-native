@@ -25,6 +25,7 @@ const MockFederatedIconConflictError = vi.hoisted(
 const mockEvaluateFeatureFlagStrict = vi.hoisted(() => vi.fn());
 const mockBootstrapAdminOrganization = vi.hoisted(() => vi.fn());
 const mockMarkActiveOrgSelectionChanged = vi.hoisted(() => vi.fn());
+const mockRestoreActiveWorkspaceTeam = vi.hoisted(() => vi.fn());
 const mockOffboardMember = vi.hoisted(() => vi.fn());
 const mockGetUserProfiles = vi.hoisted(() => vi.fn());
 const mockTrackInviteAccepted = vi.hoisted(() => vi.fn());
@@ -119,6 +120,10 @@ vi.mock("../server/h3-helpers.js", () => ({
 
 vi.mock("../settings/user-settings.js", () => ({
   putUserSetting: vi.fn(),
+}));
+vi.mock("../workspace-connections/active-team.js", () => ({
+  restoreActiveWorkspaceTeam: (...args: unknown[]) =>
+    mockRestoreActiveWorkspaceTeam(...args),
 }));
 
 vi.mock("../user-profile/store.js", () => ({
@@ -1064,6 +1069,10 @@ describe("org handlers", () => {
       await expect(switchOrgHandler(event)).resolves.toMatchObject({
         orgId: "org-2",
       });
+      expect(mockRestoreActiveWorkspaceTeam).toHaveBeenCalledWith(
+        "member@example.test",
+        "org-2",
+      );
 
       expect(putUserSetting).toHaveBeenCalledWith(
         "member@example.test",

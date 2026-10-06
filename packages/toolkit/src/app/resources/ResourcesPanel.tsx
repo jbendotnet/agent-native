@@ -1236,8 +1236,11 @@ export interface ResourcesPanelProps {
    * the scope trees and floating toolbar.
    */
   settingsGroups?: readonly ResourceSettingsGroupConfig[];
+  teamGroupId?: string;
   /** Receives a function that opens a resource in this panel's editor. */
-  openResourceRef?: { current: ((id: string) => void) | null };
+  openResourceRef?: {
+    current: ((id: string, teamGroupId?: string) => void) | null;
+  };
   /** Called when the editor opens or closes, so a page can yield to it. */
   onEditingChange?: (editing: boolean) => void;
 }
@@ -1346,6 +1349,7 @@ export function ResourcesPanel({
   resourceTreeVariant = "tree",
   mcpIntegrations,
   settingsGroups,
+  teamGroupId,
   openResourceRef,
   onEditingChange,
 }: ResourcesPanelProps = {}) {
@@ -1359,6 +1363,9 @@ export function ResourcesPanel({
   const [selectedResourceId, setSelectedResourceId] = useState<string | null>(
     null,
   );
+  const [selectedResourceTeamId, setSelectedResourceTeamId] = useState<
+    string | undefined
+  >();
   const [toolbarDeleteConfirmId, setToolbarDeleteConfirmId] = useState<
     string | null
   >(null);
@@ -1412,6 +1419,7 @@ export function ResourcesPanel({
     includeAgentScratch: showAgentScratch,
   });
   const workspaceTreeQuery = useResourceTree("workspace");
+  const teamTreeQuery = useResourceTree("team", { teamGroupId });
   const mcpServersQuery = useMcpServers({ defer: true });
   const builtinCapabilitiesQuery = useBuiltinCapabilities();
   const createMcpServer = useCreateMcpServer();
@@ -1522,6 +1530,7 @@ export function ResourcesPanel({
       !parseMcpBuiltinVirtualId(selectedResourceId)
       ? selectedResourceId
       : null,
+    selectedResourceTeamId,
   );
   const createResource = useCreateResource();
   const updateResource = useUpdateResource();
@@ -1599,8 +1608,10 @@ export function ResourcesPanel({
   ]);
   const selectedResourceReadOnly =
     !!resourceQuery.data &&
-    ((isWorkspaceResourceOwner(resourceQuery.data.owner) &&
-      !isLocalWorkspaceResource(resourceQuery.data)) ||
+    ((resourceQuery.data.owner.startsWith("__team__:") &&
+      resourceQuery.data.owner !== `__team__:${teamGroupId}`) ||
+      (isWorkspaceResourceOwner(resourceQuery.data.owner) &&
+        !isLocalWorkspaceResource(resourceQuery.data)) ||
       (isOrganizationResourceOwner(resourceQuery.data.owner) && !canEditOrg));
 
   const seededRef = useRef(false);
@@ -1621,13 +1632,22 @@ export function ResourcesPanel({
 
   const isEditing = selectedResourceId !== null;
 
-  const handleSelect = useCallback((resource: ResourceMeta) => {
-    setSelectedResourceId(resource.id);
-  }, []);
+  const handleSelect = useCallback(
+    (resource: ResourceMeta) => {
+      setSelectedResourceTeamId(
+        resource.owner.startsWith("__team__:") ? teamGroupId : undefined,
+      );
+      setSelectedResourceId(resource.id);
+    },
+    [teamGroupId],
+  );
 
   useEffect(() => {
     if (!openResourceRef) return;
-    openResourceRef.current = (id: string) => setSelectedResourceId(id);
+    openResourceRef.current = (id: string, resourceTeamGroupId?: string) => {
+      setSelectedResourceTeamId(resourceTeamGroupId);
+      setSelectedResourceId(id);
+    };
     return () => {
       openResourceRef.current = null;
     };
@@ -1730,12 +1750,34 @@ export function ResourcesPanel({
         return;
       }
       if (parseMcpBuiltinVirtualId(id)) return;
-      deleteResource.mutate(id);
-      if (selectedResourceId === id) {
-        setSelectedResourceId(null);
-      }
+      deleteResource.mutate(
+        selectedResourceId === id && selectedResourceTeamId
+          ? { id, teamGroupId: selectedResourceTeamId }
+          : id,
+        {
+          onSuccess: () => {
+            if (selectedResourceId === id) setSelectedResourceId(null);
+          },
+          onError: (error) =>
+            showToast(
+              "err",
+              actionErrorMessage(error) ??
+                t("agentChat.settingsResources.removeFailed", {
+                  name: resourceQuery.data?.path ?? "",
+                }),
+            ),
+        },
+      );
     },
-    [deleteResource, deleteMcpServer, selectedResourceId],
+    [
+      deleteResource,
+      deleteMcpServer,
+      selectedResourceId,
+      selectedResourceTeamId,
+      resourceQuery.data?.path,
+      showToast,
+      t,
+    ],
   );
 
   const handleCreateMcpServer = useCallback(
@@ -1763,9 +1805,35 @@ export function ResourcesPanel({
     (content: string) => {
       if (!selectedResourceId) return;
       if (selectedResourceReadOnly) return;
-      updateResource.mutate({ id: selectedResourceId, content });
+      updateResource.mutate(
+        {
+          id: selectedResourceId,
+          teamGroupId: selectedResourceTeamId,
+          content,
+        },
+        {
+          onError: (error) => {
+            showToast(
+              "err",
+              actionErrorMessage(error) ??
+                (error instanceof Error ? error.message : null) ??
+                t("agentChat.settingsResources.saveFailed", {
+                  name: resourceQuery.data?.path ?? "",
+                }),
+            );
+          },
+        },
+      );
     },
-    [updateResource, selectedResourceId, selectedResourceReadOnly],
+    [
+      updateResource,
+      selectedResourceId,
+      selectedResourceTeamId,
+      selectedResourceReadOnly,
+      resourceQuery,
+      showToast,
+      t,
+    ],
   );
 
   const handleUploadFiles = useCallback(
@@ -2145,7 +2213,10 @@ export function ResourcesPanel({
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <a
-                        href={resourceDownloadUrl(resourceQuery.data.id)}
+                        href={resourceDownloadUrl(
+                          resourceQuery.data.id,
+                          selectedResourceTeamId,
+                        )}
                         aria-label="Download resource"
                         className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/50"
                       >
@@ -2340,7 +2411,9 @@ export function ResourcesPanel({
                 canEditOrg={canEditOrg}
               />
             </div>
-          ) : selectedResourceId && resourceQuery.data ? (
+          ) : selectedResourceId &&
+            resourceQuery.data &&
+            !resourceQuery.isError ? (
             <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
               <ResourceEditor
                 resource={resourceQuery.data}
@@ -2376,6 +2449,12 @@ export function ResourcesPanel({
                 isError: sharedTreeQuery.isError,
                 retry: () => void sharedTreeQuery.refetch(),
               },
+              team: {
+                nodes: teamTreeQuery.data ?? [],
+                isLoading: teamTreeQuery.isLoading,
+                isError: teamTreeQuery.isError,
+                retry: () => void teamTreeQuery.refetch(),
+              },
               workspace: {
                 nodes: workspaceTree,
                 isLoading: workspaceTreeQuery.isLoading,
@@ -2391,7 +2470,16 @@ export function ResourcesPanel({
                 : null
             }
             onOpen={handleSelect}
-            onRemove={(resource) => deleteResource.mutateAsync(resource.id)}
+            onRemove={(resource) =>
+              deleteResource.mutateAsync(
+                resource.owner.startsWith("__team__:")
+                  ? {
+                      id: resource.id,
+                      teamGroupId: resource.owner.slice("__team__:".length),
+                    }
+                  : resource.id,
+              )
+            }
           />
         ) : (
           <div className="flex-1 min-h-0 overflow-y-auto">

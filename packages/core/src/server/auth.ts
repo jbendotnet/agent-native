@@ -4822,6 +4822,19 @@ export const authSessionHandler = defineEventHandler(async (event: H3Event) => {
     return { error: "Not authenticated" };
   }
   setFrameworkSessionHintCookie(event);
+  const { getOrgContext } = await import("../org/context.js");
+  const { ActiveWorkspaceTeamError, restoreActiveWorkspaceTeam } =
+    await import("../workspace-connections/active-team.js");
+  const org = await getOrgContext(event);
+  try {
+    await restoreActiveWorkspaceTeam(session.email, org.orgId);
+  } catch (error) {
+    if (error instanceof ActiveWorkspaceTeamError) {
+      setResponseStatus(event, error.statusCode);
+      return { error: error.message };
+    }
+    throw error;
+  }
   const response: AuthSessionResponse = {
     ...session,
     testIdentity: isTestIdentity(session.email),

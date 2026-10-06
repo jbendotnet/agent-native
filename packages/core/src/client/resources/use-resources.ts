@@ -324,6 +324,7 @@ export function useResourceTree(
       agentWrites,
     ],
     placeholderData: scope === "team" ? undefined : keepPreviousData,
+    enabled: scope !== "team" || !!opts?.teamGroupId,
     queryFn: async () => {
       const data = await fetchJson<{ tree: TreeNode[] }>(
         resourceTreeUrl(scope, opts),

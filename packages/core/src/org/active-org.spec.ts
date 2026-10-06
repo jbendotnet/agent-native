@@ -3,6 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const getUserSetting =
   vi.fn<(email: string, key: string) => Promise<unknown>>();
 const putUserSetting = vi.fn(async () => {});
+const restoreActiveWorkspaceTeam = vi.hoisted(() => vi.fn());
+const markActiveOrgSelectionChanged = vi.hoisted(() => vi.fn());
+
+vi.mock("../workspace-connections/active-team.js", () => ({
+  restoreActiveWorkspaceTeam: (...args: unknown[]) =>
+    restoreActiveWorkspaceTeam(...args),
+}));
+vi.mock("./context.js", () => ({
+  markActiveOrgSelectionChanged: (...args: unknown[]) =>
+    markActiveOrgSelectionChanged(...args),
+}));
 
 vi.mock("../settings/user-settings.js", () => ({
   getUserSetting: (email: string, key: string) => getUserSetting(email, key),
@@ -24,6 +35,8 @@ describe("setActiveOrgId", () => {
   beforeEach(() => {
     getUserSetting.mockReset();
     putUserSetting.mockClear();
+    restoreActiveWorkspaceTeam.mockReset();
+    markActiveOrgSelectionChanged.mockReset();
     getUserSetting.mockResolvedValue({ orgId: null });
     warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     warn.mockClear();
@@ -125,5 +138,23 @@ describe("setActiveOrgId", () => {
     await setActiveOrgId("tim@example.com", "coach-org", "switch");
 
     expect(warnings()).not.toContain("tim@example.com");
+  });
+
+  it("restores the new organization's choice and exposes a failed mirror", async () => {
+    const event = {} as import("h3").H3Event;
+    await setActiveOrgId("owner@example.com", "org-2", "switch", event);
+    expect(restoreActiveWorkspaceTeam).toHaveBeenCalledWith(
+      "owner@example.com",
+      "org-2",
+    );
+    expect(markActiveOrgSelectionChanged).toHaveBeenCalledWith(event);
+
+    restoreActiveWorkspaceTeam.mockRejectedValueOnce(
+      new Error("mirror unavailable"),
+    );
+    await expect(
+      setActiveOrgId("owner@example.com", "org-1", "switch", event),
+    ).rejects.toThrow("mirror unavailable");
+    expect(markActiveOrgSelectionChanged).toHaveBeenCalledTimes(1);
   });
 });

@@ -206,6 +206,16 @@ const CORE_SHARING_ACTIONS: Array<{ name: string; specifier: string }> = [
       "@agent-native/core/workspace-connections/actions/set-workspace-team-leads",
   },
   {
+    name: "set-active-workspace-team",
+    specifier:
+      "@agent-native/core/workspace-connections/actions/set-active-workspace-team",
+  },
+  {
+    name: "get-active-workspace-team",
+    specifier:
+      "@agent-native/core/workspace-connections/actions/get-active-workspace-team",
+  },
+  {
     name: "delete-workspace-user-group",
     specifier:
       "@agent-native/core/workspace-connections/actions/delete-workspace-user-group",

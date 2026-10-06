@@ -885,6 +885,7 @@ export const AgentKitAssistantChat = forwardRef<
   );
   const isolateHistoryByScopeRef = useRef(props.isolateHistoryByScope);
   const createTransportRef = useRef(props.createTransport);
+  const creationTeamRef = useRef(props.creationTeam);
   const injectedRuntimeRef = useRef(props.runtime);
   const adapterReloadKeyRef = useRef(props.adapterReloadKey);
   transportThreadIdRef.current = threadId;
@@ -903,6 +904,7 @@ export const AgentKitAssistantChat = forwardRef<
   createTransportRef.current = props.createTransport;
   const autoContinueLabelRef = useRef("");
   autoContinueLabelRef.current = t("agentChat.status.resuming");
+  creationTeamRef.current = props.creationTeam;
   const transport = useMemo(() => {
     const operations: NonNullable<
       CreateAgentNativeAgentKitTransportOptions["operations"]
@@ -962,6 +964,9 @@ export const AgentKitAssistantChat = forwardRef<
       streamingUrl: props.streamingUrl,
       tabId: props.tabId,
       threadId,
+      get creationTeam() {
+        return creationTeamRef.current;
+      },
       modelRef,
       engineRef,
       effortRef,
@@ -980,6 +985,9 @@ export const AgentKitAssistantChat = forwardRef<
       browserTabId: props.browserTabId,
       get threadId() {
         return transportThreadIdRef.current;
+      },
+      get creationTeam() {
+        return creationTeamRef.current;
       },
       surface,
       get mode() {

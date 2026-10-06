@@ -17,6 +17,12 @@ import {
   DialogTitle,
 } from "@agent-native/toolkit/ui/dialog";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@agent-native/toolkit/ui/dropdown-menu";
+import {
   Empty,
   EmptyContent,
   EmptyDescription,
@@ -32,11 +38,12 @@ import {
 } from "@agent-native/toolkit/ui/input-group";
 import { Label } from "@agent-native/toolkit/ui/label";
 import {
-  IconTrash,
   IconPencil,
   IconPlus,
   IconUsersGroup,
   IconSearch,
+  IconDots,
+  IconTrash,
 } from "@tabler/icons-react";
 import { useEffect, useId, useMemo, useState, type FormEvent } from "react";
 
@@ -47,25 +54,31 @@ import {
   SectionTooltipProvider,
 } from "./TeamPrimitives.js";
 
+const EMPTY_MEMBER_EMAILS: string[] = [];
+
 export function WorkspaceGroupEditor({
   open,
   group,
-  initialMemberEmails = [],
+  initialMemberEmails = EMPTY_MEMBER_EMAILS,
+  canManageAll = true,
   onClose,
 }: {
   open: boolean;
   group: WorkspaceUserGroup | null;
   initialMemberEmails?: string[];
+  canManageAll?: boolean;
   onClose: () => void;
 }) {
   const t = useT();
   const nameId = useId();
   const peopleId = useId();
   const [name, setName] = useState("");
+  const [isTeam, setIsTeam] = useState(false);
   const [members, setMembers] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const memberSearch = useShareOrgMemberSearch(search, open, { limit: 100 });
   const saveGroup = useActionMutation("upsert-workspace-user-group");
+  const updateMembers = useActionMutation("bulk-update-workspace-user-groups");
   const [saveError, setSaveError] = useState<unknown>(null);
   const selected = useMemo(
     () => new Set(members.map((email) => email.toLowerCase())),
@@ -75,6 +88,7 @@ export function WorkspaceGroupEditor({
   useEffect(() => {
     if (!open) return;
     setName(group?.name ?? "");
+    setIsTeam(group?.isTeam ?? false);
     setMembers(group?.memberEmails ?? initialMemberEmails);
     setSearch("");
     setSaveError(null);
@@ -102,13 +116,15 @@ export function WorkspaceGroupEditor({
   function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedName = name.trim();
-    if (!trimmedName || saveGroup.isPending) return;
+    if (!trimmedName || saveGroup.isPending || updateMembers.isPending) return;
     setSaveError(null);
+    if (!canManageAll) return;
     saveGroup.mutate(
       {
         ...(group?.id ? { id: group.id } : {}),
         name: trimmedName,
         memberEmails: members,
+        ...(!group?.isTeam && isTeam ? { isTeam: true } : {}),
       },
       { onSuccess: onClose, onError: setSaveError },
     );
@@ -130,19 +146,34 @@ export function WorkspaceGroupEditor({
                 : t("org.createGroup", { defaultValue: "Create group" })}
             </DialogTitle>
           </DialogHeader>
-          <div className="grid gap-2">
-            <Label htmlFor={nameId}>
-              {t("org.groupName", { defaultValue: "Group name" })}
-            </Label>
-            <Input
-              id={nameId}
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="Rev Ops"
-              autoComplete="off"
-              autoFocus
-            />
-          </div>
+          {canManageAll ? (
+            <div className="grid gap-2">
+              <Label htmlFor={nameId}>
+                {t("org.groupName", { defaultValue: "Group name" })}
+              </Label>
+              <Input
+                id={nameId}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Rev Ops"
+                autoComplete="off"
+                autoFocus
+              />
+            </div>
+          ) : null}
+          {canManageAll && !group?.isTeam ? (
+            <label
+              className="flex items-center gap-2 text-sm"
+              htmlFor={`${nameId}-team`}
+            >
+              <Checkbox
+                id={`${nameId}-team`}
+                checked={isTeam}
+                onCheckedChange={(value) => setIsTeam(value === true)}
+              />
+              {t("agentChat.settingsResources.designateTeam")}
+            </label>
+          ) : null}
           <div className="grid gap-2">
             <div className="flex items-center justify-between gap-3">
               <Label htmlFor={peopleId}>
@@ -196,9 +227,34 @@ export function WorkspaceGroupEditor({
                     <Checkbox
                       id={`workspace-group-member-${member.email}`}
                       checked={selected.has(member.email)}
-                      onCheckedChange={(value) =>
-                        toggleMember(member.email, value === true)
+                      disabled={
+                        updateMembers.isPending ||
+                        (!canManageAll &&
+                          group?.leadEmails.includes(member.email))
                       }
+                      onCheckedChange={(value) => {
+                        if (canManageAll)
+                          return toggleMember(member.email, value === true);
+                        if (!group) return;
+                        const previous = members;
+                        setSaveError(null);
+                        toggleMember(member.email, value === true);
+                        updateMembers.mutate(
+                          {
+                            groupId: group.id,
+                            memberEmails: [member.email],
+                            operation: value === true ? "add" : "remove",
+                          },
+                          {
+                            onSuccess: (updated) =>
+                              setMembers(updated.memberEmails),
+                            onError: (error) => {
+                              setMembers(previous);
+                              setSaveError(error);
+                            },
+                          },
+                        );
+                      }}
                       aria-label={member.email}
                     />
                   </label>
@@ -232,16 +288,18 @@ export function WorkspaceGroupEditor({
             <ToolkitButton type="button" variant="secondary" onClick={onClose}>
               {t("org.cancel")}
             </ToolkitButton>
-            <ToolkitButton
-              type="submit"
-              disabled={!name.trim() || saveGroup.isPending}
-            >
-              <PendingLabel
-                pending={saveGroup.isPending}
-                label={t("org.saveGroup", { defaultValue: "Save group" })}
-                pendingLabel={t("agentChat.common.saving")}
-              />
-            </ToolkitButton>
+            {canManageAll ? (
+              <ToolkitButton
+                type="submit"
+                disabled={!name.trim() || saveGroup.isPending}
+              >
+                <PendingLabel
+                  pending={saveGroup.isPending}
+                  label={t("org.saveGroup", { defaultValue: "Save group" })}
+                  pendingLabel={t("agentChat.common.saving")}
+                />
+              </ToolkitButton>
+            ) : null}
           </DialogFooter>
         </form>
       </DialogContent>
@@ -328,20 +386,104 @@ function DeleteGroupDialog({
   );
 }
 
+function TeamLeadsDialog({
+  group,
+  onClose,
+}: {
+  group: WorkspaceUserGroup | null;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const [leads, setLeads] = useState<string[]>([]);
+  const [error, setError] = useState<unknown>(null);
+  const setTeamLeads = useActionMutation("set-workspace-team-leads");
+  useEffect(() => {
+    setLeads(group?.leadEmails ?? []);
+    setError(null);
+  }, [group]);
+
+  return (
+    <Dialog
+      open={group !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>
+            {t("agentChat.settingsResources.manageLeads")}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="max-h-64 overflow-y-auto">
+          {group?.memberEmails.map((email) => (
+            <label key={email} className="flex items-center gap-2 py-2 text-sm">
+              <Checkbox
+                checked={leads.includes(email)}
+                onCheckedChange={(checked) =>
+                  setLeads((current) =>
+                    checked === true
+                      ? [...current, email]
+                      : current.filter((item) => item !== email),
+                  )
+                }
+                aria-label={t("agentChat.settingsResources.leadFor", { email })}
+              />
+              {email}
+            </label>
+          ))}
+        </div>
+        <DialogErrorAlert error={error} />
+        <DialogFooter>
+          <ToolkitButton variant="secondary" onClick={onClose}>
+            {t("org.cancel")}
+          </ToolkitButton>
+          <ToolkitButton
+            disabled={!group || setTeamLeads.isPending}
+            onClick={() => {
+              if (!group) return;
+              setError(null);
+              setTeamLeads.mutate(
+                { teamGroupId: group.id, leadEmails: leads },
+                {
+                  onSuccess: onClose,
+                  onError: (failure) => {
+                    setLeads(group.leadEmails);
+                    setError(failure);
+                  },
+                },
+              );
+            }}
+          >
+            {t("org.save")}
+          </ToolkitButton>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function WorkspaceGroupsCard({
   groups,
   onNewGroup,
   onEditGroup,
   emptyMessage,
+  canManageAll = true,
+  currentUserEmail = "",
 }: {
   groups: WorkspaceUserGroup[];
   onNewGroup: () => void;
   onEditGroup: (group: WorkspaceUserGroup) => void;
   /** The empty state's description when there are no groups. */
   emptyMessage?: string;
+  canManageAll?: boolean;
+  currentUserEmail?: string;
 }) {
   const t = useT();
   const [deleting, setDeleting] = useState<WorkspaceUserGroup | null>(null);
+  const [editingLeads, setEditingLeads] = useState<WorkspaceUserGroup | null>(
+    null,
+  );
   const newGroupLabel = t("org.newGroup", { defaultValue: "New group" });
 
   return (
@@ -350,7 +492,7 @@ export function WorkspaceGroupsCard({
         <h2 className="text-sm font-semibold text-foreground">
           {t("org.groups", { defaultValue: "Groups" })}
         </h2>
-        {groups.length > 0 ? (
+        {canManageAll && groups.length > 0 ? (
           <ToolkitButton
             type="button"
             variant="outline"
@@ -369,35 +511,66 @@ export function WorkspaceGroupsCard({
               key={group.id}
               icon={<IconUsersGroup />}
               label={group.name}
-              description={t("org.memberCount", {
-                count: group.memberEmails.length,
-              })}
+              description={
+                group.isTeam ? t("agentChat.settingsResources.team") : undefined
+              }
               control={
                 <div className="flex items-center gap-1">
-                  <ToolkitButton
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => onEditGroup(group)}
-                    aria-label={t("org.editGroupAria", {
-                      defaultValue: "Edit group {{name}}",
-                      name: group.name,
-                    })}
-                  >
-                    <IconPencil />
-                  </ToolkitButton>
-                  <ToolkitButton
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => setDeleting(group)}
-                    aria-label={t("org.deleteGroupAria", {
-                      defaultValue: "Delete group {{name}}",
-                      name: group.name,
-                    })}
-                  >
-                    <IconTrash />
-                  </ToolkitButton>
+                  {canManageAll ||
+                  (group.isTeam &&
+                    group.leadEmails.includes(currentUserEmail)) ? (
+                    <ToolkitButton
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => onEditGroup(group)}
+                      aria-label={t("org.editGroupAria", {
+                        defaultValue: "Edit group {{name}}",
+                        name: group.name,
+                      })}
+                    >
+                      <IconPencil />
+                    </ToolkitButton>
+                  ) : null}
+                  {canManageAll && group.isTeam ? (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <ToolkitButton
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={t(
+                            "agentChat.settingsResources.groupActions",
+                            {
+                              name: group.name,
+                            },
+                          )}
+                        >
+                          <IconDots />
+                        </ToolkitButton>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onSelect={() => setEditingLeads(group)}
+                        >
+                          {t("agentChat.settingsResources.manageLeads")}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ) : null}
+                  {canManageAll ? (
+                    <ToolkitButton
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => setDeleting(group)}
+                      aria-label={t("org.deleteGroupAria", {
+                        name: group.name,
+                      })}
+                    >
+                      <IconTrash />
+                    </ToolkitButton>
+                  ) : null}
                 </div>
               }
             />
@@ -415,12 +588,14 @@ export function WorkspaceGroupsCard({
                 <EmptyDescription>{emptyMessage}</EmptyDescription>
               ) : null}
             </EmptyHeader>
-            <EmptyContent>
-              <ToolkitButton type="button" size="sm" onClick={onNewGroup}>
-                <IconPlus />
-                {newGroupLabel}
-              </ToolkitButton>
-            </EmptyContent>
+            {canManageAll ? (
+              <EmptyContent>
+                <ToolkitButton type="button" size="sm" onClick={onNewGroup}>
+                  <IconPlus />
+                  {newGroupLabel}
+                </ToolkitButton>
+              </EmptyContent>
+            ) : null}
           </Empty>
         )}
       </div>
@@ -429,6 +604,10 @@ export function WorkspaceGroupsCard({
         onOpenChange={(open) => {
           if (!open) setDeleting(null);
         }}
+      />
+      <TeamLeadsDialog
+        group={editingLeads}
+        onClose={() => setEditingLeads(null)}
       />
     </section>
   );
@@ -451,6 +630,7 @@ export interface WorkspaceGroupEditorController {
     open: boolean;
     group: WorkspaceUserGroup | null;
     initialMemberEmails: string[];
+    canManageAll?: boolean;
     onClose: () => void;
   };
 }
@@ -493,7 +673,7 @@ export function useWorkspaceGroupEditor(): WorkspaceGroupEditorController {
   };
 }
 
-/** Workspace user groups. Owners and admins only; renders nothing otherwise. */
+/** Workspace user groups and marked team membership in organization settings. */
 export function GroupsSection({
   groupEditor,
   emptyMessage,
@@ -502,23 +682,57 @@ export function GroupsSection({
   /** Replaces "No groups yet" when there are no groups. */
   emptyMessage?: string;
 }) {
+  const t = useT();
   const { data: org } = useOrg();
   const isOwnerOrAdmin = org?.role === "owner" || org?.role === "admin";
-  const groupsQuery = useWorkspaceUserGroups(isOwnerOrAdmin);
+  const groupsQuery = useWorkspaceUserGroups(Boolean(org?.orgId));
   const ownGroupEditor = useWorkspaceGroupEditor();
   const editor = groupEditor ?? ownGroupEditor;
 
-  if (!org?.orgId || !isOwnerOrAdmin) return null;
+  if (!org?.orgId) return null;
+  const email = org.email.trim().toLowerCase();
+  const visibleGroups = isOwnerOrAdmin
+    ? (groupsQuery.data ?? [])
+    : (groupsQuery.data ?? []).filter(
+        (group) => group.isTeam && group.memberEmails.includes(email),
+      );
 
   return (
     <SectionTooltipProvider>
-      <WorkspaceGroupsCard
-        groups={groupsQuery.data ?? []}
-        onNewGroup={() => editor.openGroupEditor(null)}
-        onEditGroup={(group) => editor.openGroupEditor(group)}
-        emptyMessage={emptyMessage}
+      {groupsQuery.isLoading && !groupsQuery.data ? (
+        <div className="grid gap-2" aria-busy="true">
+          <Skeleton className="h-6 w-28" />
+          <Skeleton className="h-14 w-full" />
+        </div>
+      ) : groupsQuery.isError ? (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-3 text-sm text-destructive"
+        >
+          {groupsQuery.error?.message ?? t("org.loadErrorFallback")}
+          <ToolkitButton
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void groupsQuery.refetch()}
+          >
+            {t("org.tryAgain")}
+          </ToolkitButton>
+        </div>
+      ) : (
+        <WorkspaceGroupsCard
+          groups={visibleGroups}
+          onNewGroup={() => editor.openGroupEditor(null)}
+          onEditGroup={(group) => editor.openGroupEditor(group)}
+          canManageAll={isOwnerOrAdmin}
+          currentUserEmail={email}
+          emptyMessage={emptyMessage}
+        />
+      )}
+      <WorkspaceGroupEditor
+        {...editor.dialogProps}
+        canManageAll={isOwnerOrAdmin}
       />
-      <WorkspaceGroupEditor {...editor.dialogProps} />
     </SectionTooltipProvider>
   );
 }

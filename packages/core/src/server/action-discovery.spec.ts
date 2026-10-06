@@ -677,6 +677,8 @@ describe("action discovery", () => {
         "upsert-workspace-user-group",
         "bulk-update-workspace-user-groups",
         "set-workspace-team-leads",
+        "set-active-workspace-team",
+        "get-active-workspace-team",
         "delete-workspace-user-group",
       ],
       emailCatalog: [

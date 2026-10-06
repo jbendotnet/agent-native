@@ -8,6 +8,7 @@ import {
   type ResourceMeta,
   type TreeNode,
 } from "@agent-native/core/client/resources/use-resources";
+import { actionErrorMessage } from "@agent-native/core/client/use-action";
 import { Skeleton } from "@agent-native/toolkit/design-system";
 import { Alert, AlertDescription } from "@agent-native/toolkit/ui/alert";
 import {
@@ -61,7 +62,7 @@ import {
   type LeafResourceNode,
 } from "./ResourceTree.js";
 
-export type ResourceGroupSource = "personal" | "shared" | "workspace";
+export type ResourceGroupSource = "personal" | "shared" | "workspace" | "team";
 
 /** One group on a Settings resource page (Personal, {Org}, From Dispatch). */
 export interface ResourceSettingsGroupConfig {
@@ -70,6 +71,7 @@ export interface ResourceSettingsGroupConfig {
   view: ResourceView;
   /** Scopes whose rows this group lists; more than one tags each row. */
   sources: readonly ResourceGroupSource[];
+  teamGroupId?: string;
   /** Defaults to Personal, the organization name, or From Dispatch. */
   title?: string;
   emptyIcon: Icon;
@@ -112,6 +114,7 @@ export function isResourceRowReadOnly(
   canEditOrg: boolean,
 ): boolean {
   if (source === "personal") return false;
+  if (source === "team") return false;
   if (source === "shared") return !canEditOrg;
   return metadataSource(resource) !== LOCAL_WORKSPACE_RESOURCE_METADATA_SOURCE;
 }
@@ -173,19 +176,27 @@ export function ResourceSettingsGroups({
       ? t("agentChat.settingsResources.personal")
       : source === "shared"
         ? orgName || t("agentChat.settingsResources.organization")
-        : t("agentChat.settingsResources.fromDispatch");
+        : source === "team"
+          ? t("agentChat.settingsResources.team")
+          : t("agentChat.settingsResources.fromDispatch");
 
   return (
     <div className="flex flex-col gap-8">
       {groups.map((group) => {
         const rows: GroupRow[] = group.sources.flatMap((source) =>
-          getLeafResources(
-            filterResourceTree(trees[source].nodes, group.view),
-          ).map((node) => ({
-            node,
-            source,
-            readOnly: isResourceRowReadOnly(source, node.resource, canEditOrg),
-          })),
+          trees[source].isError
+            ? []
+            : getLeafResources(
+                filterResourceTree(trees[source].nodes, group.view),
+              ).map((node) => ({
+                node,
+                source,
+                readOnly: isResourceRowReadOnly(
+                  source,
+                  node.resource,
+                  canEditOrg,
+                ),
+              })),
         );
         const isLoading = group.sources.some(
           (source) => trees[source].isLoading,
@@ -251,6 +262,7 @@ export function ResourceSettingsGroups({
                       }
                       isDeleting={deletingId === row.node.resource.id}
                       onOpen={onOpen}
+                      teamGroupId={group.teamGroupId}
                       onRemove={() => setRemoving(row)}
                     />
                   ))}
@@ -304,21 +316,21 @@ function RemoveResourceDialog({
 }) {
   const t = useT();
   const [pending, setPending] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<unknown>(null);
   const resource = row?.node.resource ?? null;
   const name = resource?.path ?? "";
 
-  useEffect(() => setFailed(false), [resource?.id]);
+  useEffect(() => setFailed(null), [resource?.id]);
 
   const remove = async () => {
     if (!resource || pending) return;
     setPending(true);
-    setFailed(false);
+    setFailed(null);
     try {
       await onRemove(resource);
       onOpenChange(false);
-    } catch {
-      setFailed(true);
+    } catch (error) {
+      setFailed(error);
     } finally {
       setPending(false);
     }
@@ -331,7 +343,9 @@ function RemoveResourceDialog({
         ? t("agentChat.settingsModel.affectsOrg", {
             org: orgName || t("agentChat.settingsResources.organization"),
           })
-        : null;
+        : row?.source === "team"
+          ? t("agentChat.settingsResources.team")
+          : null;
 
   return (
     <AlertDialog open={row !== null} onOpenChange={onOpenChange}>
@@ -348,7 +362,8 @@ function RemoveResourceDialog({
           <Alert variant="destructive">
             <IconAlertCircle />
             <AlertDescription>
-              {t("agentChat.settingsResources.removeFailed", { name })}
+              {actionErrorMessage(failed) ??
+                t("agentChat.settingsResources.removeFailed", { name })}
             </AlertDescription>
           </Alert>
         ) : null}
@@ -396,12 +411,14 @@ export function ReadOnlyNote({ label, hint }: { label: string; hint: string }) {
 
 function ResourceSettingsRow({
   row,
+  teamGroupId,
   scopeLabel,
   isDeleting,
   onOpen,
   onRemove,
 }: {
   row: GroupRow;
+  teamGroupId?: string;
   scopeLabel?: string;
   isDeleting: boolean;
   onOpen: (resource: ResourceMeta) => void;
@@ -462,7 +479,13 @@ function ResourceSettingsRow({
         </DropdownMenuItem>
         {isTextResource(resource) && (
           <DropdownMenuItem asChild>
-            <a href={resourceDownloadUrl(resource.id)} download>
+            <a
+              href={resourceDownloadUrl(
+                resource.id,
+                source === "team" ? teamGroupId : undefined,
+              )}
+              download
+            >
               <IconDownload className="size-4" />
               {t("agentChat.settingsResources.download")}
             </a>

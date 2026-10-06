@@ -463,6 +463,11 @@ const messages: ToolkitAgentChatTranslation = {
   "composer.menu.uploadFileDescription":
     "画像、PDF、テキスト／コード、JSON、CSV",
   "composer.messageAgent": "エージェントにメッセージを送信...",
+  "team.nextChat": "新しいチャット",
+  "team.thisChat": "このチャット",
+  "team.noTeam": "チームなし",
+  "team.unavailable":
+    "チームを選択できません。送信する前に再試行してください。",
   "composer.model": "モデル",
   "composer.needsApiKey": "API キーが必要",
   "composer.pageTitle": "ページタイトル",
@@ -2566,6 +2571,16 @@ const messages: ToolkitAgentChatTranslation = {
   "settingsShell.searchPlaceholder": "設定を検索",
   "settingsShell.unread": "新着",
   "settingsResources.personal": "個人",
+  "settingsResources.team": "チーム",
+  "settingsResources.teamScope": "チームのコンテキスト",
+  "settingsResources.teamEmpty": "チームのコンテキストはまだありません",
+  "settingsResources.teamSkillName": "スキル名",
+  "settingsResources.teamSkillDescription":
+    "エージェントはいつこのスキルを使いますか？",
+  "settingsResources.designateTeam": "このグループをチームにする",
+  "settingsResources.manageLeads": "リーダーを管理",
+  "settingsResources.leadFor": "リーダー: {{email}}",
+  "settingsResources.groupActions": "{{name}} の操作",
   "settingsResources.organization": "組織",
   "settingsResources.fromDispatch": "Dispatch から",
   "settingsResources.readOnly": "読み取り専用",

@@ -1,4 +1,4 @@
-import { createApp } from "h3";
+import { createApp, createError } from "h3";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -20,6 +20,13 @@ const mocks = vi.hoisted(() => ({
   getEnabledSkillLabsForUser: vi.fn(),
   getSession: vi.fn(),
   authorizedTeamResourceOwner: vi.fn(),
+  getWorkspaceTeamForMember: vi.fn(),
+  threadExecute: vi.fn(async () => ({ rows: [], rowsAffected: 1 })),
+  createThread: vi.fn(),
+  getThread: vi.fn(),
+  resolveThreadAccess: vi.fn(),
+  productionOptions:
+    [] as import("../agent/production-agent.js").ProductionAgentOptions[],
 }));
 
 const routeHarness = vi.hoisted(() => ({
@@ -28,7 +35,6 @@ const routeHarness = vi.hoisted(() => ({
 
 const threadStoreMocks = vi.hoisted(() => ({
   mutateThreadQueuedMessages: vi.fn(),
-  resolveThreadAccess: vi.fn(),
 }));
 
 function runtimeSkillsFromBundle(bundle: { skills?: Record<string, any> }) {
@@ -99,15 +105,48 @@ vi.mock("./auth.js", async (importOriginal) => ({
   getSession: (...args: any[]) => mocks.getSession(...args),
 }));
 
-vi.mock("../chat-threads/store.js", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("../chat-threads/store.js")>();
+vi.mock("../db/client.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../db/client.js")>()),
+  getDbExec: () => ({ execute: mocks.threadExecute }),
+}));
+
+vi.mock("../db/ddl-guard.js", () => ({
+  ensureColumnExists: vi.fn(),
+  ensureIndexExists: vi.fn(),
+  ensureTableExists: vi.fn(),
+}));
+
+vi.mock("../workspace-connections/groups.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../workspace-connections/groups.js")
+  >()),
+  getWorkspaceTeamForMember: (...args: unknown[]) =>
+    mocks.getWorkspaceTeamForMember(...args),
+}));
+
+vi.mock("../chat-threads/store.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../chat-threads/store.js")>()),
+  mutateThreadQueuedMessages: (...args: unknown[]) =>
+    threadStoreMocks.mutateThreadQueuedMessages(...args),
+  createThread: (
+    ...args: Parameters<typeof import("../chat-threads/store.js").createThread>
+  ) => mocks.createThread(...args),
+  getThread: (...args: unknown[]) => mocks.getThread(...args),
+  resolveThreadAccess: (...args: unknown[]) =>
+    mocks.resolveThreadAccess(...args),
+}));
+
+vi.mock("../agent/production-agent.js", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("../agent/production-agent.js")>();
   return {
-    ...actual,
-    mutateThreadQueuedMessages: (...args: any[]) =>
-      threadStoreMocks.mutateThreadQueuedMessages(...args),
-    resolveThreadAccess: (...args: any[]) =>
-      threadStoreMocks.resolveThreadAccess(...args),
+    ...original,
+    createProductionAgentHandler: (
+      options: import("../agent/production-agent.js").ProductionAgentOptions,
+    ) => {
+      mocks.productionOptions.push(options);
+      return original.createProductionAgentHandler(options);
+    },
   };
 });
 
@@ -246,8 +285,28 @@ beforeEach(() => {
   vi.clearAllMocks();
   routeHarness.initPromises.length = 0;
   threadStoreMocks.mutateThreadQueuedMessages.mockReset();
-  threadStoreMocks.resolveThreadAccess.mockReset();
+  mocks.productionOptions.length = 0;
+  mocks.resolveThreadAccess.mockReset();
   mocks.getSession.mockResolvedValue(null);
+  mocks.getWorkspaceTeamForMember.mockResolvedValue(null);
+  mocks.createThread.mockImplementation(async (owner, options) => {
+    if (
+      owner !== "user@example.test" ||
+      options.orgId !== "org-a" ||
+      options.teamGroupId !== "team-a"
+    ) {
+      throw createError({
+        statusCode: 403,
+        statusMessage: "Team not found or access denied",
+      });
+    }
+    return {
+      id: "new-thread",
+      ownerEmail: owner,
+      orgId: options.orgId,
+      teamGroupId: options.teamGroupId,
+    };
+  });
   mocks.authorizedTeamResourceOwner.mockImplementation(
     async (id: string, orgId: string | null, email: string) => {
       if (
@@ -397,7 +456,7 @@ describe("agent chat queued-message route", () => {
       messageId,
       claimId: "claim-race",
     };
-    threadStoreMocks.resolveThreadAccess.mockResolvedValue({
+    mocks.resolveThreadAccess.mockResolvedValue({
       id: threadId,
       scope: null,
     });
@@ -419,7 +478,7 @@ describe("agent chat queued-message route", () => {
 
     const responseBody = await response.json();
     expect(response.status, JSON.stringify(responseBody)).toBe(409);
-    expect(threadStoreMocks.resolveThreadAccess).toHaveBeenCalled();
+    expect(mocks.resolveThreadAccess).toHaveBeenCalled();
     expect(responseBody).toEqual({
       error: `Unknown queued message: ${messageId}`,
       code: "queued_message_missing",
@@ -431,8 +490,262 @@ describe("agent chat queued-message route", () => {
     );
   });
 });
+function teamFixture() {
+  const rows = [
+    ...[
+      "__workspace__:__organization__:org-a",
+      "__shared__",
+      "__organization__:org-a",
+      "__team__:team-a",
+      "__team__:team-b",
+      "user@example.test",
+    ].flatMap((owner, index) => [
+      {
+        id: `${index}-agents`,
+        owner,
+        path: "AGENTS.md",
+        content: `# Guidance ${owner}`,
+      },
+      {
+        id: `${index}-instruction`,
+        owner,
+        path: "instructions/guide.md",
+        content: `# Guide ${owner}`,
+      },
+      {
+        id: `${index}-skill`,
+        owner,
+        path: "skills/voice/SKILL.md",
+        content: `---\nname: voice\ndescription: Voice ${owner}\n---\n# Voice`,
+      },
+      {
+        id: `${index}-memory`,
+        owner,
+        path: "memory/MEMORY.md",
+        content: `# Memory ${owner}\n- [facts](facts.md) — Facts about ${owner}.`,
+      },
+    ]),
+  ].map((row) => ({ ...row, mimeType: "text/markdown" }));
+  mocks.resourceGetByPath.mockImplementation(
+    async (owner: string, path: string) =>
+      rows.find((row) => row.owner === owner && row.path === path) ?? null,
+  );
+  mocks.resourceGet.mockImplementation(
+    async (id: string) => rows.find((row) => row.id === id) ?? null,
+  );
+  mocks.resourceList.mockImplementation(
+    async (owner: string, prefix?: string) =>
+      rows
+        .filter(
+          (row) =>
+            row.owner === owner && (!prefix || row.path.startsWith(prefix)),
+        )
+        .map(({ content: _content, ...row }) => row),
+  );
+  mocks.resourceListAccessible.mockImplementation(
+    async (_owner: string, prefix: string) =>
+      rows
+        .filter((row) => row.path.startsWith(prefix))
+        .map(({ content: _content, ...row }) => row),
+  );
+  return rows;
+}
 
 describe("agent chat resource route organization scopes", () => {
+  it("binds a first draft from stored authorization before its first resource lookup", async () => {
+    const threads = new Map<
+      string,
+      { id: string; teamGroupId: string | null }
+    >();
+    mocks.getThread.mockImplementation(
+      async (id: string) => threads.get(id) ?? null,
+    );
+    mocks.createThread.mockImplementation(async (_owner, options) => {
+      if (options.teamGroupId === "team-b") {
+        throw createError({
+          statusCode: 403,
+          statusMessage: "Team not found or access denied",
+        });
+      }
+      const thread = {
+        id: options.id,
+        teamGroupId: options.teamGroupId ?? null,
+      };
+      threads.set(thread.id, thread);
+      return thread;
+    });
+    mocks.resolveThreadAccess.mockImplementation(
+      async (_owner, id) => threads.get(id) ?? null,
+    );
+    teamFixture();
+    await mountResourceRoutes({ resolveOrgId: () => "org-a" });
+    const prepare = mocks.productionOptions.find(
+      (option) => option.prepareThreadBinding,
+    )?.prepareThreadBinding;
+    expect(prepare).toBeDefined();
+
+    await runWithRequestContext(
+      { userEmail: "user@example.test", orgId: "org-a" },
+      async () => {
+        await prepare!({
+          threadId: "draft-a",
+          ownerEmail: "user@example.test",
+          creationOrgId: "org-a",
+          teamGroupId: "team-a",
+        });
+        expect(mocks.createThread).toHaveBeenCalledWith(
+          "user@example.test",
+          expect.objectContaining({
+            id: "draft-a",
+            orgId: "org-a",
+            teamGroupId: "team-a",
+          }),
+        );
+        // The resource input is the authoritative persisted binding, not the active preference (team-b).
+        const stored = await mocks.getThread("draft-a");
+        const prompt = await loadResourcesForPrompt(
+          "user@example.test",
+          true,
+          "app",
+          "org-a",
+          { teamGroupId: stored.teamGroupId },
+        );
+        expect(prompt).toContain("Guidance __team__:team-a");
+        expect(prompt).not.toContain("Guidance __team__:team-b");
+
+        await prepare!({
+          threadId: "draft-a",
+          ownerEmail: "user@example.test",
+          creationOrgId: "org-a",
+          teamGroupId: "team-b",
+        });
+        expect((await mocks.getThread("draft-a")).teamGroupId).toBe("team-a");
+        expect(mocks.createThread).toHaveBeenCalledTimes(1);
+
+        await prepare!({
+          threadId: "draft-null",
+          ownerEmail: "user@example.test",
+          creationOrgId: "org-a",
+          teamGroupId: null,
+        });
+        await prepare!({
+          threadId: "draft-null",
+          ownerEmail: "user@example.test",
+          creationOrgId: "org-a",
+          teamGroupId: "team-a",
+        });
+        expect((await mocks.getThread("draft-null")).teamGroupId).toBeNull();
+
+        mocks.resourceGetByPath.mockClear();
+        await expect(
+          prepare!({
+            threadId: "denied",
+            ownerEmail: "user@example.test",
+            creationOrgId: "org-a",
+            teamGroupId: "team-b",
+          }),
+        ).rejects.toMatchObject({ statusCode: 403 });
+        expect(await mocks.getThread("denied")).toBeNull();
+        expect(mocks.resourceGetByPath).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  it("passes the resolved organization to thread creation without request context and rejects invalid bindings", async () => {
+    mocks.getSession.mockResolvedValue({
+      email: "user@example.test",
+      orgId: "org-a",
+    });
+    const h3App = await mountResourceRoutes({ resolveOrgId: () => "org-a" });
+    const post = (creationOrgId: string, teamGroupId: string) =>
+      h3App.fetch(
+        new Request("http://example.test/_agent-native/agent-chat/threads", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ creationOrgId, teamGroupId }),
+        }),
+      );
+
+    expect(getRequestOrgId()).toBeUndefined();
+    const created = await post("org-a", "team-a");
+    expect(created.status).toBe(200);
+    expect(await created.json()).toMatchObject({
+      orgId: "org-a",
+      teamGroupId: "team-a",
+    });
+    expect(mocks.createThread).toHaveBeenCalledWith(
+      "user@example.test",
+      expect.objectContaining({ orgId: "org-a", teamGroupId: "team-a" }),
+    );
+
+    mocks.createThread.mockClear();
+    const nonmember = await post("org-a", "team-b");
+    expect(nonmember.status).toBe(403);
+    expect(await nonmember.text()).not.toContain("new-thread");
+    expect(mocks.createThread).toHaveBeenCalledWith(
+      "user@example.test",
+      expect.objectContaining({ orgId: "org-a", teamGroupId: "team-b" }),
+    );
+
+    mocks.createThread.mockClear();
+    const wrongOrg = await post("other-org", "team-a");
+    expect(wrongOrg.status).toBe(403);
+    expect(await wrongOrg.text()).not.toContain("new-thread");
+    expect(mocks.createThread).not.toHaveBeenCalled();
+  });
+
+  it("returns the store's denial for forged, deleted, and revoked teams without inserting a thread", async () => {
+    const { createThread: realCreateThread } = await vi.importActual<
+      typeof import("../chat-threads/store.js")
+    >("../chat-threads/store.js");
+    mocks.getSession.mockResolvedValue({
+      email: "user@example.test",
+      orgId: "org-a",
+    });
+    mocks.createThread.mockImplementation(realCreateThread);
+    const app = await mountResourceRoutes({ resolveOrgId: () => "org-a" });
+    for (const teamGroupId of ["forged-team", "deleted-team", "revoked-team"]) {
+      const response = await app.fetch(
+        new Request("http://example.test/_agent-native/agent-chat/threads", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            creationOrgId: "org-a",
+            teamGroupId,
+          }),
+        }),
+      );
+      expect(response.status).toBe(403);
+      expect(await response.text()).not.toContain("new-thread");
+    }
+    const prepare = mocks.productionOptions.find(
+      (option) => option.prepareThreadBinding,
+    )?.prepareThreadBinding;
+    expect(prepare).toBeDefined();
+    mocks.getThread.mockResolvedValue(null);
+    mocks.resourceGetByPath.mockClear();
+    await runWithRequestContext(
+      { userEmail: "user@example.test", orgId: "org-a" },
+      async () => {
+        await expect(
+          prepare!({
+            threadId: "draft-revoked",
+            ownerEmail: "user@example.test",
+            creationOrgId: "org-a",
+            teamGroupId: "revoked-team",
+          }),
+        ).rejects.toMatchObject({ statusCode: 403 });
+      },
+    );
+    expect(mocks.resourceGetByPath).not.toHaveBeenCalled();
+    expect(
+      mocks.threadExecute.mock.calls.some(([query]) =>
+        String(query?.sql ?? query).includes("INSERT INTO chat_threads"),
+      ),
+    ).toBe(false);
+    expect(mocks.getWorkspaceTeamForMember).toHaveBeenCalledTimes(4);
+  });
+
   it("keeps Lab-gated bundled skills out of the slash picker for disabled users", async () => {
     const h3App = await mountResourceRoutes();
     const creativeSkill = {
@@ -871,67 +1184,6 @@ describe("promptResourceManifestSections", () => {
 });
 
 describe("loadResourcesForPrompt", () => {
-  function teamFixture() {
-    const rows = [
-      ...[
-        "__workspace__:__organization__:org-a",
-        "__shared__",
-        "__organization__:org-a",
-        "__team__:team-a",
-        "__team__:team-b",
-        "user@example.test",
-      ].flatMap((owner, index) => [
-        {
-          id: `${index}-agents`,
-          owner,
-          path: "AGENTS.md",
-          content: `# Guidance ${owner}`,
-        },
-        {
-          id: `${index}-instruction`,
-          owner,
-          path: "instructions/guide.md",
-          content: `# Guide ${owner}`,
-        },
-        {
-          id: `${index}-skill`,
-          owner,
-          path: "skills/voice/SKILL.md",
-          content: `---\nname: voice\ndescription: Voice ${owner}\n---\n# Voice`,
-        },
-        {
-          id: `${index}-memory`,
-          owner,
-          path: "memory/MEMORY.md",
-          content: `# Memory ${owner}\n- [facts](facts.md) — Facts about ${owner}.`,
-        },
-      ]),
-    ].map((row) => ({ ...row, mimeType: "text/markdown" }));
-    mocks.resourceGetByPath.mockImplementation(
-      async (owner: string, path: string) =>
-        rows.find((row) => row.owner === owner && row.path === path) ?? null,
-    );
-    mocks.resourceGet.mockImplementation(
-      async (id: string) => rows.find((row) => row.id === id) ?? null,
-    );
-    mocks.resourceList.mockImplementation(
-      async (owner: string, prefix?: string) =>
-        rows
-          .filter(
-            (row) =>
-              row.owner === owner && (!prefix || row.path.startsWith(prefix)),
-          )
-          .map(({ content: _content, ...row }) => row),
-    );
-    mocks.resourceListAccessible.mockImplementation(
-      async (_owner: string, prefix: string) =>
-        rows
-          .filter((row) => row.path.startsWith(prefix))
-          .map(({ content: _content, ...row }) => row),
-    );
-    return rows;
-  }
-
   it.each([false, true])(
     "loads only the bound team's instructions and exact-name skills (compact=%s)",
     async (compact) => {
