@@ -62,7 +62,7 @@ Execute whole epics in numerical order: identity → authorization → context �
 
 5. <tranche id="explicit-team-work" owner="leader">
 
-   MUST load and follow `execute-plan` for [Epic 5](../../plans/wip/organization-team-tenancy-05-sharing/epic.md): owner-only viewer grant/revoke and paginated list, then shared-work UI. Recheck generic sharing cannot bypass chat policy and private bound work never appears in the list.
+   [Epic 5](../../plans/completed/organization-team-tenancy-05-sharing/epic.md) is complete: owner-only viewer grant/revoke, paginated explicit-share discovery, shared Toolkit controls, and read-only linked-run UI. Independent local proof passed 224 Core tests, 45 Toolkit tests, 27 Chat tests, three PostgreSQL contention tests, and authenticated browser/action/SQL checks for private-work exclusion and lifecycle denial. The follow-on [PR #8](https://github.com/jbendotnet/agent-native/pull/8) is stacked on PR #6 and remains unmerged. Hosted and full V1 release acceptance remain Epic 6 gates.
 
    </tranche>
 
