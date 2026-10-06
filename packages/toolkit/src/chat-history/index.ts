@@ -19,3 +19,4 @@ export {
   type UseChatHistoryRailControllerOptions,
   useChatHistoryRailController,
 } from "./useChatHistoryRailController.js";
+export { TeamShareMenu, type TeamShareMenuLabels } from "./TeamShareMenu.js";

@@ -427,6 +427,7 @@ export class AppSyncState {
     { allowed: boolean; checkedAt: number }
   >();
   private readonly accessInFlight = new Set<string>();
+  private accessGlobalEpoch = 0;
   private readonly accessInvalidationEpoch = new Map<string, number>();
   private readonly accessAllowTtlMs: number;
 
@@ -753,6 +754,12 @@ export class AppSyncState {
     }
   }
 
+  invalidateCollabAccessCacheForGroupChange(): void {
+    this.accessGlobalEpoch++;
+    this.accessCache.clear();
+    this.accessInFlight.clear();
+  }
+
   private setAccessCache(key: string, allowed: boolean, now: number): void {
     this.accessCache.delete(key);
     this.accessCache.set(key, { allowed, checkedAt: now });
@@ -777,28 +784,41 @@ export class AppSyncState {
     this.accessInFlight.add(key);
     const resourceKey = accessResourceKey(resourceType, resourceId);
     const epoch = this.accessInvalidationEpoch.get(resourceKey) ?? 0;
+    const globalEpoch = this.accessGlobalEpoch;
     void (async () => {
       try {
         const access = await this.resolveAccessFn(resourceType, resourceId, {
           userEmail,
           orgId,
         });
-        if ((this.accessInvalidationEpoch.get(resourceKey) ?? 0) !== epoch) {
+        if (
+          this.accessGlobalEpoch !== globalEpoch ||
+          (this.accessInvalidationEpoch.get(resourceKey) ?? 0) !== epoch
+        ) {
           return;
         }
         this.setAccessCache(key, access != null, Date.now());
       } catch {
-        if ((this.accessInvalidationEpoch.get(resourceKey) ?? 0) !== epoch) {
+        if (
+          this.accessGlobalEpoch !== globalEpoch ||
+          (this.accessInvalidationEpoch.get(resourceKey) ?? 0) !== epoch
+        ) {
           return;
         }
         this.setAccessCache(key, false, Date.now());
       } finally {
-        this.accessInFlight.delete(key);
+        if (
+          this.accessGlobalEpoch === globalEpoch &&
+          (this.accessInvalidationEpoch.get(resourceKey) ?? 0) === epoch
+        ) {
+          this.accessInFlight.delete(key);
+        }
       }
     })();
   }
 
   __resetAccessCacheForTests(): void {
+    this.accessGlobalEpoch++;
     this.accessCache.clear();
     this.accessInFlight.clear();
     this.accessInvalidationEpoch.clear();
@@ -1779,6 +1799,10 @@ export function getVersion(): number {
 
 export function getPollEmitter(): EventEmitter {
   return getDefaultAppSyncState().getPollEmitter();
+}
+
+export function invalidateCollabAccessCacheForGroupChange(): void {
+  getDefaultAppSyncState().invalidateCollabAccessCacheForGroupChange();
 }
 
 export function invalidateCollabAccessCache(

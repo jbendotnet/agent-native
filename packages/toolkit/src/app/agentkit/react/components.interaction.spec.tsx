@@ -500,6 +500,91 @@ describe("AgentKitChat interactions", () => {
     }
   });
 
+  it("omits message mutation controls for a read-only viewer", async () => {
+    const { AgentMessageView } = await import("./components.js");
+    const forkThread = vi.fn();
+    const startRun = vi.fn();
+    const transport: AgentTransport = {
+      capabilities: { threadForking: true },
+      forkThread,
+      startRun,
+      async *subscribeToRun() {},
+      async cancelRun() {},
+      async getThreadSnapshot(threadId) {
+        return {
+          id: threadId,
+          createdAt: "2026-09-26T00:00:00.000Z",
+          updatedAt: "2026-09-26T00:00:00.000Z",
+          messages: [
+            {
+              id: "user-view",
+              role: "user",
+              parts: [{ type: "text", text: "Shared prompt" }],
+            },
+            {
+              id: "assistant-view",
+              role: "assistant",
+              parts: [{ type: "text", text: "Shared answer" }],
+            },
+          ],
+        };
+      },
+    };
+    const client = new AgentKitClient({ transport });
+    await client.loadThread("thread-view");
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const actEnvironment = globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    };
+    const previousActEnvironment = actEnvironment.IS_REACT_ACT_ENVIRONMENT;
+    actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
+    try {
+      await act(async () => {
+        root.render(
+          <AgentKitProvider
+            controller={client}
+            threadId="thread-view"
+            onThreadForked={forkThread}
+            slots={{
+              message: (props) => <AgentMessageView {...props} readOnly />,
+            }}
+          >
+            <AgentKitChat
+              composerProps={{
+                disabled: true,
+                modelStatusChecksEnabled: false,
+              }}
+            />
+          </AgentKitProvider>,
+        );
+        await Promise.resolve();
+      });
+      expect(container.textContent).toContain("Shared prompt");
+      expect(
+        container.querySelector('button[aria-label="Edit message"]'),
+      ).toBeNull();
+      expect(
+        container.querySelector('button[aria-label="Regenerate response"]'),
+      ).toBeNull();
+      expect(container.querySelector('button[aria-label="Fork"]')).toBeNull();
+      expect(forkThread).not.toHaveBeenCalled();
+      expect(startRun).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      container.remove();
+      if (previousActEnvironment === undefined) {
+        delete actEnvironment.IS_REACT_ACT_ENVIRONMENT;
+      } else {
+        actEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+      }
+    }
+  });
+
   it("restores a failed edit in the forked thread draft", async () => {
     const forkThread = vi.fn(async (input) => ({
       id: `${input.threadId}-fork`,

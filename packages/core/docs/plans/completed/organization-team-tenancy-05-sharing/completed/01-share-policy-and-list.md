@@ -27,3 +27,13 @@ Put chat-specific grant policy at the shared action/store boundary and reuse exi
 ## Verification
 
 Run Core chat store/access-projection, `sharing/access.spec.ts`, `sharing/restricted-sharing.spec.ts`, and run ownership/plugin tests. Prove viewer-only authority by attempting continuation/management. Verify unbound shares keep org/personal prompt and public behavior; bound private work stays excluded. For supported other resource families test group grants remain additive, not restrictive; reject invalid new grants and unknown types.
+
+## Execution evidence
+
+H-01/H-02 passed independent local review and verification on 2026-10-06 in the task worktree based on PR #6 head `0aa0f97e2f9f059d516d32fa77acda8302c67da8`. Named grant/revoke, generic bypass rejection, explicit paginated discovery, direct/run access, and owner/member lifecycle checks are implemented.
+
+Independent verification passed the exact 12-file Core matrix (215 tests), Core typecheck and build. Three separate-connection PostgreSQL contention tests passed. Saved PostgreSQL logs show distinct backend PIDs and actual lock waits. Evidence directory: `/var/folders/ng/prqsg7g160q_dq8b3x08qyyh0000gp/T/opencode/teams-review-gate.MbmX4x/`, including `focused-matrix-independent-final.log`, `typecheck-independent-final.log`, `postgres-vitest.log`, and `postgres.log`.
+
+Review found a generic grant/revoke versus group-conversion race. The shared mutation boundary now locks group then thread and rechecks policy inside the transaction; independent review confirmed the repaired ordering. Combined tests exposed incomplete membership fixtures, harness cleanup before a saved session, and reused worker-slot database paths. Minimal fixture and per-process database isolation repairs passed parallel, serial, repeat, and independent matrix runs. The group suite is `workspace-connections/store.spec.ts`, not `groups.spec.ts`.
+
+Unchanged Assets locale-baseline and `use-chat-threads.ts` coercion guard failures remain baseline issues, not passing checks. This evidence does not claim hosted behavior or Epic 6 retained-binding release acceptance.

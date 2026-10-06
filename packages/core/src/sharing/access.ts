@@ -14,7 +14,7 @@ import {
   getRequestOrgId,
 } from "../server/request-context.js";
 import {
-  workspaceUserGroupsIncludeUser,
+  listWorkspaceUserGroupsForOrg,
   workspaceUserGroupsTable,
 } from "../workspace-connections/groups.js";
 import {
@@ -715,20 +715,26 @@ async function highestShareRole(
             eq(reg.sharesTable.principalType, "group"),
           ),
         );
+      const groups = groupRows.length
+        ? await listWorkspaceUserGroupsForOrg(
+            resource.orgId,
+            groupRows.map((row: { principalId: string }) => row.principalId),
+          )
+        : [];
+      const memberGroups = new Map(
+        groups
+          .filter((group) => group.memberEmails.includes(normalizedUserEmail))
+          .map((group) => [group.id, group] as const),
+      );
       for (const row of groupRows as Array<{
         principalId: string;
         role: ShareRole;
       }>) {
-        if (
-          await workspaceUserGroupsIncludeUser(
-            resource.orgId,
-            [row.principalId],
-            normalizedUserEmail,
-          )
-        ) {
-          if (!best || ROLE_RANK[row.role] > ROLE_RANK[best]) {
-            best = row.role;
-          }
+        const group = memberGroups.get(row.principalId);
+        if (group) {
+          const role =
+            reg.type === "chat_thread" && group.isTeam ? "viewer" : row.role;
+          if (!best || ROLE_RANK[role] > ROLE_RANK[best]) best = role;
         }
       }
     }

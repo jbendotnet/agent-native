@@ -19,6 +19,7 @@ import {
   getChangesSinceForUser,
   getVersion,
   invalidateCollabAccessCache,
+  invalidateCollabAccessCacheForGroupChange,
   recordChange,
   __resetCollabAccessCacheForTests,
 } from "../server/poll.js";
@@ -344,6 +345,27 @@ describe("access-aware sharee delivery (SYNC-CACHE variant)", () => {
       canSeeChangeForUser(resourceEvent, "sharee@example.com", "org-bob"),
     ).toBe(false);
     await vi.runAllTimersAsync();
+    expect(
+      canSeeChangeForUser(resourceEvent, "sharee@example.com", "org-bob"),
+    ).toBe(false);
+  });
+
+  it("membership changes invalidate cached group access before the next event", async () => {
+    resolveAccessMock.mockResolvedValue({ role: "viewer", resource: {} });
+    expect(
+      canSeeChangeForUser(resourceEvent, "sharee@example.com", "org-bob"),
+    ).toBe(false);
+    await flushAsync();
+    expect(
+      canSeeChangeForUser(resourceEvent, "sharee@example.com", "org-bob"),
+    ).toBe(true);
+
+    resolveAccessMock.mockResolvedValue(null);
+    invalidateCollabAccessCacheForGroupChange();
+    expect(
+      canSeeChangeForUser(resourceEvent, "sharee@example.com", "org-bob"),
+    ).toBe(false);
+    await flushAsync();
     expect(
       canSeeChangeForUser(resourceEvent, "sharee@example.com", "org-bob"),
     ).toBe(false);

@@ -3505,12 +3505,15 @@ export function AgentMessageActions({
 export function AgentMessageView({
   value: message,
   threadId,
-}: AgentKitRenderProps<AgentMessage>) {
+  readOnly = false,
+}: AgentKitRenderProps<AgentMessage> & { readOnly?: boolean }) {
   const { labels, slots } = useAgentKit();
   const thread = useAgentThread(threadId);
   const visibleMessage = stripAgentMessageContext(message);
   const Supplement = slots.messageSupplement;
-  const Actions = slots.messageActions ?? AgentMessageActions;
+  const Actions = readOnly
+    ? () => null
+    : (slots.messageActions ?? AgentMessageActions);
   const embeddedWidgetIds = new Set(
     message.parts.flatMap((part) =>
       part.type === "widget" ? [part.widget.id] : [],

@@ -4,6 +4,23 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const capability = vi.hoisted(() => ({
+  canContinue: true,
+  canManage: true,
+  isError: false,
+}));
+vi.mock("@agent-native/core/client/hooks", () => ({
+  useActionQuery: () => ({
+    data: {
+      canContinue: capability.canContinue,
+      canManage: capability.canManage,
+    },
+    isPending: false,
+    isFetching: false,
+    isError: capability.isError,
+  }),
+}));
+
 import {
   ChatHistoryList,
   type ChatHistoryItem,
@@ -55,6 +72,9 @@ describe("ChatHistoryList", () => {
   let root: Root;
 
   beforeEach(() => {
+    capability.canManage = true;
+    capability.canContinue = true;
+    capability.isError = false;
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
       cb(0);
@@ -96,6 +116,83 @@ describe("ChatHistoryList", () => {
       (buttons[1] as HTMLButtonElement).click();
     });
     expect(onSelect).toHaveBeenCalledWith("thread-2");
+  });
+
+  it("keeps viewer history management hidden while preserving read navigation", async () => {
+    capability.canManage = false;
+    const pin = vi.fn();
+    const rename = vi.fn();
+    const remove = vi.fn();
+    const select = vi.fn();
+    const extra = vi.fn(() => (
+      <button type="button" role="menuitem">
+        Share
+      </button>
+    ));
+    act(() =>
+      root.render(
+        <ChatHistoryList
+          items={[item({ id: "shared-thread" })]}
+          onSelect={select}
+          onTogglePin={pin}
+          onRename={rename}
+          onDelete={remove}
+          renderAdditionalRowActions={extra}
+          enforceThreadCapabilities
+          capabilityLabels={{
+            readOnly: "Read only",
+            unavailable: "Unavailable",
+          }}
+        />,
+      ),
+    );
+    await openMenu(
+      container.querySelector<HTMLButtonElement>(
+        ".an-chat-history-row__menu-trigger",
+      )!,
+    );
+    expect(getMenuItems().map((entry) => entry.textContent)).toEqual([
+      "Read only",
+    ]);
+    expect(pin).not.toHaveBeenCalled();
+    expect(rename).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(extra).not.toHaveBeenCalled();
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>(".an-chat-history-row__button")
+        ?.click(),
+    );
+    expect(select).toHaveBeenCalledWith("shared-thread");
+  });
+
+  it("hides management even when an editor may continue the conversation", async () => {
+    capability.canContinue = true;
+    capability.canManage = false;
+    act(() =>
+      root.render(
+        <ChatHistoryList
+          items={[item({ id: "editable-thread" })]}
+          onSelect={() => {}}
+          onRename={() => {}}
+          onTogglePin={() => {}}
+          onDelete={() => {}}
+          enforceThreadCapabilities
+          capabilityLabels={{
+            readOnly: "Read only",
+            unavailable: "Unavailable",
+          }}
+        />,
+      ),
+    );
+    await openMenu(
+      container.querySelector<HTMLButtonElement>(
+        ".an-chat-history-row__menu-trigger",
+      )!,
+    );
+    expect(getMenuItems().map((entry) => entry.textContent)).toEqual([
+      "Read only",
+    ]);
   });
 
   it("highlights the active item", () => {

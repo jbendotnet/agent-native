@@ -71,11 +71,11 @@ describe("mounted linked run routes", () => {
       args: [],
     });
     await db.execute({
-      sql: "CREATE TABLE IF NOT EXISTS org_members (org_id TEXT, email TEXT, role TEXT DEFAULT 'member', federation_removal_pending_at BIGINT)",
+      sql: "CREATE TABLE IF NOT EXISTS org_members (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, email TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', joined_at BIGINT NOT NULL, federation_removal_pending_at BIGINT)",
       args: [],
     });
     await db.execute({
-      sql: "CREATE TABLE IF NOT EXISTS workspace_user_groups (id TEXT, org_id TEXT, is_team BOOLEAN, member_emails_json TEXT)",
+      sql: "CREATE TABLE IF NOT EXISTS workspace_user_groups (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', normalized_name TEXT, member_emails_json TEXT NOT NULL DEFAULT '[]', is_team BOOLEAN NOT NULL DEFAULT false, lead_emails_json TEXT NOT NULL DEFAULT '[]', created_by_email TEXT NOT NULL DEFAULT '', created_at BIGINT NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL DEFAULT 0)",
       args: [],
     });
     await db.execute({
@@ -84,12 +84,12 @@ describe("mounted linked run routes", () => {
     });
     for (const email of [owner, viewer]) {
       await db.execute({
-        sql: "INSERT INTO org_members (org_id, email, role) VALUES (?, ?, 'member')",
-        args: [orgId, email],
+        sql: "INSERT INTO org_members (id, org_id, email, role, joined_at) VALUES (?, ?, ?, 'member', ?)",
+        args: [`member-${orgId}-${email}`, orgId, email, Date.now()],
       });
     }
     await db.execute({
-      sql: "INSERT INTO workspace_user_groups (id, org_id, is_team, member_emails_json) VALUES (?, ?, true, ?)",
+      sql: "INSERT INTO workspace_user_groups (id, org_id, name, is_team, member_emails_json) VALUES (?, ?, 'Run team', true, ?)",
       args: [teamId, orgId, JSON.stringify([owner, viewer])],
     });
     const threadId = `linked-run-thread-${crypto.randomUUID()}`;
@@ -102,6 +102,7 @@ describe("mounted linked run routes", () => {
     const gate = new Promise<void>((resolve) => {
       finish = resolve;
     });
+    let sessionSaved = false;
     try {
       await runWithRequestContext({ userEmail: owner, orgId }, () =>
         createThread(owner, { id: threadId, teamGroupId: teamId }),
@@ -180,6 +181,7 @@ describe("mounted linked run routes", () => {
         orgId,
         status: "running",
       });
+      sessionSaved = true;
       auth.email = viewer;
       const direct = await request(app, `/${runId}/events?after=0`);
       expect(direct.status).toBe(200);
@@ -314,10 +316,12 @@ describe("mounted linked run routes", () => {
       await runWithRequestContext({ userEmail: owner, orgId }, () =>
         deleteAppState(`agent-task:${taskId}`),
       );
-      await db.execute({
-        sql: "DELETE FROM agent_harness_sessions WHERE id = ?",
-        args: [sessionId],
-      });
+      if (sessionSaved) {
+        await db.execute({
+          sql: "DELETE FROM agent_harness_sessions WHERE id = ?",
+          args: [sessionId],
+        });
+      }
       await db.execute({
         sql: "DELETE FROM chat_thread_shares WHERE resource_id = ?",
         args: [threadId],

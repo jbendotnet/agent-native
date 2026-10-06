@@ -1,3 +1,4 @@
+import { useActionQuery } from "@agent-native/core/client/hooks";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import {
   IconDots,
@@ -52,6 +53,9 @@ export interface ChatHistoryListProps {
     item: ChatHistoryItem,
     closeMenu: () => void,
   ) => React.ReactNode;
+  /** Recheck current thread access before showing edit controls in the row menu. */
+  enforceThreadCapabilities?: boolean;
+  capabilityLabels?: { readOnly: string; unavailable: string };
 
   searchValue?: string;
   onSearchChange?: (value: string) => void;
@@ -94,6 +98,8 @@ export function ChatHistoryList({
   onDelete,
   renderRowActions,
   renderAdditionalRowActions,
+  enforceThreadCapabilities = false,
+  capabilityLabels,
   searchValue,
   onSearchChange,
   searchPlaceholder = "Search chats...",
@@ -192,6 +198,8 @@ export function ChatHistoryList({
                       onDelete={onDelete}
                       renderRowActions={renderRowActions}
                       renderAdditionalRowActions={renderAdditionalRowActions}
+                      enforceThreadCapabilities={enforceThreadCapabilities}
+                      capabilityLabels={capabilityLabels}
                       labels={resolvedLabels}
                     />
                   ))}
@@ -219,6 +227,8 @@ type ChatHistoryRowProps = {
     item: ChatHistoryItem,
     closeMenu: () => void,
   ) => React.ReactNode;
+  enforceThreadCapabilities: boolean;
+  capabilityLabels?: { readOnly: string; unavailable: string };
   labels: ChatHistoryListLabels;
 };
 
@@ -233,11 +243,28 @@ const ChatHistoryRow = React.memo(function ChatHistoryRow({
   onDelete,
   renderRowActions,
   renderAdditionalRowActions,
+  enforceThreadCapabilities,
+  capabilityLabels,
   labels,
 }: ChatHistoryRowProps) {
   const [isRenaming, setIsRenaming] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
+  const capabilities = useActionQuery<{ canManage: boolean }>(
+    "get-chat-thread-capabilities",
+    { threadId: item.id },
+    {
+      enabled: enforceThreadCapabilities && menuOpen,
+      staleTime: 0,
+      refetchOnWindowFocus: "always",
+    },
+  );
+  const canManage =
+    !enforceThreadCapabilities ||
+    (!capabilities.isPending &&
+      !capabilities.isError &&
+      capabilities.data?.canManage === true);
+  const checkingAccess = enforceThreadCapabilities && capabilities.isFetching;
   const renameInputRef = useRef<HTMLInputElement | null>(null);
 
   const hasMenu = Boolean(
@@ -283,6 +310,21 @@ const ChatHistoryRow = React.memo(function ChatHistoryRow({
     typeof labels.renameInput === "function"
       ? labels.renameInput(item)
       : labels.renameInput;
+  const deniedMenuItem = enforceThreadCapabilities &&
+    !canManage &&
+    capabilityLabels && (
+      <div
+        role="menuitem"
+        aria-disabled="true"
+        className="an-chat-history-row__menu-item"
+      >
+        {capabilities.isPending ||
+        capabilities.isFetching ||
+        capabilities.isError
+          ? capabilityLabels.unavailable
+          : capabilityLabels.readOnly}
+      </div>
+    );
 
   return (
     <div
@@ -364,18 +406,25 @@ const ChatHistoryRow = React.memo(function ChatHistoryRow({
             <DropdownMenuPrimitive.Portal>
               <DropdownMenuPrimitive.Content
                 className="an-chat-history-row__menu-content"
+                aria-busy={checkingAccess}
+                inert={checkingAccess || undefined}
                 align="end"
                 collisionPadding={8}
                 side="bottom"
                 sideOffset={4}
               >
                 {renderRowActions ? (
-                  renderRowActions(item)
+                  canManage ? (
+                    renderRowActions(item)
+                  ) : (
+                    deniedMenuItem
+                  )
                 ) : (
                   <>
-                    {onRename && (
+                    {canManage && onRename && (
                       <button
                         type="button"
+                        disabled={checkingAccess}
                         role="menuitem"
                         className="an-chat-history-row__menu-item"
                         onClick={startRename}
@@ -384,9 +433,10 @@ const ChatHistoryRow = React.memo(function ChatHistoryRow({
                         <span>{labels.rename}</span>
                       </button>
                     )}
-                    {onTogglePin && (
+                    {canManage && onTogglePin && (
                       <button
                         type="button"
+                        disabled={checkingAccess}
                         role="menuitem"
                         className="an-chat-history-row__menu-item"
                         onClick={() => {
@@ -402,12 +452,14 @@ const ChatHistoryRow = React.memo(function ChatHistoryRow({
                         <span>{item.pinned ? labels.unpin : labels.pin}</span>
                       </button>
                     )}
-                    {renderAdditionalRowActions?.(item, () =>
-                      setMenuOpen(false),
-                    )}
-                    {onDelete && (
+                    {canManage &&
+                      renderAdditionalRowActions?.(item, () =>
+                        setMenuOpen(false),
+                      )}
+                    {canManage && onDelete && (
                       <button
                         type="button"
+                        disabled={checkingAccess}
                         role="menuitem"
                         className="an-chat-history-row__menu-item an-chat-history-row__menu-item--danger"
                         onClick={() => {
@@ -419,6 +471,7 @@ const ChatHistoryRow = React.memo(function ChatHistoryRow({
                         <span>{labels.delete}</span>
                       </button>
                     )}
+                    {deniedMenuItem}
                   </>
                 )}
               </DropdownMenuPrimitive.Content>

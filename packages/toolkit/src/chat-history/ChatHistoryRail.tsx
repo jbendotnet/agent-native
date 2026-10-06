@@ -26,6 +26,8 @@ export interface ChatHistoryRailProps extends Omit<
   items: ChatHistoryItem[];
   onNewChat: () => void;
   railLabels: ChatHistoryRailLabels;
+  /** Pass through to ChatHistoryList so every rail can opt into current server-side thread access checks. */
+  enforceThreadCapabilities?: boolean;
   previewCount?: number;
   expandedCount?: number;
   renderRail?: (context: ChatHistoryRailRenderContext) => ReactNode;
