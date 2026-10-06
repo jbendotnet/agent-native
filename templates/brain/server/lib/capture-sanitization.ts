@@ -18,6 +18,7 @@ import {
 } from "./search-index-contracts.js";
 import {
   classifierDecisionSchema,
+  type DeterministicScreenScope,
   deterministicQuarantineDecision,
   fallbackSensitivityDecision,
   MAX_CLASSIFIER_OUTPUT_CHARS,
@@ -91,6 +92,15 @@ export interface CaptureSanitizationResult {
   decision?: BrainSensitivityDecision;
 }
 
+export class BrainClassifierUnavailableError extends Error {
+  constructor(readonly reason: string) {
+    super(
+      `Jev sensitivity classifier unavailable (${reason}); capture not stored, will retry next sync.`,
+    );
+    this.name = "BrainClassifierUnavailableError";
+  }
+}
+
 function booleanSetting(value: unknown): boolean | undefined {
   if (typeof value === "boolean") return value;
   if (typeof value !== "string") return undefined;
@@ -119,7 +129,6 @@ function numberSetting(value: unknown): number | undefined {
 export function shouldSanitizeCaptureBeforeStorage(
   input: CaptureSanitizationInput,
 ): boolean {
-  if (input.source.provider === "slack") return true;
   if (input.settings.captureSanitizationEnabled === false) return false;
 
   const metadataOverride = booleanSetting(
@@ -132,7 +141,7 @@ export function shouldSanitizeCaptureBeforeStorage(
   );
   if (configOverride !== undefined) return configOverride;
 
-  return input.kind === "transcript";
+  return false;
 }
 
 function neutralizeSpeakerLabel(line: string): string {
@@ -518,6 +527,18 @@ async function classifyWithApprovedModel(
   };
 }
 
+const unlessAllowed = (decision: BrainSensitivityDecision) =>
+  decision.disposition === "allowed" ? null : decision;
+
+const deterministicPreScreen = (
+  input: CaptureSanitizationInput,
+  capturedAt: string,
+  scope: DeterministicScreenScope,
+): BrainSensitivityDecision | null =>
+  deterministicQuarantineDecision(input.title, capturedAt, scope) ??
+  unlessAllowed(fallbackSensitivityDecision(input.title, capturedAt, scope)) ??
+  deterministicQuarantineDecision(input.content, capturedAt, scope);
+
 export async function sanitizeCaptureForStorage(
   input: CaptureSanitizationInput,
 ): Promise<CaptureSanitizationResult> {
@@ -525,11 +546,11 @@ export async function sanitizeCaptureForStorage(
   const { metadata: sanitizedMetadata, strippedKeys } =
     sanitizeMetadata(metadata);
   const capturedAt = input.capturedAt ?? new Date(0).toISOString();
-  const titleDecision = fallbackSensitivityDecision(input.title, capturedAt);
-  let decision =
-    deterministicQuarantineDecision(input.title, capturedAt) ??
-    (titleDecision.disposition === "allowed" ? null : titleDecision) ??
-    deterministicQuarantineDecision(input.content, capturedAt);
+  const preJevScope: DeterministicScreenScope =
+    resolveClassifierPreference(input.settings) === "jev"
+      ? "credentials"
+      : "all";
+  let decision = deterministicPreScreen(input, capturedAt, preJevScope);
   const sanitizationRequested = shouldSanitizeCaptureBeforeStorage(input);
   let fallbackReason: string | undefined;
   let classifierOutageFallback = false;
@@ -543,29 +564,27 @@ export async function sanitizeCaptureForStorage(
         ownerEmail: input.source.ownerEmail,
         orgId: input.source.orgId,
       });
+  if (jev.failureReason) {
+    throw new BrainClassifierUnavailableError(jev.failureReason);
+  }
   decision ??= jev.decision ?? null;
-  fallbackReason = jev.failureReason;
-  // A Jev failure counts as a configured-classifier outage even when the
-  // credential lookup itself threw, so a broken vault fails closed instead of
-  // reading as an unconfigured workspace and releasing content.
+  if (preJevScope === "credentials") {
+    decision ??= deterministicPreScreen(input, capturedAt, "all");
+  }
   const classifierConfigured =
-    jev.configured ||
-    Boolean(jev.failureReason) ||
-    Boolean(approvedModelSettings(input.settings));
+    jev.configured || Boolean(approvedModelSettings(input.settings));
   let classifierFailed = false;
   try {
     decision ??= await classifyWithApprovedModel(input);
     if (!decision) {
       classifierFailed = classifierConfigured;
-      fallbackReason =
-        jev.failureReason ??
-        (classifierConfigured
-          ? "classifier-malformed"
-          : "classifier-not-approved-or-malformed");
+      fallbackReason = classifierConfigured
+        ? "classifier-malformed"
+        : "classifier-not-approved-or-malformed";
     }
   } catch {
     classifierFailed = classifierConfigured;
-    fallbackReason = jev.failureReason ?? "model-unavailable";
+    fallbackReason = "model-unavailable";
   }
   decision ??= fallbackSensitivityDecision(input.content, capturedAt);
   if (classifierFailed) {
@@ -652,7 +671,6 @@ export async function sanitizeCaptureForStorage(
         sanitizedAt: new Date().toISOString(),
       },
     },
-    classifierFailureReason: jev.failureReason,
     decision,
   };
 }

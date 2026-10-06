@@ -1,8 +1,5 @@
 name: Monitor Agent-Native site availability
 
-# This is deliberately independent from app health and Netlify build status:
-# an edge outage can make both the app health endpoint and the dashboard
-# unavailable while the deploy metadata still says "ready".
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -15,8 +12,6 @@ permissions:
 
 concurrency:
   group: monitor-agent-native-sites
-  # Let an active outage run finish its paging and issue-reporting steps;
-  # GitHub still keeps at most one pending replacement for this concurrency group.
   cancel-in-progress: false
 
 jobs:
@@ -41,8 +36,6 @@ jobs:
         with:
           node-version: "22"
 
-      # Signup E2E has its own scheduled workflow and rolling issue. Keep this
-      # incident focused on public availability and credential/callback checks.
       - name: Probe every public host
         if: ${{ always() }}
         id: probe
@@ -321,11 +314,6 @@ jobs:
           NODE
 
       - name: Probe Google sign-in credentials
-        # The availability probe above stays green while sign-in is 100% broken:
-        # on 2026-08-20 every host reported ok:true for hours with a stale Google
-        # secret. The app's callback collapses invalid_client and invalid_grant
-        # into one identical error page, so this asks each deploy to ask Google
-        # directly and report which of the two it got.
         if: always()
         run: |
           set -o pipefail
@@ -542,11 +530,51 @@ jobs:
           node --experimental-strip-types scripts/check-google-redirect-uris.ts \
             --env all --budget-seconds 300 --allow-legacy-health | tee /tmp/agent-native-google-redirects.log
 
+      - name: Read previous scheduled probe result
+        id: previous-run
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          history_read=unavailable
+          previous_conclusion=unknown
+          previous_updated_at=
+          latest_failure_updated_at=
+          if schedule_history="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/monitor-agent-native-sites.yml/runs?event=schedule&per_page=100")" && \
+            run_history="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/monitor-agent-native-sites.yml/runs?per_page=100")"; then
+            if jq -e '.workflow_runs | type == "array"' <<<"$schedule_history" >/dev/null && \
+              jq -e '.workflow_runs | type == "array"' <<<"$run_history" >/dev/null; then
+              history_read=ok
+              previous_conclusion="$(jq -r '[.workflow_runs[] | select(.status == "completed")] | sort_by(.updated_at) | last // {} | .conclusion // "unknown"' <<<"$schedule_history")"
+              previous_updated_at="$(jq -r '[.workflow_runs[] | select(.status == "completed")] | sort_by(.updated_at) | last // {} | .updated_at // empty' <<<"$schedule_history")"
+              latest_failure_updated_at="$(jq -r '[.workflow_runs[] | select(.status == "completed" and .conclusion == "failure")] | sort_by(.updated_at) | last // {} | .updated_at // empty' <<<"$run_history")"
+            fi
+          fi
+          if [[ "$history_read" == "unavailable" ]]; then
+            echo "::warning::Run history is unavailable; paging fails open, while scheduled recovery waits for verified post-incident samples."
+          fi
+          echo "history_read=$history_read" >>"$GITHUB_OUTPUT"
+          echo "conclusion=$previous_conclusion" >>"$GITHUB_OUTPUT"
+          echo "updated_at=$previous_updated_at" >>"$GITHUB_OUTPUT"
+          echo "latest_failure_updated_at=$latest_failure_updated_at" >>"$GITHUB_OUTPUT"
+
       - name: Page and open a rolling incident
         if: failure()
         shell: bash
         run: |
           set -euo pipefail
+          history_read='${{ steps.previous-run.outputs.history_read }}'
+          previous_conclusion='${{ steps.previous-run.outputs.conclusion }}'
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            if [[ "$history_read" == "unavailable" ]]; then
+              echo "Run history is unavailable; paging this failure to avoid hiding an ongoing outage."
+            elif [[ "$previous_conclusion" != "failure" ]]; then
+              echo "No preceding completed scheduled failure; keeping details in Actions and waiting for confirmation before paging."
+              exit 0
+            fi
+          fi
           ISSUE_TITLE="Agent-Native site availability failing"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           FAILING="$(grep '^FAIL[[:space:]]' /tmp/agent-native-site-availability.log || true)"
@@ -600,6 +628,11 @@ jobs:
 
           pagerduty_status=0
           page_oncall || pagerduty_status=$?
+          # The job is still running, so match on its failed step rather than
+          # its conclusion. A failed lookup is said in the issue, not hidden.
+          JOB_LINKS="$(gh run view "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --json jobs --jq '[.jobs[] | select(any(.steps[]; .conclusion == "failure")) | "- [\(.name)](\(.url)): failed at step \"\([.steps[] | select(.conclusion == "failure") | .name] | first)\""] | join("\n")')" || JOB_LINKS="(failed-job link unavailable: gh run view failed)"
+          if [ -z "$JOB_LINKS" ]; then JOB_LINKS="(no failed step recorded yet)"; fi
+          BODY="$(printf '%s\n\nFailed job and step:\n%s\n\nReproduce: gh workflow run %s --ref main' "$BODY" "$JOB_LINKS" "monitor-agent-native-sites.yml")"
           # Avoid GitHub's eventually consistent issue-search index here. A
           # direct open-issue listing keeps one rolling incident even when a
           # previous run created it moments ago.
@@ -628,6 +661,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          history_read='${{ steps.previous-run.outputs.history_read }}'
+          previous_conclusion='${{ steps.previous-run.outputs.conclusion }}'
+          previous_updated_at='${{ steps.previous-run.outputs.updated_at }}'
+          latest_failure_updated_at='${{ steps.previous-run.outputs.latest_failure_updated_at }}'
+          post_failure_sample=0
+          # GitHub returns UTC ISO-8601 timestamps, so lexical order is chronological.
+          if [[ -n "$previous_updated_at" && -n "$latest_failure_updated_at" ]] && \
+            [[ "$previous_updated_at" > "$latest_failure_updated_at" ]]; then
+            post_failure_sample=1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            if [[ "$history_read" != "ok" || "$previous_conclusion" != "success" || \
+              "$post_failure_sample" != "1" ]]; then
+              echo "Recovery needs two clean scheduled probes after the latest failed workflow run; previous result was ${previous_conclusion:-unknown}."
+              exit 0
+            fi
+          fi
           ISSUE_TITLE="Agent-Native site availability failing"
           pagerduty_status=0
           if [ -n "${PAGERDUTY_ROUTING_KEY:-}" ]; then

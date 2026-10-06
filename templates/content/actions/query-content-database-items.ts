@@ -58,6 +58,11 @@ export default defineAction({
   http: { method: "GET" },
   readOnly: true,
   agentTool: false,
+  mcpAnnotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
   run: async (
     { databaseId, documentId, limit, offset, tableQuery, navigation },
     ctx,
@@ -99,8 +104,6 @@ export default defineAction({
     }
 
     const page = await getContentDatabasePageResponse(resolved.database.id, {
-      // This action is the bounded table replacement path; unlike the legacy
-      // database response, an omitted limit must not turn it into a full read.
       limit: limit ?? 100,
       offset,
       tableQuery,

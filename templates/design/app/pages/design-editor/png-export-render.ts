@@ -14,6 +14,7 @@ import {
   getHtml2CanvasPlaceholderStyle,
   mirrorPreviewWebFonts,
 } from "./export-font-mirror";
+import { composeIndividualTransforms } from "./export-individual-transforms";
 import { isScreenRootElementInfo } from "./selection-state";
 
 const UNSUPPORTED_HTML2CANVAS_COLOR_RE =
@@ -123,8 +124,6 @@ function normalizeHtml2CanvasColor(value: string): string {
 }
 
 export function normalizeHtml2CanvasImage(value: string): string {
-  // Computed sRGB color-mix stops can use the normal renderer, preserving
-  // external images and webfonts that a foreignObject cannot load.
   if (!/\bin srgb\b/.test(value)) return value;
   return splitCssLayers(value)
     .map((layer) => {
@@ -270,9 +269,48 @@ export function isolateSelectedExportElements(
   }
 }
 
+async function bakeFilteredImages(
+  doc: Document,
+): Promise<Map<Element, string>> {
+  const baked = new Map<Element, string>();
+  const view = doc.defaultView;
+  if (!view) return baked;
+  for (const image of Array.from(doc.querySelectorAll("img"))) {
+    const filter = view.getComputedStyle(image).filter;
+    if (!filter || filter === "none" || !image.naturalWidth) continue;
+    const draw = (source: HTMLImageElement) => {
+      const canvas = doc.createElement("canvas");
+      canvas.width = source.naturalWidth;
+      canvas.height = source.naturalHeight;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("2D canvas unavailable");
+      context.filter = filter;
+      context.drawImage(source, 0, 0);
+      return canvas.toDataURL("image/png");
+    };
+    try {
+      baked.set(image, draw(image));
+      continue;
+      // coercion-ok: a cross-origin image taints the canvas; retried with CORS below
+    } catch {}
+    try {
+      const corsImage = new view.Image();
+      corsImage.crossOrigin = "anonymous";
+      corsImage.src = image.currentSrc || image.src;
+      await corsImage.decode();
+      baked.set(image, draw(corsImage));
+      // coercion-ok: without CORS headers the image exports unfiltered, and says so
+    } catch (error) {
+      console.warn("PNG export could not apply an image filter:", error);
+    }
+  }
+  return baked;
+}
+
 function sanitizeHtml2CanvasClone(
   sourceDocument: Document,
   clonedDocument: Document,
+  bakedImages: ReadonlyMap<Element, string>,
 ) {
   const sourceView = sourceDocument.defaultView;
   if (!sourceView) return;
@@ -288,6 +326,24 @@ function sanitizeHtml2CanvasClone(
     const clonedStyle = elementInlineStyle(clonedElements[index]);
     if (!clonedStyle) return;
     const computed = sourceView.getComputedStyle(sourceElement);
+    const bakedSource = bakedImages.get(sourceElement);
+    if (bakedSource) {
+      clonedElements[index]!.setAttribute("src", bakedSource);
+      clonedElements[index]!.removeAttribute("srcset");
+      clonedStyle.setProperty("filter", "none", "important");
+    }
+    const composedTransform = composeIndividualTransforms({
+      transform: computed.getPropertyValue("transform"),
+      translate: computed.getPropertyValue("translate"),
+      rotate: computed.getPropertyValue("rotate"),
+      scale: computed.getPropertyValue("scale"),
+    });
+    if (composedTransform) {
+      clonedStyle.setProperty("transform", composedTransform, "important");
+      clonedStyle.setProperty("translate", "none", "important");
+      clonedStyle.setProperty("rotate", "none", "important");
+      clonedStyle.setProperty("scale", "none", "important");
+    }
     for (const property of HTML2CANVAS_COLOR_PROPERTIES) {
       const value = computed.getPropertyValue(property);
       if (!value || !UNSUPPORTED_HTML2CANVAS_COLOR_RE.test(value)) continue;
@@ -312,8 +368,6 @@ function sanitizeHtml2CanvasClone(
       );
     }
 
-    // html2canvas paints a placeholder as the input value, using the input's
-    // styles instead of the styles attached to ::placeholder.
     const placeholderStyle = getHtml2CanvasPlaceholderStyle(
       sourceElement,
       sourceView,
@@ -332,10 +386,6 @@ function sanitizeHtml2CanvasClone(
   });
 }
 
-/**
- * Remove editor-chrome overlays from a cloned document/element before it is
- * rasterized (PNG) or serialized (SVG) for export.
- */
 export function removeEditorChromeOverlays(root: ParentNode): void {
   root
     .querySelectorAll(EDITOR_CHROME_OVERLAY_SELECTOR)
@@ -343,45 +393,39 @@ export function removeEditorChromeOverlays(root: ParentNode): void {
 }
 
 export function sanitizeSerializedXmlForSvg(value: string): string {
-  // SVG opened as XML only knows the five predefined entities. HTML serializers
-  // can leave named entities or bare ampersands in foreignObject content; escape
-  // those so the downloaded SVG parses cleanly in browsers and editors.
   return value.replace(
     /&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g,
     "&amp;",
   );
 }
 
-/**
- * Resolve the document-space rect of the currently selected element inside the
- * preview iframe so image exports (PNG/SVG) can crop to just that frame instead
- * of the whole screen. Returns null — meaning "export the whole screen" — when
- * there is no element selection, when the selection is the screen root
- * (BODY/HTML, which is the whole screen anyway), or when the element can no
- * longer be resolved in the live document.
- */
 function resolveElementForExport(
   doc: Document,
   selected: ElementInfo,
 ): Element | null {
-  let element: Element | null = null;
-  if (selected.sourceId) {
+  for (const sourceId of [selected.runtimeSourceId, selected.sourceId]) {
+    if (!sourceId) continue;
     try {
-      element = doc.querySelector(
-        `[data-agent-native-node-id="${CSS.escape(selected.sourceId)}"]`,
+      const element = doc.querySelector(
+        `[data-agent-native-node-id="${CSS.escape(sourceId)}"]`,
       );
+      if (element) return element;
     } catch {
-      element = null;
+      // coercion-ok: Invalid optional IDs fall through; unresolved exports still error below.
+      // Continue with the remaining selection identities.
     }
   }
-  if (!element && selected.selector) {
+  for (const selector of [selected.runtimeSelector, selected.selector]) {
+    if (!selector) continue;
     try {
-      element = doc.querySelector(selected.selector);
+      const element = doc.querySelector(selector);
+      if (element) return element;
     } catch {
-      element = null;
+      // coercion-ok: Invalid optional selectors fall through; unresolved exports still error below.
+      // Continue with the remaining selection identities.
     }
   }
-  return element;
+  return null;
 }
 
 export function resolveSelectedExportElements(
@@ -433,8 +477,6 @@ export function resolveExportCropTarget(
         ? selections.filter((selection) => !isScreenRootElementInfo(selection))
         : selections,
     );
-    // A Screen root widens the crop to the full document, but every ordinary
-    // member still has to resolve before the selection can be exported.
     if (includesScreenRoot) return { kind: "whole-screen" };
     if (elements.length === 0) return { kind: "unresolved" };
     const rect = unionExportCropRects(
@@ -457,9 +499,8 @@ export function resolveExportCropTarget(
     if (
       error instanceof PngCaptureError &&
       error.code === "selection-unresolved"
-    ) {
+    )
       return { kind: "unresolved" };
-    }
     throw error;
   }
 }
@@ -475,12 +516,6 @@ export function resolveExportCropRect(
   return target.kind === "rect" ? target.rect : null;
 }
 
-/**
- * Board preview iframes are finite windows around the infinite canvas. Export
- * their placed nodes, not the mostly-empty render window; keep a small bleed
- * so strokes and shadows at the outer edge are not clipped. DesignCanvas marks
- * ordinary screen frames with data-screen-iframe-id; board previews omit it.
- */
 export function resolveBoardExportCropRect(
   doc: Document,
   iframe: HTMLIFrameElement,
@@ -535,11 +570,6 @@ export function resolveBoardExportCropRect(
   return { x, y, width: right - x, height: bottom - y };
 }
 
-/**
- * Crop a rendered html2canvas canvas down to a document-space rect so image
- * exports capture just the selected frame. Returns null when the crop is empty,
- * so callers can fall back to the full render.
- */
 export function cropCanvasToRect(
   source: HTMLCanvasElement,
   rect: { x: number; y: number; width: number; height: number },
@@ -581,17 +611,9 @@ export async function renderExportDocumentCanvas({
   render: (typeof import("html2canvas"))["default"];
   isolateSelectedElements?: readonly Element[];
 }): Promise<{ canvas: HTMLCanvasElement; scale: number }> {
-  // A freshly loaded preview iframe (new generation, screen switch, or just a
-  // fast click) can still be mid-load for its CDN Tailwind/Alpine script and
-  // Google Fonts — capturing before either lands renders plain unstyled HTML.
-  // Bounded wait; never blocks an export indefinitely. See
-  // export-capture.ts's waitForExportReady docblock.
   await waitForExportReady(doc);
-  // html2canvas paints glyphs through a canvas owned by *this* document while
-  // measuring every box in the preview iframe, so the design's webfonts have
-  // to exist on both sides or decorations drift away from the text they sit
-  // behind. See export-font-mirror.ts.
   const mirroredFonts = await mirrorPreviewWebFonts(doc, iframe.ownerDocument);
+  const bakedImages = await bakeFilteredImages(doc);
   if (mirroredFonts.unreadableStylesheets.length > 0) {
     console.warn(
       "Export font mirroring skipped unreadable stylesheets; text metrics may drift:",
@@ -625,7 +647,7 @@ export async function renderExportDocumentCanvas({
     useCORS: true,
     backgroundColor: null,
     onclone: (clonedDocument: Document) => {
-      sanitizeHtml2CanvasClone(doc, clonedDocument);
+      sanitizeHtml2CanvasClone(doc, clonedDocument, bakedImages);
       isolateSelectedExportElements(
         doc,
         clonedDocument,
@@ -636,10 +658,6 @@ export async function renderExportDocumentCanvas({
   };
   try {
     try {
-      // html2canvas's normal renderer handles native form controls, clipping,
-      // and computed layout more consistently than its foreignObject shortcut.
-      // Prefer it for production exports and retain foreignObject as a fallback
-      // for the uncommon CSS feature the canvas renderer cannot parse.
       const canvas = await render(doc.documentElement, {
         ...options,
         foreignObjectRendering: false,
@@ -670,12 +688,6 @@ export async function renderExportDocumentCanvas({
   }
 }
 
-/**
- * What a raster capture is of. Overview mode resolves a different iframe and a
- * different crop per scope, so "the current selection" is not one thing: Copy
- * as PNG wants the selected screen, the export preview wants the selected
- * element inside it.
- */
 export type PngCaptureScope = "document" | "screens" | "element";
 
 export type PngCaptureErrorCode =

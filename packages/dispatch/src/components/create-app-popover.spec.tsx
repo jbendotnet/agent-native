@@ -31,7 +31,7 @@ vi.mock("@agent-native/core/client/host", () => ({
   isInBuilderFrame: () => frameState.inBuilderFrame,
 }));
 
-vi.mock("@agent-native/core/client/settings/useBuilderStatus", () => ({
+vi.mock("@agent-native/toolkit/app/settings/useBuilderStatus", () => ({
   useBuilderConnectFlow: () => ({
     configured: false,
     connecting: builderConnectFlowState.connecting,
@@ -41,15 +41,13 @@ vi.mock("@agent-native/core/client/settings/useBuilderStatus", () => ({
   }),
 }));
 
-vi.mock("@agent-native/core/client/settings", async (importOriginal) => {
-  const settings =
-    await importOriginal<typeof import("@agent-native/core/client/settings")>();
+vi.mock("@agent-native/toolkit/app/settings", async () => {
   const { BuilderConnectPopover } =
-    await import("../../../core/src/client/settings/BuilderConnectPopover.js");
-  return { ...settings, BuilderConnectPopover };
+    await import("../../../toolkit/src/app/settings/BuilderConnectPopover.js");
+  return { BuilderConnectPopover };
 });
 
-vi.mock("@agent-native/core/client/composer", async () => {
+vi.mock("@agent-native/toolkit/app/chat/composer/index", async () => {
   const ReactModule = await import("react");
   return {
     PromptComposer: ({
@@ -179,24 +177,22 @@ describe("CreateAppFlow", () => {
     });
   }
 
-  it("renders a Connect Builder control when Builder is not connected", async () => {
+  it("renders a Use Builder.io control when Builder is not connected", async () => {
     startWorkspaceAppCreationResponse.result = {
       mode: "builder-unavailable",
       reason: "builder-not-connected",
-      message: "Connect Builder for this user",
+      message: "Use Builder.io for this user",
       appId: "quality",
     };
     await renderAndSubmit("Build a quality dashboard");
 
     await act(async () => {
       await vi.waitFor(() =>
-        expect(container.textContent).toContain(
-          "Connect Builder for this user",
-        ),
+        expect(container.textContent).toContain("Use Builder.io for this user"),
       );
     });
 
-    const connectButton = findButton(container, "Connect Builder");
+    const connectButton = findButton(container, "Use Builder.io");
     act(() => {
       connectButton.click();
     });
@@ -274,7 +270,7 @@ describe("CreateAppFlow", () => {
     expect(onCreated).toHaveBeenCalledTimes(1);
   });
 
-  it("renders the error affordance and a Try again control for builder-error, without a Connect Builder control", async () => {
+  it("renders the error affordance and a Try again control for builder-error, without a Builder setup control", async () => {
     startWorkspaceAppCreationResponse.result = {
       mode: "builder-unavailable",
       reason: "builder-error",
@@ -300,11 +296,11 @@ describe("CreateAppFlow", () => {
       matchingDivs.some((el) => el.className.includes("border-destructive")),
     ).toBe(true);
 
-    expect(() => findButton(container, "Connect Builder")).toThrow();
+    expect(() => findButton(container, "Use Builder.io")).toThrow();
     expect(findButton(container, "Try again")).toBeTruthy();
   });
 
-  it("renders coming-soon messages neutrally with no Connect Builder control", async () => {
+  it("renders coming-soon messages neutrally with no Builder setup control", async () => {
     startWorkspaceAppCreationResponse.result = {
       mode: "coming-soon",
       message: "This template is coming soon.",
@@ -326,7 +322,7 @@ describe("CreateAppFlow", () => {
     expect(
       matchingDivs.some((el) => el.className.includes("border-destructive")),
     ).toBe(false);
-    expect(() => findButton(container, "Connect Builder")).toThrow();
+    expect(() => findButton(container, "Use Builder.io")).toThrow();
     expect(() => findButton(container, "Try again")).toThrow();
   });
 

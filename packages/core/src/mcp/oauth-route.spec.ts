@@ -23,14 +23,22 @@ vi.mock("../server/h3-helpers.js", () => ({
 }));
 
 const getSessionMock = vi.fn();
-const getConfiguredLoginHtmlMock = vi.fn(() => "<form>Sign in</form>");
+const getConfiguredLoginHtmlMock = vi.fn(() => ({
+  html: "<form>Sign in</form>",
+  status: 200,
+}));
 vi.mock("../server/auth.js", () => ({
   getSession: (...a: any[]) => getSessionMock(...a),
   getConfiguredLoginHtml: (...a: any[]) => getConfiguredLoginHtmlMock(...a),
 }));
 
 const getOrgDomainMock = vi.fn(async () => "builder.io");
-const getActiveOrgSettingMock = vi.fn(async () => ({ orgId: "org_123" }));
+const getActiveOrgSettingMock = vi.fn(
+  async (): Promise<{ orgId: string | null } | null> => ({ orgId: "org_123" }),
+);
+const getOrgContextMock = vi.fn(
+  async (): Promise<{ orgId: string | null }> => ({ orgId: null }),
+);
 const listOrgMembershipsForEventMock = vi.fn(async () => [
   {
     orgId: "org_123",
@@ -42,6 +50,7 @@ const listOrgMembershipsForEventMock = vi.fn(async () => [
   },
 ]);
 vi.mock("../org/context.js", () => ({
+  getOrgContext: (...args: any[]) => getOrgContextMock(...args),
   getOrgDomain: (...args: any[]) => getOrgDomainMock(...args),
   listOrgMembershipsForEvent: (...args: any[]) =>
     listOrgMembershipsForEventMock(...args),
@@ -141,7 +150,11 @@ const {
   handleMcpOAuthProtectedResourceMetadata,
   getMcpOAuthAudiences,
 } = await import("./oauth-route.js");
-const { MCP_LEGACY_ROUTE_PREFIX } = await import("./route-paths.js");
+const {
+  MCP_DIRECTORY_ROUTE_PREFIX,
+  MCP_LEGACY_ROUTE_PREFIX,
+  MCP_PUBLIC_ROUTE_PREFIX,
+} = await import("./route-paths.js");
 const { verifyMcpOAuthAccessToken } = await import("./oauth-token.js");
 
 function event(
@@ -150,6 +163,7 @@ function event(
     headers?: Record<string, string>;
     query?: Record<string, string>;
     body?: Record<string, string> | string;
+    pathname?: string;
   } = {},
 ) {
   return {
@@ -161,12 +175,38 @@ function event(
     },
     query: opts.query ?? {},
     body: opts.body ?? {},
-    url: { pathname: "" },
+    url: { pathname: opts.pathname ?? "" },
   } as any;
 }
 
 function challenge(verifier: string): string {
   return createHash("sha256").update(verifier).digest("base64url");
+}
+
+async function openConsent(): Promise<string> {
+  const client = await (
+    await handleMcpOAuth(
+      event({
+        method: "POST",
+        body: { redirect_uris: ["http://localhost:5555/callback"] } as any,
+      }),
+      "/register",
+    )
+  ).json();
+  const consent = await handleMcpOAuth(
+    event({
+      query: {
+        response_type: "code",
+        client_id: client.client_id,
+        redirect_uri: "http://localhost:5555/callback",
+        resource: "https://mail.agent-native.com/mcp",
+        code_challenge: challenge("v".repeat(50)),
+        code_challenge_method: "S256",
+      },
+    }),
+    "/authorize",
+  );
+  return consent.text();
 }
 
 describe("MCP OAuth route", () => {
@@ -278,6 +318,51 @@ describe("MCP OAuth route", () => {
     expect(buildMcpOAuthChallenge(event(), MCP_LEGACY_ROUTE_PREFIX)).toContain(
       `resource_metadata="https://mail.agent-native.com/.well-known/oauth-protected-resource?resource=%2F_agent-native%2Fmcp"`,
     );
+  });
+
+  it("keeps the directory OAuth resource separate from the existing MCP route", async () => {
+    expect(getMcpOAuthAudiences(event(), MCP_DIRECTORY_ROUTE_PREFIX)).toEqual([
+      `https://mail.agent-native.com${MCP_DIRECTORY_ROUTE_PREFIX}`,
+    ]);
+
+    const protectedRes = handleMcpOAuthProtectedResourceMetadata(
+      event({ query: { resource: MCP_DIRECTORY_ROUTE_PREFIX } }),
+    );
+    await expect(protectedRes.json()).resolves.toMatchObject({
+      resource: `https://mail.agent-native.com${MCP_DIRECTORY_ROUTE_PREFIX}`,
+      authorization_servers: ["https://mail.agent-native.com"],
+    });
+    expect(
+      buildMcpOAuthChallenge(event(), MCP_DIRECTORY_ROUTE_PREFIX),
+    ).toContain(
+      `resource_metadata="https://mail.agent-native.com/.well-known/oauth-protected-resource?resource=${encodeURIComponent(MCP_DIRECTORY_ROUTE_PREFIX)}"`,
+    );
+    expect(getMcpOAuthAudiences(event())).toEqual([
+      "https://mail.agent-native.com/mcp",
+      "https://mail.agent-native.com/_agent-native/mcp",
+    ]);
+
+    const pathForm = handleMcpOAuthProtectedResourceMetadata(
+      event({
+        pathname: "/.well-known/oauth-protected-resource/mcp/directory",
+      }),
+    );
+    await expect(pathForm.json()).resolves.toMatchObject({
+      resource: "https://mail.agent-native.com/mcp/directory",
+    });
+    const mountedSuffix = handleMcpOAuthProtectedResourceMetadata(
+      event({ pathname: MCP_DIRECTORY_ROUTE_PREFIX }),
+    );
+    await expect(mountedSuffix.json()).resolves.toMatchObject({
+      resource: "https://mail.agent-native.com/mcp/directory",
+    });
+    const mismatchedPathForm = handleMcpOAuthProtectedResourceMetadata(
+      event({
+        pathname: "/mcp/directory",
+        query: { resource: MCP_PUBLIC_ROUTE_PREFIX },
+      }),
+    );
+    expect(mismatchedPathForm.status).toBe(404);
   });
 
   it("registers public OAuth clients with safe redirect URIs", async () => {
@@ -745,100 +830,103 @@ describe("MCP OAuth route", () => {
     await expect(res.text()).resolves.toContain("Sign in");
   });
 
-  it("approves an authorization code and exchanges it for scoped MCP tokens", async () => {
-    const client = await (
-      await handleMcpOAuth(
+  it.each([
+    "https://mail.agent-native.com/mcp",
+    "https://mail.agent-native.com/mcp/directory",
+  ])(
+    "preserves the protected resource through authorization-code exchange for %s",
+    async (resource) => {
+      const client = await (
+        await handleMcpOAuth(
+          event({
+            method: "POST",
+            body: {
+              redirect_uris: ["http://localhost:5555/callback"],
+            } as any,
+          }),
+          "/register",
+        )
+      ).json();
+      const verifier = "v".repeat(50);
+      const consent = await handleMcpOAuth(
+        event({
+          query: {
+            response_type: "code",
+            client_id: client.client_id,
+            redirect_uri: "http://localhost:5555/callback",
+            resource,
+            scope: "mcp:read mcp:apps",
+            state: "state-123",
+            code_challenge: challenge(verifier),
+            code_challenge_method: "S256",
+          },
+        }),
+        "/authorize",
+        { appName: "Mail" },
+      );
+      const consentHtml = await consent.text();
+      const consentToken =
+        consentHtml.match(/name="consent_token" value="([^"]+)"/)?.[1] ?? "";
+      expect(consentToken).not.toBe("");
+      const authorize = await handleMcpOAuth(
         event({
           method: "POST",
           body: {
-            redirect_uris: ["http://localhost:5555/callback"],
-          } as any,
+            decision: "approve",
+            response_type: "code",
+            client_id: client.client_id,
+            redirect_uri: "http://localhost:5555/callback",
+            resource,
+            scope: "mcp:read mcp:apps",
+            state: "state-123",
+            code_challenge: challenge(verifier),
+            code_challenge_method: "S256",
+            consent_token: consentToken,
+          },
         }),
-        "/register",
-      )
-    ).json();
-    const verifier = "v".repeat(50);
-    const consent = await handleMcpOAuth(
-      event({
-        query: {
-          response_type: "code",
-          client_id: client.client_id,
-          redirect_uri: "http://localhost:5555/callback",
-          resource: "https://mail.agent-native.com/mcp",
-          scope: "mcp:read mcp:apps",
-          state: "state-123",
-          code_challenge: challenge(verifier),
-          code_challenge_method: "S256",
-        },
-      }),
-      "/authorize",
-      { appName: "Mail" },
-    );
-    const consentHtml = await consent.text();
-    const consentToken =
-      consentHtml.match(/name="consent_token" value="([^"]+)"/)?.[1] ?? "";
-    expect(consentToken).not.toBe("");
-    const authorize = await handleMcpOAuth(
-      event({
-        method: "POST",
-        body: {
-          decision: "approve",
-          response_type: "code",
-          client_id: client.client_id,
-          redirect_uri: "http://localhost:5555/callback",
-          resource: "https://mail.agent-native.com/mcp",
-          scope: "mcp:read mcp:apps",
-          state: "state-123",
-          code_challenge: challenge(verifier),
-          code_challenge_method: "S256",
-          consent_token: consentToken,
-        },
-      }),
-      "/authorize",
-      { appName: "Mail" },
-    );
-    expect(authorize.status).toBe(302);
-    const location = authorize.headers.get("location")!;
-    const code = new URL(location).searchParams.get("code")!;
-    expect(location).toContain("state=state-123");
-    expect(new URL(location).searchParams.get("iss")).toBe(
-      "https://mail.agent-native.com",
-    );
+        "/authorize",
+        { appName: "Mail" },
+      );
+      expect(authorize.status).toBe(302);
+      const location = authorize.headers.get("location")!;
+      const code = new URL(location).searchParams.get("code")!;
+      expect(location).toContain("state=state-123");
+      expect(new URL(location).searchParams.get("iss")).toBe(
+        "https://mail.agent-native.com",
+      );
 
-    const token = await handleMcpOAuth(
-      event({
-        method: "POST",
-        body: {
-          grant_type: "authorization_code",
-          client_id: client.client_id,
-          redirect_uri: "http://localhost:5555/callback",
-          code,
-          code_verifier: verifier,
-        },
-      }),
-      "/token",
-    );
-    expect(token.status).toBe(200);
-    const body = await token.json();
-    expect(body).toMatchObject({
-      token_type: "Bearer",
-      expires_in: 30 * 86400,
-      scope: "mcp:read mcp:apps",
-    });
-    expect(body.refresh_token).toBeTruthy();
-    await expect(
-      verifyMcpOAuthAccessToken(
-        body.access_token,
-        "https://mail.agent-native.com/mcp",
-      ),
-    ).resolves.toMatchObject({
-      userEmail: "steve@example.com",
-      orgId: "org_123",
-      orgDomain: "builder.io",
-      scopes: ["mcp:read", "mcp:apps"],
-      clientId: client.client_id,
-    });
-  });
+      const token = await handleMcpOAuth(
+        event({
+          method: "POST",
+          body: {
+            grant_type: "authorization_code",
+            client_id: client.client_id,
+            redirect_uri: "http://localhost:5555/callback",
+            code,
+            code_verifier: verifier,
+          },
+        }),
+        "/token",
+      );
+      expect(token.status).toBe(200);
+      const body = await token.json();
+      expect(body).toMatchObject({
+        token_type: "Bearer",
+        expires_in: 30 * 86400,
+        scope: "mcp:read mcp:apps",
+      });
+      expect(body.refresh_token).toBeTruthy();
+      await expect(
+        verifyMcpOAuthAccessToken(body.access_token, resource),
+      ).resolves.toMatchObject({
+        userEmail: "steve@example.com",
+        orgId: "org_123",
+        orgDomain: "builder.io",
+        scopes: ["mcp:read", "mcp:apps"],
+        clientId: client.client_id,
+      });
+    },
+  );
 
   it("honors the active organization when choosing the default", async () => {
     getActiveOrgSettingMock.mockResolvedValue({ orgId: "org_456" });
@@ -887,6 +975,58 @@ describe("MCP OAuth route", () => {
     expect(await consent.text()).toContain(
       '<option value="org_456" selected>Acme',
     );
+  });
+
+  it("gives an account without an organization its default one before offering the choice", async () => {
+    getSessionMock.mockResolvedValue({ email: "new@example.com" });
+    getActiveOrgSettingMock.mockResolvedValue(null);
+    getOrgContextMock.mockResolvedValueOnce({ orgId: "org_new" });
+    listOrgMembershipsForEventMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          orgId: "org_new",
+          orgName: "New's workspace",
+          allowedDomain: null,
+          role: "owner",
+          identityAuthority: null,
+          identityId: null,
+        },
+      ]);
+
+    const html = await openConsent();
+
+    expect(html).toContain('value="org_new"');
+    expect(html).not.toContain("Personal");
+  });
+
+  it("does not offer Personal to a member who picked it in the app", async () => {
+    getActiveOrgSettingMock.mockResolvedValue({ orgId: null });
+    getSessionMock.mockResolvedValue({ email: "steve@example.com" });
+    listOrgMembershipsForEventMock.mockResolvedValue([
+      {
+        orgId: "org_123",
+        orgName: "Builder",
+        allowedDomain: "builder.io",
+        role: "owner",
+        identityAuthority: null,
+        identityId: null,
+      },
+      {
+        orgId: "org_456",
+        orgName: "Acme",
+        allowedDomain: "acme.example",
+        role: "member",
+        identityAuthority: null,
+        identityId: null,
+      },
+    ]);
+
+    const html = await openConsent();
+
+    expect(html).not.toContain("Personal");
+    expect(html).toContain('<option value="org_123" selected>Builder');
+    expect(getOrgContextMock).not.toHaveBeenCalled();
   });
 
   it("lets multi-organization users choose the organization bound to the connection", async () => {
@@ -1138,13 +1278,11 @@ describe("MCP OAuth route", () => {
       "/authorize",
       { appName: "Mail" },
     );
-    // The browser tab gets a real HTML page instead of dangling on cursor://…
     expect(authorize.status).toBe(200);
     expect(authorize.headers.get("content-type")).toContain("text/html");
     const page = await authorize.text();
     expect(page).toContain("You're all set");
     expect(page).toContain("Open Cursor");
-    // The deep link (carrying the auth code + state) is still handed to the client.
     const link = (
       page.match(/id="return-link" href="([^"]+)"/)?.[1] ?? ""
     ).replace(/&amp;/g, "&");
@@ -1687,7 +1825,6 @@ describe("MCP OAuth route", () => {
       "/token",
     );
     const body = await tokenRes.json();
-    // expires_in must equal the TTL seconds constant (30d = 2592000s), not 3600.
     expect(body.expires_in).toBe(30 * 86400);
     expect(body.expires_in).not.toBe(3600);
   });
@@ -1838,7 +1975,6 @@ describe("MCP OAuth route", () => {
     expect(rowBefore).toBeTruthy();
     const expiryBefore = rowBefore.expiresAt;
 
-    // Simulate time passing and use the refresh token.
     const laterTime = Date.now() + 1000;
     vi.spyOn(Date, "now").mockReturnValue(laterTime);
     await handleMcpOAuth(
@@ -1854,7 +1990,6 @@ describe("MCP OAuth route", () => {
     );
 
     const rowAfter = refreshRows.get(firstToken.refresh_token);
-    // Expiry must have slid forward from the original creation expiry.
     expect(rowAfter.expiresAt).toBeGreaterThan(expiryBefore);
     expect(rowAfter.lastUsedAt).toBe(laterTime);
   });

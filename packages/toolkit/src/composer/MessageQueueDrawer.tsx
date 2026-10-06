@@ -1,5 +1,5 @@
 import { IconCornerDownRight, IconDots, IconTrash } from "@tabler/icons-react";
-import type { CSSProperties, ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 
 import { Button } from "../ui/button.js";
 import {
@@ -42,22 +42,15 @@ export interface MessageQueueDrawerLabels {
 export type MessageQueueDrawerVariant = "default" | "recessed";
 
 export interface MessageQueueDrawerProps {
-  /** Messages waiting to be sent, in the order they will be processed. */
   items: readonly MessageQueueItem[];
-  /** Promote one queued message onto the active run's stack. */
   onSteer?: (item: MessageQueueItem) => void;
-  /** Remove a message without sending it. */
   onRemove: (item: MessageQueueItem) => void;
-  /** Host-owned overflow actions for each queued message. */
   getItemActions?: (
     item: MessageQueueItem,
   ) => readonly MessageQueueItemAction[];
-  /** Optional host rendering for the message text. */
   renderText?: (item: MessageQueueItem) => ReactNode;
   labels: MessageQueueDrawerLabels;
-  /** Visual treatment for the queue's relationship to the composer. */
   variant?: MessageQueueDrawerVariant;
-  /** Prevents queue mutations while a host command is pending. */
   disabled?: boolean;
   className?: string;
 }
@@ -76,10 +69,6 @@ function recessedQueueHeight(items: readonly MessageQueueItem[]): number {
   return Math.min(contentHeight, RECESSED_QUEUE_MAX_HEIGHT_PX);
 }
 
-/**
- * Compact queue surface attached to the composer instead of the transcript.
- * The drawer owns presentation; hosts own queue semantics and extra actions.
- */
 export function MessageQueueDrawer({
   items,
   onSteer,
@@ -93,6 +82,19 @@ export function MessageQueueDrawer({
 }: MessageQueueDrawerProps) {
   const recessed = variant === "recessed";
   const empty = items.length === 0;
+  const [openActionsItemId, setOpenActionsItemId] = useState<string | null>(
+    null,
+  );
+  useEffect(() => {
+    const hasOpenActionsItem =
+      items.length > 1 &&
+      items.some(
+        (item) =>
+          item.id === openActionsItemId &&
+          (getItemActions?.(item).length ?? 0) > 0,
+      );
+    if (!hasOpenActionsItem) setOpenActionsItemId(null);
+  }, [items, getItemActions, openActionsItemId]);
   if (empty && !recessed) return null;
 
   const recessedStyle = recessed
@@ -112,7 +114,7 @@ export function MessageQueueDrawer({
         style={recessedStyle}
         className={cn(
           recessed
-            ? "relative z-0 mx-auto mb-0 h-[var(--agent-message-queue-height)] w-[calc(100%_-_4rem)] overflow-hidden rounded-xl border border-border/70 bg-muted/55 pb-2.5 opacity-100 shadow-none transition-[height,margin,opacity,transform,border-color,box-shadow] duration-200 ease-[var(--ease-collapse)] data-[empty=true]:pointer-events-none data-[empty=true]:translate-y-2 data-[empty=true]:border-0 data-[empty=true]:pb-0 data-[empty=true]:opacity-0 motion-reduce:transition-none"
+            ? "relative z-0 mx-auto mb-0 h-[var(--agent-message-queue-height)] w-[calc(100%_-_4rem)] overflow-hidden rounded-xl rounded-b-none border-0 bg-muted/55 pb-2.5 opacity-100 shadow-none transition-[height,margin,opacity,transform,box-shadow] duration-200 ease-[var(--ease-collapse)] data-[empty=true]:pointer-events-none data-[empty=true]:translate-y-2 data-[empty=true]:pb-0 data-[empty=true]:opacity-0 motion-reduce:transition-none"
             : "w-full overflow-hidden rounded-xl border border-border/80 bg-background shadow-sm animate-in fade-in-0 slide-in-from-bottom-1 duration-200 ease-[var(--ease-drawer)] motion-reduce:animate-none",
           className,
         )}
@@ -196,8 +198,15 @@ export function MessageQueueDrawer({
                     </TooltipTrigger>
                     <TooltipContent>{labels.remove}</TooltipContent>
                   </Tooltip>
-                  {actions.length > 0 ? (
-                    <DropdownMenu>
+                  {items.length > 1 && actions.length > 0 ? (
+                    <DropdownMenu
+                      open={openActionsItemId === item.id}
+                      onOpenChange={(open) =>
+                        setOpenActionsItemId((current) =>
+                          open ? item.id : current === item.id ? null : current,
+                        )
+                      }
+                    >
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <DropdownMenuTrigger asChild>

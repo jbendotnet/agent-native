@@ -20,6 +20,11 @@ const backendMocks = vi.hoisted(() => ({
 }));
 const exceptionMocks = vi.hoisted(() => ({
   ingest: vi.fn(),
+  recordFailure: vi.fn(),
+}));
+const sessionEventIndexMocks = vi.hoisted(() => ({
+  record: vi.fn(),
+  catalog: vi.fn(),
 }));
 const deliveryMocks = vi.hoisted(() => ({
   queueMissing: vi.fn(),
@@ -84,6 +89,11 @@ vi.mock("./first-party-analytics-rollups.js", () => ({
 vi.mock("./error-capture.js", () => ({
   EXCEPTION_EVENT_NAME: "$exception",
   ingestAnalyticsExceptionEvents: exceptionMocks.ingest,
+  recordErrorIngestFailure: exceptionMocks.recordFailure,
+}));
+vi.mock("./session-event-index.js", () => ({
+  recordSessionEventIndex: sessionEventIndexMocks.record,
+  recordEventCatalog: sessionEventIndexMocks.catalog,
 }));
 vi.mock("./first-party-analytics-health.js", () => ({
   classifyFirstPartyAnalyticsQuery: healthMocks.classify,
@@ -105,6 +115,7 @@ vi.mock("./first-party-analytics-backend.js", () => ({
 import {
   isMarketingWebsiteSessionEvent,
   normalizeAnalyticsTimestamp,
+  parseAnalyticsTrackPayload,
   queryFirstPartyAnalytics,
   recordAnalyticsEvents,
   resolveAnalyticsEventDimensions,
@@ -156,6 +167,11 @@ beforeEach(() => {
     }));
   backendMocks.query.mockReset();
   exceptionMocks.ingest.mockReset();
+  sessionEventIndexMocks.record.mockReset();
+  sessionEventIndexMocks.record.mockResolvedValue(undefined);
+  sessionEventIndexMocks.catalog.mockReset();
+  sessionEventIndexMocks.catalog.mockResolvedValue(undefined);
+  exceptionMocks.recordFailure.mockReset();
   deliveryMocks.queueMissing.mockReset();
   deliveryMocks.queueMissing.mockReturnValue(false);
   backendMocks.get.mockResolvedValue({
@@ -179,19 +195,12 @@ beforeEach(() => {
 });
 
 describe("public-key last-used stamp", () => {
-  // Production outage 2026-08-07: this UPDATE ran inside the ingest
-  // transaction, so every concurrent request for one public key took an
-  // exclusive row lock on that key and held it through the rollup upsert.
-  // 36 writers stacked on three hot rows waiting 38-57s, the connection pool
-  // starved, and Analytics stopped loading for everyone.
   const source = readFileSync(
     new URL("./first-party-analytics.ts", import.meta.url),
     "utf8",
   );
 
   it("never writes the stamp inside a transaction", () => {
-    // Everything between `db.transaction(` and its closing `});` must be free
-    // of the stamp write, whatever else the transaction grows to do.
     const start = source.indexOf("db.transaction(");
     expect(start).toBeGreaterThan(0);
     const body = source.slice(start, source.indexOf("\n  }", start));
@@ -200,9 +209,6 @@ describe("public-key last-used stamp", () => {
   });
 
   it("throttles the stamp in SQL, not in the caller", () => {
-    // A JS-side check would still let every racing request issue its own
-    // unconditional write. The predicate must be in the statement so Postgres
-    // matches — and therefore locks — zero rows for a freshly stamped key.
     const fn = source.slice(source.indexOf("touchPublicKeyLastUsedAt("));
     const update = fn.slice(fn.indexOf(".update(schema.analyticsPublicKeys)"));
     const where = update.slice(0, update.indexOf("} catch"));
@@ -212,10 +218,6 @@ describe("public-key last-used stamp", () => {
   });
 
   it("routes every stamp write through the throttled helper", () => {
-    // Two call sites drifted apart once already; a third unconditional write
-    // anywhere re-creates the convoy on its own.
-    // Exactly one place may set the stamp: the throttled helper. Other writes
-    // to this table (revocation) are rare admin actions and not the convoy.
     let stampWrites = 0;
     for (const file of ["first-party-analytics.ts", "session-replay.ts"]) {
       const text = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
@@ -456,6 +458,95 @@ describe("recordAnalyticsEvents", () => {
     );
   });
 
+  it.each(["postgres", "dual", "bigquery"] as const)(
+    "indexes session events in Postgres at ingest with the %s sink",
+    async (sink) => {
+      backendMocks.get.mockResolvedValueOnce({
+        sink,
+        table:
+          sink === "postgres"
+            ? null
+            : "builder-3b0a2.analytics.first_party_analytics_events_raw",
+        backfillCursor: sink === "postgres" ? null : "evt_last",
+        backfillCompleted: sink === "bigquery",
+      });
+      let openTransactions = 0;
+      let catalogSawOpenTransaction = false;
+      analyticsDbMocks.db.transaction.mockImplementationOnce(
+        async (callback: (transaction: unknown) => unknown) => {
+          openTransactions += 1;
+          try {
+            return await callback(analyticsDbMocks.db);
+          } finally {
+            openTransactions -= 1;
+          }
+        },
+      );
+      sessionEventIndexMocks.catalog.mockImplementationOnce(async () => {
+        catalogSawOpenTransaction = openTransactions > 0;
+      });
+
+      await recordAnalyticsEvents("anpk_test", [
+        {
+          event: "recording_started",
+          properties: { sessionId: "rs_1", app: "clips" },
+        },
+      ]);
+
+      expect(sessionEventIndexMocks.record).toHaveBeenCalledOnce();
+      expect(sessionEventIndexMocks.record).toHaveBeenCalledWith(
+        analyticsDbMocks.db,
+        [
+          expect.objectContaining({
+            eventName: "recording_started",
+            ownerEmail: "owner@example.com",
+          }),
+        ],
+        expect.any(String),
+      );
+      expect(sessionEventIndexMocks.catalog).toHaveBeenCalledOnce();
+      expect(catalogSawOpenTransaction).toBe(false);
+    },
+  );
+
+  it("replaces a lone surrogate in an event name instead of failing the batch", async () => {
+    // JSON can carry half of a surrogate pair as an escape like \ud83d.
+    const parsed = parseAnalyticsTrackPayload(
+      JSON.stringify({
+        publicKey: "anpk_test",
+        events: [{ event: "clip_\uD83D", properties: { sessionId: "rs_1" } }],
+      }),
+    );
+    await recordAnalyticsEvents(parsed.publicKey, parsed.events);
+
+    expect(sessionEventIndexMocks.record).toHaveBeenCalledWith(
+      analyticsDbMocks.db,
+      [expect.objectContaining({ eventName: "clip_\uFFFD" })],
+      expect.any(String),
+    );
+  });
+
+  it("does not index session events when persistence fails", async () => {
+    rollupMocks.upsert.mockRejectedValueOnce(new Error("rollup unavailable"));
+
+    await expect(
+      recordAnalyticsEvents("anpk_test", [{ event: "pageview" }]),
+    ).rejects.toThrow();
+
+    expect(sessionEventIndexMocks.record).not.toHaveBeenCalled();
+    expect(sessionEventIndexMocks.catalog).not.toHaveBeenCalled();
+  });
+
+  it("fails the batch when its sessions cannot be indexed or marked incomplete", async () => {
+    sessionEventIndexMocks.record.mockRejectedValueOnce(
+      new Error("gap marker write failed"),
+    );
+
+    await expect(
+      recordAnalyticsEvents("anpk_test", [{ event: "pageview" }]),
+    ).rejects.toThrow("gap marker write failed");
+  });
+
   it("enforces the Postgres volume limit during dual writes", async () => {
     backendMocks.get.mockResolvedValueOnce({
       sink: "dual",
@@ -508,6 +599,20 @@ describe("recordAnalyticsEvents", () => {
       },
       [expect.objectContaining({ derived: expect.any(Object) })],
     );
+  });
+
+  it("counts a failed exception ingest instead of swallowing it", async () => {
+    const failure = new Error("password authentication failed");
+    exceptionMocks.ingest.mockRejectedValueOnce(failure);
+
+    await expect(
+      recordAnalyticsEvents("anpk_test", [
+        { event: "$exception", properties: { error: "a", app: "analytics" } },
+        { event: "$exception", properties: { error: "b", app: "analytics" } },
+      ]),
+    ).resolves.toMatchObject({ accepted: 2 });
+
+    expect(exceptionMocks.recordFailure).toHaveBeenCalledWith(2, failure);
   });
 
   it("preserves SQL exception issues while warehouse delivery is pending", async () => {
@@ -580,6 +685,100 @@ describe("validateFirstPartyAnalyticsSql", () => {
         "SELECT e.event_date FROM analytics_events e JOIN analytics_user_days u ON u.event_date = e.event_date",
       ),
     ).not.toThrow();
+  });
+
+  it("rejects PostgreSQL set-returning date functions, including infinite bounds", () => {
+    expect(() =>
+      validateFirstPartyAnalyticsSql(
+        "SELECT e.event_date FROM analytics_events e CROSS JOIN LATERAL pg_catalog.generate_series(1, 10000000, INTERVAL '1 day') AS days(day)",
+      ),
+    ).toThrow("table function pg_catalog.generate_series");
+    expect(() =>
+      validateFirstPartyAnalyticsSql(
+        "WITH bounds AS (SELECT '2000-01-01'::timestamp AS start_date, 'infinity'::timestamp AS end_date) SELECT e.event_date FROM analytics_events e CROSS JOIN bounds CROSS JOIN LATERAL pg_catalog.generate_series(bounds.start_date, bounds.end_date, INTERVAL '1 day') AS days(day)",
+      ),
+    ).toThrow("table function pg_catalog.generate_series");
+    expect(() =>
+      validateFirstPartyAnalyticsSql(
+        "SELECT e.event_date FROM analytics_events e CROSS JOIN LATERAL pg_catalog /* split */ . generate_series(1, 10000000, INTERVAL '1 day') AS days(day)",
+      ),
+    ).toThrow("table function pg_catalog.generate_series");
+    expect(() =>
+      validateFirstPartyAnalyticsSql(
+        "SELECT e.event_date FROM analytics_events e CROSS JOIN LATERAL custom_series(1, 2) AS days(day)",
+      ),
+    ).toThrow("cannot read from table function custom_series");
+  });
+
+  it("rejects set-returning functions in SELECT and CTE expressions", () => {
+    expect(() =>
+      validateFirstPartyAnalyticsSql(
+        "SELECT pg_catalog /* split */ . /* split */ generate_series(1, 2) AS day FROM analytics_events",
+      ),
+    ).toThrow("cannot call set-returning function generate_series");
+    expect(() =>
+      validateFirstPartyAnalyticsSql(
+        "WITH expanded AS (SELECT unnest(ARRAY[1, 2]) AS value FROM analytics_events) SELECT value FROM expanded",
+      ),
+    ).toThrow("cannot call set-returning function unnest");
+  });
+
+  it("rejects unapproved SQL functions that can escape tenant scoping", () => {
+    for (const sql of [
+      "SELECT Σ.sum(event_count) FROM analytics_event_daily_rollups",
+      "SELECT table_to_xml('analytics_events'::regclass, false, true, '') AS leaked FROM analytics_events LIMIT 1",
+      "SELECT table_to_xml(('analytics_' || 'events')::regclass, false, true, '') FROM session_recordings LIMIT 1",
+      "SELECT query_to_xml('SELECT analytics_' || 'events', false, true, '') FROM session_recordings LIMIT 1",
+      "SELECT ts_stat('SELECT * FROM analytics_events') FROM session_recordings LIMIT 1",
+      "SELECT pg_sleep(1) FROM analytics_events",
+      "SELECT public.sum(event_count) FROM analytics_event_daily_rollups",
+    ]) {
+      expect(() => validateFirstPartyAnalyticsSql(sql)).toThrow(
+        "cannot call unapproved SQL function",
+      );
+    }
+  });
+
+  it("allows approved scalar functions and parenthesized SQL conditions", () => {
+    expect(() =>
+      validateFirstPartyAnalyticsSql(
+        "SELECT pg_catalog /* split */ . date_trunc('day', event_date), COALESCE(SUM(event_count), 0) FROM analytics_event_daily_rollups WHERE (event_date IS NOT NULL) GROUP BY event_date",
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateFirstPartyAnalyticsSql(
+        "SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE 1.0 * COUNT(*) FILTER (WHERE event_date IS NOT NULL) / COUNT(*) END AS rate FROM analytics_events",
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateFirstPartyAnalyticsSql(
+        "SELECT .5 * COUNT(*) AS rate FROM analytics_events",
+      ),
+    ).not.toThrow();
+  });
+
+  it.each(["1.0", ".5", "1.", "1e+2", "1.0e-3"])(
+    "allows numeric literal %s before an approved aggregate",
+    (literal) => {
+      expect(() =>
+        validateFirstPartyAnalyticsSql(
+          `SELECT ${literal} * COUNT(*) AS scaled_count FROM analytics_events`,
+        ),
+      ).not.toThrow();
+    },
+  );
+
+  it.each([
+    "1.0 * public.COUNT(*)",
+    '1.0 * "public"."count"(*)',
+    ".0foo.COUNT(*)",
+    "1e2public.COUNT(*)",
+  ])("rejects unapproved qualified aggregates after %s", (expression) => {
+    expect(() =>
+      validateFirstPartyAnalyticsSql(
+        `SELECT ${expression} FROM analytics_events`,
+      ),
+    ).toThrow("cannot call unapproved SQL function");
   });
 
   it("rejects direct replay chunk queries", () => {
@@ -683,6 +882,41 @@ describe("scopedAnalyticsSql", () => {
     ]);
   });
 
+  it("keeps org-scoped reads off personal and legacy owner rows", () => {
+    const scoped = scopedAnalyticsSql(
+      "SELECT event_date, COUNT(*) AS count FROM analytics_events GROUP BY event_date",
+      {
+        userEmail: "admin@example.com",
+        orgId: "customer-org",
+        credentialScope: "org",
+      },
+      "2026-07-01",
+    );
+
+    expect(scoped.sql).toContain(
+      "FROM (SELECT * FROM analytics_events WHERE org_id = $1",
+    );
+    expect(scoped.sql).not.toContain("org_id IS NULL");
+    expect(scoped.sql).not.toContain("owner_email");
+    expect(scoped.args).toEqual(["customer-org", "2026-07-01"]);
+  });
+
+  it("returns no rows for org-scoped reads without an org", () => {
+    const scoped = scopedAnalyticsSql(
+      "SELECT event_date, COUNT(*) AS count FROM analytics_events GROUP BY event_date",
+      {
+        userEmail: "admin@example.com",
+        orgId: null,
+        credentialScope: "org",
+      },
+      "2026-07-01",
+    );
+
+    expect(scoped.sql).toContain("WHERE 1 = 0");
+    expect(scoped.sql).not.toContain("owner_email");
+    expect(scoped.args).toEqual([]);
+  });
+
   it("adds freshness guards around session recording reads", () => {
     const scoped = scopedAnalyticsSql(
       "SELECT COUNT(*) AS recordings FROM session_recordings",
@@ -711,6 +945,34 @@ describe("scopedAnalyticsSql", () => {
       "user:alice@example.com",
       "2026-07-01",
     ]);
+  });
+
+  it("keeps org-scoped rollups on the organization tenant only", () => {
+    const scoped = scopedAnalyticsSql(
+      "SELECT event_date, event_name FROM analytics_event_daily_rollups",
+      {
+        userEmail: "admin@example.com",
+        orgId: "customer-org",
+        credentialScope: "org",
+      },
+      "2026-07-01",
+    );
+
+    expect(scoped.sql).toContain("tenant_key = $1");
+    expect(scoped.sql).not.toContain("user:admin@example.com");
+    expect(scoped.args).toEqual(["org:customer-org", "2026-07-01"]);
+
+    const missingOrg = scopedAnalyticsSql(
+      "SELECT event_date, event_name FROM analytics_event_daily_rollups",
+      {
+        userEmail: "admin@example.com",
+        orgId: null,
+        credentialScope: "org",
+      },
+      "2026-07-01",
+    );
+    expect(missingOrg.sql).toContain("WHERE 1 = 0");
+    expect(missingOrg.args).toEqual([]);
   });
 
   it("uses the personal tenant key for user-day rollups without an org", () => {
@@ -776,6 +1038,35 @@ describe("queryFirstPartyAnalytics", () => {
     ).rejects.toThrow("Cross-backend joins are not supported");
   });
 
+  it("rejects unapproved functions before executing SQL-store queries", async () => {
+    await expect(
+      queryFirstPartyAnalytics(
+        "SELECT table_to_xml(('analytics_' || 'events')::regclass, false, true, '') FROM session_recordings LIMIT 1",
+        { userEmail: "alice@example.com", orgId: "org_123" },
+      ),
+    ).rejects.toThrow("cannot call unapproved SQL function table_to_xml");
+
+    expect(backendMocks.get).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("keeps BigQuery-specific functions available after cutover", async () => {
+    backendMocks.get.mockResolvedValueOnce({
+      sink: "bigquery",
+      table: "builder-3b0a2.analytics.first_party_analytics_events_raw",
+      backfillCursor: "evt_last",
+      backfillCompleted: true,
+    });
+
+    await queryFirstPartyAnalytics(
+      "SELECT SAFE_DIVIDE(COUNT(*), 2) AS count FROM analytics_events",
+      { userEmail: "alice@example.com", orgId: "org_123" },
+    );
+
+    expect(backendMocks.query).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("keeps ad-hoc first-party reads uncached", async () => {
     execute.mockResolvedValue({ rows: [{ count: "1" }], rowsAffected: 0 });
 
@@ -790,6 +1081,24 @@ describe("queryFirstPartyAnalytics", () => {
         timeoutMs: 45_000,
         maxAttempts: 1,
       }),
+    );
+  });
+
+  it("marks capped Postgres reads as truncated", async () => {
+    execute.mockResolvedValue({
+      rows: Array.from({ length: 5_001 }, (_, index) => ({ events: index })),
+      rowsAffected: 0,
+    });
+
+    const result = await queryFirstPartyAnalytics(
+      "SELECT events FROM analytics_events",
+      { userEmail: "alice@example.com", orgId: null },
+    );
+
+    expect(result.rows).toHaveLength(5_000);
+    expect(result.truncated).toBe(true);
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ sql: expect.stringContaining("LIMIT 5001") }),
     );
   });
 

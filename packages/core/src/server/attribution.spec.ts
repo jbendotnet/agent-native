@@ -16,7 +16,6 @@ import {
   type FirstTouchAttribution,
 } from "./attribution.js";
 
-/** Build an `an_ft` cookie header from a first-touch object (matches client). */
 function ftCookie(ft: FirstTouchAttribution): string {
   return `an_ft=${encodeURIComponent(JSON.stringify(ft))}`;
 }
@@ -168,6 +167,9 @@ describe("deriveSignupAttribution", () => {
       utm_campaign: "launch",
       utm_content: "card-a",
       utm_term: "agents",
+      gclid: "google-click-1",
+      msclkid: "microsoft-click-1",
+      vector_source: "vector-campaign",
       landing_path: "/plan/xyz",
       landing_referrer: "t.co",
     };
@@ -181,8 +183,22 @@ describe("deriveSignupAttribution", () => {
       utm_campaign: "launch",
       utm_content: "card-a",
       utm_term: "agents",
+      gclid: "google-click-1",
+      msclkid: "microsoft-click-1",
+      vector_source: "vector-campaign",
       first_touch_path: "/plan/xyz",
       landing_referrer: "t.co",
+    });
+  });
+
+  it("marks when first-touch cookie packing retained only priority fields", () => {
+    expect(
+      signupAttributionFromCookieHeader(
+        ftCookie({ gclid: "click-id", capture_truncated: "1" }),
+      ),
+    ).toMatchObject({
+      gclid: "click-id",
+      attribution_truncated: "true",
     });
   });
 
@@ -257,11 +273,6 @@ describe("signupAttributionContextFromCookieHeader", () => {
     ).toBeUndefined();
   });
 
-  // A browser that ran our client script always has `an_ft`, so no cookies at
-  // all means no browser. Reporting that as "direct" is what made an
-  // unattributable server-side row indistinguishable from a real visitor who
-  // arrived with no campaign — and it is why 94% of `better-auth` signups read
-  // as direct traffic nobody could trace.
   it("reports no browser context rather than direct attribution", () => {
     expect(signupAttributionContextFromCookieHeader(null)).toBeUndefined();
     expect(signupAttributionContextFromCookieHeader("")).toBeUndefined();
@@ -304,9 +315,6 @@ describe("signup attribution request handoff", () => {
     expect(signupAttributionContextFromHeaders(new Headers())).toBeUndefined();
   });
 
-  // The handoff header is unsigned and outranks the request cookie in the
-  // user-create hook, so an inbound copy lets a stranger write the
-  // `anonymous_id` and campaign onto somebody else's signup row.
   it("drops an inbound handoff when there is nothing of ours to stamp", () => {
     const spoofed = addSignupAttributionHeader(
       {

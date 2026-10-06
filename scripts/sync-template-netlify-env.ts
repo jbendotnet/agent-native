@@ -85,8 +85,6 @@ const DEFAULT_CONTEXT = "production";
 const DEFAULT_HOSTED_TEMPLATE_ENV = new Map([
   ["GA_MEASUREMENT_ID", "G-ESF7FYXGN9"],
   ["GTM_CONTAINER_ID", "GTM-N3WSTXZ"],
-  // Hosted harnesses are tools-only; app config still controls which
-  // deployments expose the runtime picker.
   ["AGENT_NATIVE_HOSTED_HARNESS", "true"],
   [
     "VITE_AGENT_NATIVE_FEEDBACK_URL",
@@ -114,16 +112,25 @@ const HOSTED_TEMPLATE_ENV_ALLOWLIST_EXACT = new Set([
   "GA4_PROPERTY_ID",
   "GA_MEASUREMENT_ID",
   "GTM_CONTAINER_ID",
-  // Google OAuth credentials are deliberately NOT synced. A template's local
-  // .env holds a developer's dev-tier client, while hosted sites run the shared
-  // production client; syncing overwrote live secrets with dev ones and took
-  // beta sign-in down fleet-wide. Manage these in Netlify only.
   "GOOGLE_PICKER_API_KEY",
   "GOOGLE_PICKER_APP_ID",
+  "LAUNCHDARKLY_SDK_KEY",
   "NEON_AUTH_BASE_URL",
   "NETLIFY_DATABASE_URL",
   "NETLIFY_DATABASE_URL_UNPOOLED",
   "NITRO_PRESET",
+  "OTEL_EXPORTER_OTLP_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_HEADERS",
+  "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+  "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+  "OTEL_METRICS_EXPORTER",
+  "OTEL_RESOURCE_ATTRIBUTES",
+  "OTEL_SERVICE_NAME",
+  "OTEL_TRACES_EXPORTER",
+  "OTEL_TRACES_SAMPLER",
+  "OTEL_TRACES_SAMPLER_ARG",
   "SENDGRID_API_KEY",
   "SENTRY_AUTH_TOKEN",
   "SENTRY_DSN",
@@ -138,6 +145,7 @@ const HOSTED_TEMPLATE_ENV_ALLOWLIST_PREFIXES = ["VITE_"];
 const HOSTED_TEMPLATE_ALLOWED_SECRET_EXACT = new Set([
   "DATABASE_URL",
   "FIGMA_ACCESS_TOKEN",
+  "LAUNCHDARKLY_SDK_KEY",
   "NETLIFY_DATABASE_URL",
   "NETLIFY_DATABASE_URL_UNPOOLED",
   "SENDGRID_API_KEY",
@@ -146,19 +154,31 @@ const HOSTED_TEMPLATE_ALLOWED_SECRET_EXACT = new Set([
   "SENTRY_SERVER_DSN",
 ]);
 // Sentry build-time upload credentials are one org/project shared by every
-// hosted site, unlike SENTRY_DSN which can vary per site. Pulling them from
-// the invoking shell (rather than each template's committed .env) means the
+// hosted site, unlike SENTRY_DSN which can vary per site. LaunchDarkly's SDK
+// key is the same: one project shared fleet-wide. Pulling them from the
+// invoking shell (rather than each template's committed .env) means the
 // token is never written to disk in this repo.
 const FLEET_WIDE_ENV_KEYS = [
   "SENTRY_AUTH_TOKEN",
   "SENTRY_ORG",
   "SENTRY_PROJECT",
+  "LAUNCHDARKLY_SDK_KEY",
 ];
 const FORBIDDEN_HOSTED_TEMPLATE_ENV_EXACT = new Set([
   "ANTHROPIC_API_KEY",
   "AMPLITUDE_API_KEY",
   "DEMO_MODE",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GOOGLE_GENERATIVE_AI_API_KEY",
+  "GEMINI_API_KEY",
+  "GROQ_API_KEY",
+  "JEV_API_KEY",
+  "MISTRAL_API_KEY",
+  "COHERE_API_KEY",
   "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "TYPESAFE_API_KEY",
+  "VOYAGE_API_KEY",
   "VITE_AMPLITUDE_API_KEY",
 ]);
 const FORBIDDEN_HOSTED_TEMPLATE_ENV_PREFIXES = ["BUILDER_"];
@@ -178,8 +198,17 @@ const PUBLIC_KEY_EXACT = new Set([
   "GOOGLE_PICKER_APP_ID",
   "NEON_AUTH_BASE_URL",
   "NITRO_PRESET",
-  // The org/project slugs identify a Sentry project, not a credential -
-  // SENTRY_AUTH_TOKEN is the actual secret and stays out of this set.
+  // The OTEL_EXPORTER_OTLP_*HEADERS keys carry the site's relay token, so they
+  // stay Netlify secrets.
+  "OTEL_EXPORTER_OTLP_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+  "OTEL_METRICS_EXPORTER",
+  "OTEL_RESOURCE_ATTRIBUTES",
+  "OTEL_SERVICE_NAME",
+  "OTEL_TRACES_EXPORTER",
+  "OTEL_TRACES_SAMPLER",
+  "OTEL_TRACES_SAMPLER_ARG",
   "SENTRY_ORG",
   "SENTRY_PROJECT",
   "SUPABASE_URL",
@@ -188,6 +217,7 @@ const PUBLIC_KEY_EXACT = new Set([
 ]);
 const PUBLIC_KEY_PREFIXES = HOSTED_TEMPLATE_ENV_ALLOWLIST_PREFIXES;
 const PRODUCTION_URL_KEYS = new Set(["APP_URL", "BETTER_AUTH_URL"]);
+const TELEMETRY_SERVICE_NAMESPACE = "agent-native";
 const TEMPLATE_PROD_URL_BY_NAME = new Map([
   ...TEMPLATES.map((template) => [template.name, template.prodUrl]).filter(
     (entry): entry is [string, string] => Boolean(entry[1]),
@@ -227,9 +257,10 @@ Options:
                            GA_MEASUREMENT_ID and GTM_CONTAINER_ID default to the
                            hosted Agent-Native analytics configuration unless an
                            env source overrides them.
-                           SENTRY_AUTH_TOKEN, SENTRY_ORG, and SENTRY_PROJECT are
-                           read from this shell's environment (not any template
-                           .env) since they're the same for every hosted site.
+                           SENTRY_AUTH_TOKEN, SENTRY_ORG, SENTRY_PROJECT, and
+                           LAUNCHDARKLY_SDK_KEY are read from this shell's
+                           environment (not any template .env) since they're
+                           the same for every hosted site.
                            SENTRY_AUTH_TOKEN is always scoped to builds only.
   --help                  Show this help.
 
@@ -386,15 +417,12 @@ function findClosingDoubleQuote(value: string): number {
   return -1;
 }
 
+const FLEET_WIDE_ENV_KEY_SET = new Set(FLEET_WIDE_ENV_KEYS);
+
 function loadTemplateEnv(template: string, sources: string[]) {
   const values = new Map<string, string>(DEFAULT_HOSTED_TEMPLATE_ENV);
   const foundSources: string[] = [];
   const sourcesByKey = new Map<string, string[]>();
-
-  for (const key of FLEET_WIDE_ENV_KEYS) {
-    const value = process.env[key];
-    if (value) values.set(key, value);
-  }
 
   for (const source of sources) {
     const filePath = path.join(REPO_ROOT, "templates", template, source);
@@ -403,9 +431,19 @@ function loadTemplateEnv(template: string, sources: string[]) {
     const relativePath = path.relative(REPO_ROOT, filePath);
     foundSources.push(relativePath);
     for (const [key, value] of parseEnvFile(filePath)) {
+      // Fleet-wide keys are shell-only (see FLEET_WIDE_ENV_KEYS below): a
+      // template file's value for one of them is never eligible, so it can't
+      // sync a stale or developer-local credential when the shell key is
+      // simply unset.
+      if (FLEET_WIDE_ENV_KEY_SET.has(key)) continue;
       values.set(key, value);
       sourcesByKey.set(key, [...(sourcesByKey.get(key) ?? []), relativePath]);
     }
+  }
+
+  for (const key of FLEET_WIDE_ENV_KEYS) {
+    const value = process.env[key];
+    if (value) values.set(key, value);
   }
 
   return { foundSources, sourcesByKey, values };
@@ -480,6 +518,24 @@ function buildTemplateEnvPlan(
     entries.push([key, normalized.value] as const);
   }
 
+  if (
+    values.get("OTEL_EXPORTER_OTLP_ENDPOINT") ||
+    values.get("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") ||
+    values.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+  ) {
+    const identity = hostedTelemetryIdentityEnv(
+      site.sourceTemplate,
+      context,
+      values.get("OTEL_RESOURCE_ATTRIBUTES"),
+    );
+    for (const [key, value] of identity) {
+      const index = entries.findIndex(([entryKey]) => entryKey === key);
+      if (index >= 0) entries.splice(index, 1);
+      entries.push([key, value] as const);
+      normalizedKeys.push(key);
+    }
+  }
+
   return {
     entries,
     forbiddenKeys,
@@ -512,9 +568,66 @@ export function normalizeProductionUrlEntry(
     return { value, normalized: false };
   }
 
-  // This syncs first-party Netlify sites. A local workspace URL must never
-  // become a hosted auth origin because Google validates the exact URI.
   return { value: targetUrl, normalized: true };
+}
+
+/**
+ * OTel identity for a first-party site: one `service.name` per app across
+ * environments, so production versus beta is a label filter, and a shared
+ * `service.namespace` the collector routes Agent-Native metrics on. Netlify
+ * sets nothing like Cloud Run's K_SERVICE, so the sync derives it. Configured
+ * resource attributes are kept, with the managed keys winning. Other deploy
+ * contexts get no identity rather than a guessed environment.
+ */
+export function hostedTelemetryIdentityEnv(
+  template: string,
+  context: string,
+  configuredResourceAttributes?: string,
+): Array<readonly [string, string]> {
+  const environment =
+    context === "production"
+      ? "production"
+      : isBetaContext(context)
+        ? "beta"
+        : undefined;
+  if (!environment) return [];
+  const managed = new Map([
+    ["deployment.environment.name", environment],
+    ["service.namespace", TELEMETRY_SERVICE_NAMESPACE],
+  ]);
+  const attributes = [
+    ...parseResourceAttributes(configuredResourceAttributes).filter(
+      ([key]) => !managed.has(key),
+    ),
+    ...managed,
+  ];
+  return [
+    ["OTEL_SERVICE_NAME", template],
+    [
+      "OTEL_RESOURCE_ATTRIBUTES",
+      attributes.map(([key, value]) => `${key}=${value}`).join(","),
+    ],
+  ];
+}
+
+// Values stay percent-encoded as configured; only keys are compared.
+function parseResourceAttributes(
+  raw: string | undefined,
+): Array<[string, string]> {
+  if (!raw?.trim()) return [];
+  return raw
+    .split(",")
+    .filter((entry) => entry.trim())
+    .map((entry) => {
+      const separator = entry.indexOf("=");
+      const key = separator > 0 ? entry.slice(0, separator).trim() : "";
+      if (!key) {
+        throw new Error(
+          `OTEL_RESOURCE_ATTRIBUTES entry "${entry.trim()}" is not key=value.`,
+        );
+      }
+      return [key, entry.slice(separator + 1).trim()];
+    });
 }
 
 function isBetaContext(context: string): boolean {
@@ -522,9 +635,6 @@ function isBetaContext(context: string): boolean {
 }
 
 export function resolveNetlifyApiContext(context: string): string {
-  // The dedicated beta projects promote their beta branch as the project's
-  // production branch. Their beta runtime therefore reads production-scoped
-  // values, not generic branch-deploy values.
   return isBetaContext(context) ? "production" : context;
 }
 
@@ -753,7 +863,7 @@ async function main() {
     }
     if (plan.normalizedKeys.length > 0) {
       console.log(
-        `  normalized production URL key(s): ${plan.normalizedKeys
+        `  normalized per-site key(s): ${plan.normalizedKeys
           .sort()
           .join(", ")}`,
       );

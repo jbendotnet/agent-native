@@ -1,3 +1,4 @@
+import { isSettingsPathname } from "@agent-native/toolkit/app/settings";
 // @vitest-environment happy-dom
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -5,15 +6,19 @@ import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AdminShell } from "../admin-navigation";
-import { TooltipProvider } from "../ui/tooltip";
+import { Tooltip, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import {
   buildChatFirstEmbedSessionInput,
   CHAT_FIRST_SURFACE_PANEL_TOGGLE_CLASS_NAME,
+  dispatchNavLinkTarget,
   formatThreadAge,
   isElectronEmbeddedSearch,
+  isRedesignedSettingsPath,
+  Layout,
   NavContent,
   renderChatFirstAppSurfaceTab,
   shouldAutoCollapseDispatchSidebar,
+  shouldQueryChatFirstApps,
 } from "./Layout";
 
 const clientState = vi.hoisted(() => ({
@@ -21,25 +26,33 @@ const clientState = vi.hoisted(() => ({
   switchThread: vi.fn(),
   threads: [] as Array<Record<string, unknown>>,
   workspaceApps: [] as Array<Record<string, unknown>>,
-  // Stable identity: WorkspaceAppFrame's embed effect depends on this
-  // function, so a fresh mock per render would re-run the effect forever.
+  basePath: "",
   createEmbedSessionMutateAsync: vi
     .fn()
     .mockResolvedValue({ startUrl: "about:blank" }),
 }));
 
-vi.mock("@agent-native/core/client/agent-chat", () => ({
-  AgentSidebar: ({ children }: { children: React.ReactNode }) => (
-    <div data-agent-sidebar>{children}</div>
-  ),
-  ExternalAgentNudge: () => null,
-  focusAgentChat: vi.fn(),
+vi.mock("@agent-native/core/client/agent-chat", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@agent-native/core/client/agent-chat")
+  >()),
   navigateWithAgentChatViewTransition: (
     navigate: (path: string) => void,
     path: string,
   ) => navigate(path),
   useAgentChatHomeHandoff: () => false,
   useAgentChatHomeHandoffLinks: vi.fn(),
+  useChatModels: () => ({
+    availableModels: [],
+    defaultModel: "auto",
+    selectedModel: "auto",
+    selectedEngine: "",
+    selectedEffort: "medium" as const,
+    isLoading: false,
+    onModelChange: vi.fn(),
+    onEffortChange: vi.fn(),
+    refreshEngines: vi.fn(),
+  }),
   useChatThreads: () => ({
     threads: clientState.threads,
     activeThreadId: "active-thread",
@@ -49,15 +62,43 @@ vi.mock("@agent-native/core/client/agent-chat", () => ({
     renameThread: vi.fn(),
     refreshThreads: vi.fn(),
   }),
+  useChatModels: () => ({
+    availableModels: [],
+    defaultModel: "auto",
+    selectedModel: "auto",
+    selectedEngine: "auto",
+    selectedEffort: "medium",
+    setSelectedModel: vi.fn(),
+  }),
+}));
+
+vi.mock("@agent-native/toolkit/app/chat/AgentSidebar", () => ({
+  AgentToggleButton: () => null,
+  AgentSidebar: ({ children }: { children: React.ReactNode }) => (
+    <div data-agent-sidebar>{children}</div>
+  ),
+  focusAgentChat: vi.fn(),
+}));
+
+vi.mock("../deferred-chat-components.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../deferred-chat-components.js")>()),
+  AgentChatSurface: () => null,
 }));
 
 vi.mock("@agent-native/core/client/api-path", () => ({
   agentNativePath: (path: string) => path,
-  appBasePath: () => "",
-  appPath: (path: string) => path,
+  appBasePath: () => clientState.basePath,
+  appMountPath: () => "",
+  appMountedPath: (path: string) => path,
+  appPath: (path: string) =>
+    clientState.basePath && path.startsWith("/")
+      ? `${clientState.basePath}${path}`
+      : path,
+  frameworkRoutePrefix: () => "",
 }));
 
-vi.mock("@agent-native/core/client/hooks", () => ({
+vi.mock("@agent-native/core/client/hooks", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agent-native/core/client/hooks")>()),
   useActionQuery: (action: string) => ({
     data:
       action === "list-workspace-apps" ? clientState.workspaceApps : undefined,
@@ -70,13 +111,17 @@ vi.mock("@agent-native/core/client/hooks", () => ({
 
 vi.mock("@agent-native/core/client/feature-flags", () => ({
   useFeatureFlag: () => false,
+  useFeatureFlagState: () => ({ enabled: false, status: "ready" }),
 }));
+
+vi.mock("../../hooks/use-mobile", () => ({ useIsMobile: () => false }));
 
 vi.mock("next-themes", () => ({
   useTheme: () => ({ resolvedTheme: "light" }),
 }));
 
 vi.mock("@agent-native/core/client/i18n", () => ({
+  useFormatters: () => ({ formatNumber: (value: number) => String(value) }),
   useT: () => (key: string, values?: Record<string, unknown>) => {
     const messages: Record<string, string> = {
       "dispatch.nav.chat": "Chat",
@@ -98,23 +143,22 @@ vi.mock("@agent-native/core/client/i18n", () => ({
   },
 }));
 
-vi.mock("@agent-native/core/client/navigation", () => ({
+vi.mock("@agent-native/toolkit/app/shared", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@agent-native/toolkit/app/shared")
+  >()),
   openCommandMenu: vi.fn(),
 }));
 
-vi.mock("@agent-native/core/client/ui", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@agent-native/core/client/ui")>();
-  return {
-    ...actual,
-    AgentNativeIcon: (props: React.SVGProps<SVGSVGElement>) => (
-      <svg data-agent-native-icon {...props} />
-    ),
-    FeedbackButton: () => <div>Feedback</div>,
-  };
-});
+vi.mock("../create-app-popover", () => ({
+  CreateAppPopover: () => null,
+}));
 
-vi.mock("@agent-native/core/client/org", () => ({
+vi.mock("@agent-native/toolkit/app/feedback", () => ({
+  FeedbackButton: () => <div>Feedback</div>,
+}));
+
+vi.mock("@agent-native/toolkit/app/org", () => ({
   InvitationBanner: () => null,
   OrgSwitcher: () => <div>Organization</div>,
 }));
@@ -126,6 +170,22 @@ function LocationProbe({ onChange }: { onChange: (path: string) => void }) {
   }, [location.pathname, onChange]);
   return null;
 }
+
+describe("Dispatch navigation paths", () => {
+  afterEach(() => {
+    clientState.basePath = "";
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps router-prefixed paths local and applies the mount prefix otherwise", () => {
+    clientState.basePath = "/dispatch";
+    vi.stubGlobal("window", { location: { pathname: "/dispatch/chat" } });
+    expect(dispatchNavLinkTarget("/apps")).toBe("/apps");
+
+    vi.stubGlobal("window", { location: { pathname: "/chat" } });
+    expect(dispatchNavLinkTarget("/apps")).toBe("/dispatch/apps");
+  });
+});
 
 describe("formatThreadAge", () => {
   const now = 2_000_000_000_000;
@@ -165,6 +225,52 @@ describe("Dispatch workspace app sidebar", () => {
     expect(shouldAutoCollapseDispatchSidebar("/apps/mail/settings")).toBe(true);
     expect(shouldAutoCollapseDispatchSidebar("/apps")).toBe(false);
     expect(shouldAutoCollapseDispatchSidebar("/chat")).toBe(false);
+  });
+
+  it.each([
+    [false, false, false],
+    [false, true, true],
+    [true, false, true],
+  ])(
+    "queries app data for a chat route or visible chat-first rail",
+    (isChatRoute, chatFirstMode, expected) => {
+      expect(shouldQueryChatFirstApps(isChatRoute, chatFirstMode)).toBe(
+        expected,
+      );
+    },
+  );
+});
+
+describe("Dispatch Settings frame", () => {
+  it("drops the Dispatch chrome on Settings", () => {
+    const settingsEnabled = { enabled: true, status: "ready" } as const;
+    expect(isRedesignedSettingsPath("/settings", settingsEnabled)).toBe(true);
+    expect(isRedesignedSettingsPath("/settings/members", settingsEnabled)).toBe(
+      true,
+    );
+    expect(isRedesignedSettingsPath("/settings/app", settingsEnabled)).toBe(
+      true,
+    );
+    expect(
+      isRedesignedSettingsPath("/settings", {
+        enabled: false,
+        status: "loading",
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps the Dispatch chrome off Settings", () => {
+    const settingsEnabled = { enabled: true, status: "ready" } as const;
+    expect(isRedesignedSettingsPath("/admin", settingsEnabled)).toBe(false);
+    expect(
+      isRedesignedSettingsPath("/apps/mail/settings", settingsEnabled),
+    ).toBe(false);
+    expect(
+      isRedesignedSettingsPath("/settings", {
+        enabled: false,
+        status: "unavailable",
+      }),
+    ).toBe(false);
   });
 });
 
@@ -207,6 +313,50 @@ describe("Dispatch NavContent", () => {
     act(() => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+  });
+
+  it("provides tooltip context to chrome-less route content", async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/approval"]}>
+          <Layout>
+            <Tooltip open>
+              <TooltipTrigger asChild>
+                <button type="button">Approval details</button>
+              </TooltipTrigger>
+            </Tooltip>
+          </Layout>
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Approval details");
+  });
+
+  it("provides tooltip context to embedded workspace app content", async () => {
+    window.history.replaceState({}, "", "/apps/mail?embedded=1");
+    try {
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={["/apps/mail"]}>
+            <Layout>
+              <Tooltip open>
+                <TooltipTrigger asChild>
+                  <button type="button">Embedded app details</button>
+                </TooltipTrigger>
+              </Tooltip>
+            </Layout>
+          </MemoryRouter>,
+        );
+      });
+
+      expect(
+        container.querySelector("[data-dispatch-workspace-app-chrome-less]"),
+      ).not.toBeNull();
+      expect(container.textContent).toContain("Embedded app details");
+    } finally {
+      window.history.replaceState({}, "", "/");
+    }
   });
 
   it("puts Overview before Chat in the primary navigation", async () => {
@@ -461,6 +611,51 @@ describe("Dispatch NavContent", () => {
     );
   });
 
+  it("accepts a custom workspace name and icon", async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/overview"]}>
+          <TooltipProvider>
+            <NavContent
+              brandName="Acme Workspace"
+              brandIcon={<svg data-acme-mark aria-hidden="true" />}
+            />
+          </TooltipProvider>
+        </MemoryRouter>,
+      );
+    });
+
+    const brandLink = container.querySelector('a[href="/overview"]');
+    expect(brandLink?.getAttribute("aria-label")).toBe("Acme Workspace");
+    expect(brandLink?.textContent?.trim()).toBe("Acme Workspace");
+    expect(brandLink?.querySelector("[data-acme-mark]")).not.toBeNull();
+    expect(brandLink?.querySelector("[data-agent-native-icon]")).toBeNull();
+    expect(container.textContent).not.toContain("Dispatch");
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/overview"]}>
+          <TooltipProvider>
+            <NavContent
+              collapsed
+              brandName="Acme Workspace"
+              brandIcon={<svg data-acme-mark aria-hidden="true" />}
+            />
+          </TooltipProvider>
+        </MemoryRouter>,
+      );
+    });
+
+    const collapsedBrandLink = container.querySelector('a[href="/overview"]');
+    expect(collapsedBrandLink?.getAttribute("aria-label")).toBe(
+      "Acme Workspace",
+    );
+    expect(
+      collapsedBrandLink?.querySelector("[data-acme-mark]"),
+    ).not.toBeNull();
+    expect(collapsedBrandLink?.textContent?.trim()).toBe("");
+  });
+
   it("keeps Admin above Settings in the chat-first left sidebar", async () => {
     await act(async () => {
       root.render(
@@ -656,10 +851,10 @@ describe("chat-first surface panel toggle stacking", () => {
   it("keeps the toggle above the mobile full-screen surface panel overlay", async () => {
     const { ChatFirstSurfacePanelToggle: RealChatFirstSurfacePanelToggle } =
       await vi.importActual<
-        typeof import("@agent-native/core/client/agent-chat")
-      >("@agent-native/core/client/agent-chat");
+        typeof import("@agent-native/toolkit/app/chat/chat-first")
+      >("@agent-native/toolkit/app/chat/chat-first");
     const { ChatFirstSurfacePanel } =
-      await import("@agent-native/core/client/chat-first");
+      await import("@agent-native/toolkit/app/chat/chat-first");
 
     const container = document.createElement("div");
     document.body.appendChild(container);
@@ -687,9 +882,6 @@ describe("chat-first surface panel toggle stacking", () => {
       container.querySelector("[data-chat-first-surface-toggle]")?.className ??
       "";
 
-    // Below 768px the panel becomes a full-screen absolute overlay at this
-    // z-index (surface-panel.tsx). The toggle is the only control that can
-    // dismiss it, so it must always paint above that overlay.
     const panelMobileZIndex = readMobileZIndexClass(panelClassName);
     const toggleZIndex = readUnprefixedZIndexClass(toggleClassName);
     expect(panelMobileZIndex).not.toBeNull();
@@ -714,7 +906,7 @@ describe("chat-first app surface tab chat rail", () => {
 
   async function renderAppTab(isMobileSurface: boolean) {
     const { defaultChatFirstCopy } =
-      await import("@agent-native/core/client/chat-first");
+      await import("@agent-native/toolkit/app/chat/chat-first");
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(new Response("{}", { status: 200 })),
@@ -739,9 +931,6 @@ describe("chat-first app surface tab chat rail", () => {
   it("does not mount a second full-screen chat rail while the mobile surface panel already covers the screen", async () => {
     const { container, root } = await renderAppTab(true);
 
-    // ChatFirstSurfacePanel is already a full-screen overlay below 768px
-    // (surface-panel.tsx). A nested AgentSidebar chat rail here would stack a
-    // second full-screen shell on top of it.
     expect(container.querySelector("[data-agent-sidebar]")).toBeNull();
     expect(
       container.querySelector("[data-chat-first-app-pane]"),

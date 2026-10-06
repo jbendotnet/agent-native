@@ -21,6 +21,7 @@ vi.mock("sonner", () => ({
 }));
 
 import {
+  documentPropertiesPlaceholder,
   documentPropertiesResponseMatchesScope,
   useConfigureDocumentProperty,
   useSetDocumentProperty,
@@ -46,6 +47,53 @@ describe("documentPropertiesResponseMatchesScope", () => {
         properties: [],
       }),
     ).toBe(true);
+  });
+});
+
+describe("documentPropertiesPlaceholder", () => {
+  const field = (databaseId: string | null, id = "blocks") =>
+    ({
+      definition: { id, databaseId, type: "blocks" },
+      value: "Body",
+      editable: true,
+    }) as never;
+
+  it("lets the page read stand in for its own collection without edit rights", () => {
+    expect(
+      documentPropertiesPlaceholder("row-1", "database-1", [
+        field("database-1"),
+        field("database-1", "notes"),
+      ]),
+    ).toEqual({
+      documentId: "row-1",
+      databaseId: "database-1",
+      canEditValues: false,
+      canManageSchema: false,
+      properties: [field("database-1"), field("database-1", "notes")],
+    });
+  });
+
+  it("does not stand in for another scope or an unknown field list", () => {
+    expect(
+      documentPropertiesPlaceholder("row-1", "database-2", [
+        field("database-1"),
+      ]),
+    ).toBeUndefined();
+    expect(
+      documentPropertiesPlaceholder("row-1", "database-1", [
+        field("database-1"),
+        field(null, "shared"),
+      ]),
+    ).toBeUndefined();
+    expect(
+      documentPropertiesPlaceholder("row-1", "database-1", []),
+    ).toBeUndefined();
+    expect(
+      documentPropertiesPlaceholder("row-1", "database-1", undefined),
+    ).toBeUndefined();
+    expect(
+      documentPropertiesPlaceholder("row-1", null, [field(null)]),
+    ).toBeUndefined();
   });
 });
 
@@ -129,6 +177,65 @@ describe("useConfigureDocumentProperty", () => {
     useActionQuery.mockReset();
     useQueryClient.mockReset();
   });
+
+  it.each([{ version: 1, kind: "emoji", emoji: "🚀" } as const, null])(
+    "preserves an icon selection or removal through the guarded transport: %j",
+    async (icon) => {
+      const transport = vi.fn(async (_input: unknown) => undefined);
+      const queryClient = new QueryClient();
+      queryClient.setQueryData(
+        ["action", "get-content-database", { documentId: "database-page" }],
+        {
+          database: { id: "database-1" },
+          mutationContract: {
+            target: {
+              spaceId: "space-1",
+              databaseId: "database-1",
+              databaseDocumentId: "database-page",
+            },
+            schemaRevision: "S0",
+          },
+          properties: [
+            {
+              definition: {
+                id: "text-1",
+                name: "Text",
+                type: "text",
+                options: {},
+              },
+            },
+          ],
+        },
+      );
+      useQueryClient.mockReturnValue(queryClient);
+      useActionMutation.mockReturnValue({ mutateAsync: transport });
+      const configure = useConfigureDocumentProperty(
+        "database-page",
+        "database-1",
+      );
+      await configure.mutateAsync({
+        id: "text-1",
+        documentId: "database-page",
+        name: "Text",
+        type: "text",
+        icon,
+      });
+      expect(transport.mock.calls[0][0]).toMatchObject({
+        operation: "update",
+        patch: { icon },
+      });
+      await configure.mutateAsync({
+        documentId: "database-page",
+        name: "New",
+        type: "text",
+        icon,
+      });
+      expect(transport.mock.calls[1][0]).toMatchObject({
+        operation: "create",
+        definition: { icon },
+      });
+    },
+  );
 
   it("adapts a rendered ordinary option edit to the guarded setup contract", async () => {
     const transportMutateAsync = vi.fn(async () => undefined);

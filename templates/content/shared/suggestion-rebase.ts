@@ -18,6 +18,7 @@ type MarkdownAnchor = {
   to: number;
   prefix: string;
   suffix: string;
+  siblingRanges?: Array<{ from: number; to: number }>;
 };
 
 function isPayload(value: unknown): value is MarkdownPayload {
@@ -35,7 +36,6 @@ function blockRanges(markdown: string) {
   const serialized = blocks.map((block) =>
     docToNfm({ type: "doc", content: [block] }),
   );
-  // Only use structural offsets when serialization preserves every byte.
   if (serialized.join("\n") !== markdown) return [];
   let offset = 0;
   return blocks.map((block, index) => {
@@ -95,7 +95,6 @@ function resolveParagraphRange(
     const range = resolveOutsideChange(block.text, candidate.text, localAnchor);
     return range ? [{ ...range, ordinal, offset: candidate.from }] : [];
   });
-  // Ordinal alone is not identity: a similarly matching sibling is ambiguous.
   if (candidates.length !== 1 || candidates[0].ordinal !== index) return null;
   const range = candidates[0];
   const reverse = original.filter(
@@ -165,44 +164,39 @@ function resolveCanonicalizedInsertion(
   current: string,
   offset: number,
 ) {
-  if (offset === 0) {
-    return current.length > 0 && before.startsWith(current[0])
-      ? { from: 0, to: 0 }
-      : null;
-  }
-  if (offset === before.length) {
-    return current.length > 0 && before.endsWith(current[current.length - 1])
-      ? { from: current.length, to: current.length }
-      : null;
+  const from = Math.max(0, offset - 1);
+  const to = Math.min(before.length, offset + 1);
+  const unchanged = resolveUnchangedCanonicalRange(before, current, from, to);
+  if (unchanged) {
+    const boundary = unchanged.from + offset - from;
+    return { from: boundary, to: boundary };
   }
 
   const left = before.slice(0, offset).trimEnd();
   const right = before.slice(offset).trimStart();
-  const leftToken = left.slice(-64);
-  const rightToken = right.slice(0, 64);
-  const leftFrom = current.indexOf(leftToken);
-  const rightFrom = current.indexOf(rightToken);
+  const rightFrom = before.length - right.length;
+  if (!left || !right || (offset !== left.length && offset !== rightFrom))
+    return null;
+  const leftRange = resolveUnchangedCanonicalRange(
+    before,
+    current,
+    left.length - 1,
+    left.length,
+  );
+  const rightRange = resolveUnchangedCanonicalRange(
+    before,
+    current,
+    rightFrom,
+    rightFrom + 1,
+  );
   if (
-    !leftToken ||
-    !rightToken ||
-    leftFrom < 0 ||
-    rightFrom < 0 ||
-    current.indexOf(leftToken, leftFrom + 1) >= 0 ||
-    current.indexOf(rightToken, rightFrom + 1) >= 0
-  ) {
+    !leftRange ||
+    !rightRange ||
+    !/^\s+$/.test(current.slice(leftRange.to, rightRange.from))
+  )
     return null;
-  }
-
-  const leftBoundary = leftFrom + leftToken.length;
-  const rightBoundary = rightFrom;
-  const afterLeftText = before.slice(left.length, offset);
-  const beforeRightText = before.slice(offset, before.length - right.length);
-  if (!afterLeftText && !beforeRightText && leftBoundary !== rightBoundary) {
-    return null;
-  }
-  if (!afterLeftText) return { from: leftBoundary, to: leftBoundary };
-  if (!beforeRightText) return { from: rightBoundary, to: rightBoundary };
-  return null;
+  const boundary = offset === left.length ? leftRange.to : rightRange.from;
+  return { from: boundary, to: boundary };
 }
 
 export function resolveMarkdownSuggestionRange(
@@ -232,8 +226,7 @@ export function resolveMarkdownSuggestionRange(
   }
   const needle = `${anchor.prefix}${before.changedText}${anchor.suffix}`;
   const index = currentMarkdown.indexOf(needle);
-  if (index >= 0) {
-    if (currentMarkdown.indexOf(needle, index + 1) >= 0) return null;
+  if (index >= 0 && currentMarkdown.indexOf(needle, index + 1) < 0) {
     const from = index + anchor.prefix.length;
     return { from, to: from + before.changedText.length };
   }
@@ -247,11 +240,126 @@ export function resolveMarkdownSuggestionRange(
 
   return (
     resolveOutsideChange(before.markdown, currentMarkdown, anchor) ??
-    resolveParagraphRange(before.markdown, currentMarkdown, anchor)
+    resolveParagraphRange(before.markdown, currentMarkdown, anchor) ??
+    resolveAcrossSiblingRanges(before.markdown, currentMarkdown, anchor)
   );
 }
 
-function resolveOutsideChange(
+export function resolveMarkdownSuggestionRangeInContext(
+  currentMarkdown: string,
+  operation: ContextualMarkdownOperation,
+): { from: number; to: number } | null {
+  if (!resolveMarkdownSuggestionRange(currentMarkdown, operation)) return null;
+  // A moved exact quote is enough to review, but not to confirm application.
+  const before = operation.before as { markdown: string };
+  const anchor = operation.anchor as MarkdownAnchor;
+  if (currentMarkdown === before.markdown)
+    return { from: anchor.from, to: anchor.to };
+  const context = canonicalizeNfm(before.markdown);
+  const contextualRange =
+    context === before.markdown
+      ? anchor
+      : resolveCanonicalizedRange(before.markdown, context, anchor);
+  if (!contextualRange) return null;
+  if (
+    blockRanges(context).some(
+      (block) =>
+        block.paragraph &&
+        contextualRange.from >= block.from &&
+        contextualRange.to <= block.to,
+    )
+  )
+    return resolveParagraphRange(context, currentMarkdown, {
+      ...anchor,
+      ...contextualRange,
+    });
+  return (
+    resolveCanonicalizedRange(before.markdown, currentMarkdown, anchor) ??
+    resolveOutsideChange(before.markdown, currentMarkdown, anchor) ??
+    resolveParagraphRange(before.markdown, currentMarkdown, anchor) ??
+    resolveAcrossSiblingRanges(before.markdown, currentMarkdown, anchor)
+  );
+}
+
+function resolveAcrossSiblingRanges(
+  before: string,
+  current: string,
+  anchor: MarkdownAnchor,
+) {
+  const siblings = anchor.siblingRanges;
+  if (!siblings?.length || before.length + current.length > 128_000)
+    return null;
+  let cursor = 0;
+  const fixed: Array<{ from: number; text: string }> = [];
+  for (const sibling of siblings) {
+    if (
+      !Number.isInteger(sibling.from) ||
+      !Number.isInteger(sibling.to) ||
+      sibling.from < cursor ||
+      sibling.to < sibling.from ||
+      sibling.to > before.length ||
+      (anchor.from < sibling.to && anchor.to > sibling.from)
+    )
+      return null;
+    fixed.push({ from: cursor, text: before.slice(cursor, sibling.from) });
+    cursor = sibling.to;
+  }
+  fixed.push({ from: cursor, text: before.slice(cursor) });
+  const targetSegment = fixed.findIndex(
+    (segment) =>
+      anchor.from >= segment.from &&
+      anchor.to <= segment.from + segment.text.length,
+  );
+  if (targetSegment < 0 || !fixed[targetSegment]!.text) return null;
+
+  const mapped = new Set<number>();
+  let visited = 0;
+  const visit = (
+    segmentIndex: number,
+    minimum: number,
+    targetStart: number,
+  ) => {
+    if (++visited > 256 || mapped.size > 1) return;
+    if (segmentIndex === fixed.length) {
+      if (minimum <= current.length) mapped.add(targetStart);
+      return;
+    }
+    const segment = fixed[segmentIndex]!;
+    if (!segment.text) {
+      visit(segmentIndex + 1, minimum, targetStart);
+      return;
+    }
+    let position = current.indexOf(segment.text, minimum);
+    while (position >= 0) {
+      if (segmentIndex === 0 && position !== 0) break;
+      if (
+        segmentIndex === fixed.length - 1 &&
+        position + segment.text.length !== current.length
+      ) {
+        position = current.indexOf(segment.text, position + 1);
+        continue;
+      }
+      visit(
+        segmentIndex + 1,
+        position + segment.text.length,
+        segmentIndex === targetSegment
+          ? position + anchor.from - segment.from
+          : targetStart,
+      );
+      if (visited > 256 || mapped.size > 1) return;
+      position = current.indexOf(segment.text, position + 1);
+    }
+  };
+  visit(0, 0, -1);
+  if (visited > 256 || mapped.size !== 1) return null;
+  const from = [...mapped][0]!;
+  const to = from + anchor.to - anchor.from;
+  return current.slice(from, to) === before.slice(anchor.from, anchor.to)
+    ? { from, to }
+    : null;
+}
+
+export function resolveOutsideChange(
   before: string,
   currentMarkdown: string,
   anchor: { from: number; to: number },
@@ -274,8 +382,6 @@ function resolveOutsideChange(
   ) {
     suffix += 1;
   }
-  // Keep every possible boundary when repeated text lets the canonical change
-  // slide left or right. A target inside that interval cannot be safely rebased.
   const changeFrom = Math.min(
     prefix,
     before.length - suffix,

@@ -20,15 +20,11 @@ const enUS = {
   },
   settings: {
     title: "Settings",
-    description: "Language, workspace, resource, and agent preferences.",
-    languageTitle: "Language",
-    languageDescription:
-      "Choose the interface language. This preference is saved for your account.",
-    languageLabel: "Interface language",
     workspaceTitle: "Workspace",
     workspaceDescription:
       "Manage team access and shared workspace resources for Dispatch.",
     openTeamSettings: "Open team settings",
+    resourcesTitle: "Resources",
     openResourceSettings: "Open resource settings",
     automationsTitle: "Automations",
     automationsDescription:
@@ -42,8 +38,6 @@ const enUS = {
     chatFirstDescription:
       "Keep chats at the center and open workspace apps in a contextual pane beside them. This preference only changes your local Dispatch shell.",
     chatFirstAriaLabel: "Use chat-first navigation",
-    chatFirstSessionWatchDescription:
-      "Session watch and follow-up messaging work in this browser pane too. Local CLI subscription detection stays in the Electron app; Dispatch uses workspace/provider credentials.",
     chatFirstStorageUnavailable:
       "This browser is not allowing local preferences, so Chat-first mode cannot be persisted.",
     chatFirstStorageBlocked:
@@ -344,6 +338,16 @@ const enUS = {
       adminConnections: "Connections",
       adminAgentPlatform: "Agent platform",
       adminWorkspaceExtensions: "Workspace extensions",
+      usageAlertDescription:
+        "Get an in-app or email notice when usage reaches an alert threshold. Alerts do not stop usage or limit charges.",
+      usageAlertEmpty:
+        "No alerts yet. Add one to get notified when usage reaches your threshold.",
+      usageAlertThreshold: "Alert threshold",
+      usageAlertReached: "Threshold reached",
+      usageAlertCurrentAndThreshold:
+        "Usage {{current}} · alert threshold {{threshold}} per {{period}}",
+      usageAlertDay: "day",
+      usageAlertMonth: "month",
       dataLoadFailed: "Couldn't load data",
       dataLoadFailedDescription: "Dispatch couldn't load this data.",
       appAdoption: "App adoption",
@@ -363,6 +367,7 @@ const enUS = {
       monitoring: "Monitoring",
       database: "Database",
       chatAcrossApps: "Chat across your apps",
+      chatHomeTitle: "What should we do today?",
       chatAcrossAppsDescription:
         "Route work, inspect status, or create something new from one place.",
       overviewPromptPlaceholder: "What would you like to make happen?",
@@ -447,6 +452,18 @@ const enUS = {
       threadDebugNoThreads: "No threads found.",
       threadDebugSelectPrompt: "Select a failed run or thread to inspect.",
       chatFirstWorkspaceApps: "Workspace apps",
+      chatFirstNewApp: "New",
+      chatFirstOpenInNewTab: "Open in new tab",
+      chatFirstDefaultDescriptionCalendar:
+        "Agent-Native Google Calendar — manage events, sync, and public booking",
+      chatFirstDefaultDescriptionClips:
+        "Screen recording, meeting notes, and voice dictation — all with AI",
+      chatFirstDefaultDescriptionContent:
+        "Open-source Obsidian for MDX — edit local docs with agent assistance",
+      chatFirstDefaultDescriptionDesign:
+        "Agent-Native design tool — create and edit visual designs with agent assistance",
+      chatFirstDefaultDescriptionMail:
+        "Agent-Native Superhuman — email client with keyboard shortcuts and AI triage",
       searchApps: "Search apps",
       searchAppsPlaceholder: "Search apps",
       clearAppSearch: "Clear search",
@@ -979,13 +996,10 @@ export const messagesByLocale = {
       },
       settings: {
         title: "设置",
-        description: "语言、工作区、资源和代理偏好设置。",
-        languageTitle: "语言",
-        languageDescription: "选择界面语言。此偏好会保存到你的账户。",
-        languageLabel: "界面语言",
         workspaceTitle: "工作区",
         workspaceDescription: "管理 Dispatch 的团队访问权限和共享工作区资源。",
         openTeamSettings: "打开团队设置",
+        resourcesTitle: "资源",
         openResourceSettings: "打开资源设置",
         automationsTitle: "自动化",
         automationsDescription: "查看、暂停并创建定时或事件触发的任务。",
@@ -997,8 +1011,6 @@ export const messagesByLocale = {
         chatFirstDescription:
           "让聊天保持中心位置，并在旁边的上下文面板中打开工作区应用。此偏好只会更改你在 Dispatch 中的本地界面。",
         chatFirstAriaLabel: "使用聊天优先导航",
-        chatFirstSessionWatchDescription:
-          "会话监看和后续消息也可在此浏览器面板中使用。本地 CLI 订阅检测保留在 Electron 应用中；Dispatch 使用工作区/提供商凭据。",
         chatFirstStorageUnavailable:
           "此浏览器不允许使用本地偏好设置，因此无法保存聊天优先模式。",
         chatFirstStorageBlocked:
@@ -1274,6 +1286,16 @@ export const messagesByLocale = {
           adminConnections: "连接",
           adminAgentPlatform: "代理平台",
           adminWorkspaceExtensions: "工作区扩展",
+          usageAlertDescription:
+            "使用量达到提醒阈值时，你会收到应用内或电子邮件通知。提醒不会停止使用，也不会限制费用。",
+          usageAlertEmpty:
+            "还没有使用提醒。添加提醒后，使用量达到阈值时你会收到通知。",
+          usageAlertThreshold: "提醒阈值",
+          usageAlertReached: "已达到阈值",
+          usageAlertCurrentAndThreshold:
+            "使用量 {{current}} · {{period}}提醒阈值 {{threshold}}",
+          usageAlertDay: "每天",
+          usageAlertMonth: "每月",
           dataLoadFailed: "无法加载数据",
           dataLoadFailedDescription: "Dispatch 无法加载这些数据。",
           appAdoption: "应用使用情况",
@@ -1293,6 +1315,7 @@ export const messagesByLocale = {
           monitoring: "监控",
           database: "数据库",
           chatAcrossApps: "跨应用聊天",
+          chatHomeTitle: "今天我们该做什么？",
           chatAcrossAppsDescription:
             "在一个地方分派工作、检查状态或创建新内容。",
           overviewPromptPlaceholder: "想让 Dispatch 帮你做什么？",
@@ -1396,16 +1419,11 @@ export const messagesByLocale = {
       },
       settings: {
         title: "Ajustes",
-        description:
-          "Preferencias de idioma, espacio de trabajo, recursos y agente.",
-        languageTitle: "Idioma",
-        languageDescription:
-          "Elige el idioma de la interfaz. Esta preferencia se guarda en tu cuenta.",
-        languageLabel: "Idioma de la interfaz",
         workspaceTitle: "Espacio de trabajo",
         workspaceDescription:
           "Gestiona el acceso del equipo y los recursos compartidos de Dispatch.",
         openTeamSettings: "Abrir ajustes del equipo",
+        resourcesTitle: "Recursos",
         openResourceSettings: "Abrir ajustes de recursos",
         automationsTitle: "Automatizaciones",
         automationsDescription:
@@ -1419,8 +1437,6 @@ export const messagesByLocale = {
         chatFirstDescription:
           "Deja los chats en el centro y abre las apps del espacio de trabajo en un panel contextual junto a ellos. Esta preferencia solo cambia tu shell local de Dispatch.",
         chatFirstAriaLabel: "Usar navegación centrada en el chat",
-        chatFirstSessionWatchDescription:
-          "Puedes observar sesiones y enviar mensajes de seguimiento desde este panel del navegador. La detección de suscripciones CLI locales permanece en la app de Electron; Dispatch usa credenciales del espacio de trabajo/proveedor.",
         chatFirstStorageUnavailable:
           "Este navegador no permite las preferencias locales, por lo que el modo centrado en el chat no se puede guardar.",
         chatFirstStorageBlocked:
@@ -1726,6 +1742,16 @@ export const messagesByLocale = {
           adminConnections: "Conexiones",
           adminAgentPlatform: "Plataforma de agentes",
           adminWorkspaceExtensions: "Extensiones del espacio de trabajo",
+          usageAlertDescription:
+            "Recibe un aviso en la app o por correo cuando el uso alcance un umbral. Las alertas no detienen el uso ni limitan los cargos.",
+          usageAlertEmpty:
+            "Aún no hay alertas. Añade una para recibir avisos cuando el uso alcance el umbral.",
+          usageAlertThreshold: "Umbral de alerta",
+          usageAlertReached: "Umbral alcanzado",
+          usageAlertCurrentAndThreshold:
+            "Uso: {{current}} · umbral de alerta: {{threshold}} por {{period}}",
+          usageAlertDay: "día",
+          usageAlertMonth: "mes",
           dataLoadFailed: "No se pudieron cargar los datos",
           dataLoadFailedDescription: "Dispatch no pudo cargar estos datos.",
           appAdoption: "Adopción de apps",
@@ -1745,6 +1771,7 @@ export const messagesByLocale = {
           monitoring: "Monitorización",
           database: "Base de datos",
           chatAcrossApps: "Chatea con todas tus aplicaciones",
+          chatHomeTitle: "¿Qué deberíamos hacer hoy?",
           chatAcrossAppsDescription:
             "Dirige el trabajo, revisa el estado o crea algo nuevo desde un solo lugar.",
           overviewPromptPlaceholder: "¿Qué te gustaría hacer?",
@@ -1858,16 +1885,11 @@ export const messagesByLocale = {
       },
       settings: {
         title: "Paramètres",
-        description:
-          "Préférences de langue, d’espace de travail, de ressources et d’agent.",
-        languageTitle: "Langue",
-        languageDescription:
-          "Choisissez la langue de l’interface. Cette préférence est enregistrée dans votre compte.",
-        languageLabel: "Langue de l’interface",
         workspaceTitle: "Espace de travail",
         workspaceDescription:
           "Gérez l’accès de l’équipe et les ressources partagées de Dispatch.",
         openTeamSettings: "Ouvrir les paramètres d’équipe",
+        resourcesTitle: "Ressources",
         openResourceSettings: "Ouvrir les paramètres des ressources",
         automationsTitle: "Automatisations",
         automationsDescription:
@@ -1881,8 +1903,6 @@ export const messagesByLocale = {
         chatFirstDescription:
           "Gardez les chats au centre et ouvrez les apps de l’espace de travail dans un panneau contextuel à côté. Cette préférence ne modifie que votre interface locale Dispatch.",
         chatFirstAriaLabel: "Utiliser la navigation axée sur le chat",
-        chatFirstSessionWatchDescription:
-          "Le suivi des sessions et les messages de suivi fonctionnent aussi dans ce panneau du navigateur. La détection des abonnements CLI locaux reste dans l’app Electron ; Dispatch utilise les identifiants de l’espace de travail/fournisseur.",
         chatFirstStorageUnavailable:
           "Ce navigateur n’autorise pas les préférences locales ; le mode axé sur le chat ne peut donc pas être conservé.",
         chatFirstStorageBlocked:
@@ -2188,6 +2208,16 @@ export const messagesByLocale = {
           adminConnections: "Connexions",
           adminAgentPlatform: "Plateforme d’agents",
           adminWorkspaceExtensions: "Extensions de l’espace de travail",
+          usageAlertDescription:
+            "Recevez une notification dans l’app ou par e-mail lorsque l’utilisation atteint un seuil. Les alertes n’arrêtent pas l’utilisation et ne plafonnent pas les frais.",
+          usageAlertEmpty:
+            "Aucune alerte pour le moment. Ajoutez-en une pour être averti lorsque l’utilisation atteint le seuil.",
+          usageAlertThreshold: "Seuil d’alerte",
+          usageAlertReached: "Seuil atteint",
+          usageAlertCurrentAndThreshold:
+            "Utilisation : {{current}} · seuil d’alerte : {{threshold}} par {{period}}",
+          usageAlertDay: "jour",
+          usageAlertMonth: "mois",
           dataLoadFailed: "Impossible de charger les données",
           dataLoadFailedDescription: "Dispatch n’a pas pu charger ces données.",
           appAdoption: "Adoption des apps",
@@ -2207,6 +2237,7 @@ export const messagesByLocale = {
           monitoring: "Surveillance",
           database: "Base de données",
           chatAcrossApps: "Discutez avec toutes vos applications",
+          chatHomeTitle: "Que devrions-nous faire aujourd’hui ?",
           chatAcrossAppsDescription:
             "Acheminez le travail, vérifiez l’état ou créez du contenu depuis un seul endroit.",
           overviewPromptPlaceholder: "Que souhaitez-vous faire ?",
@@ -2321,16 +2352,11 @@ export const messagesByLocale = {
       },
       settings: {
         title: "Einstellungen",
-        description:
-          "Sprach-, Arbeitsbereichs-, Ressourcen- und Agent-Einstellungen.",
-        languageTitle: "Sprache",
-        languageDescription:
-          "Wähle die Sprache der Oberfläche. Diese Einstellung wird in deinem Konto gespeichert.",
-        languageLabel: "Oberflächensprache",
         workspaceTitle: "Arbeitsbereich",
         workspaceDescription:
           "Verwalte Teamzugriff und gemeinsam genutzte Dispatch-Ressourcen.",
         openTeamSettings: "Teameinstellungen öffnen",
+        resourcesTitle: "Ressourcen",
         openResourceSettings: "Ressourceneinstellungen öffnen",
         automationsTitle: "Automatisierungen",
         automationsDescription:
@@ -2344,8 +2370,6 @@ export const messagesByLocale = {
         chatFirstDescription:
           "Chats bleiben im Mittelpunkt, während Workspace-Apps in einem kontextbezogenen Bereich daneben geöffnet werden. Diese Einstellung ändert nur deine lokale Dispatch-Oberfläche.",
         chatFirstAriaLabel: "Chat-zentrierte Navigation verwenden",
-        chatFirstSessionWatchDescription:
-          "Sessions können auch in diesem Browserbereich beobachtet und mit Folgemeldungen versehen werden. Die Erkennung lokaler CLI-Abos bleibt in der Electron-App; Dispatch verwendet Workspace-/Anbieter-Anmeldedaten.",
         chatFirstStorageUnavailable:
           "Dieser Browser lässt lokale Einstellungen nicht zu. Der chat-zentrierte Modus kann daher nicht gespeichert werden.",
         chatFirstStorageBlocked:
@@ -2638,6 +2662,16 @@ export const messagesByLocale = {
           adminConnections: "Verbindungen",
           adminAgentPlatform: "Agentenplattform",
           adminWorkspaceExtensions: "Arbeitsbereichserweiterungen",
+          usageAlertDescription:
+            "Erhalte eine In-App- oder E-Mail-Benachrichtigung, wenn die Nutzung einen Schwellenwert erreicht. Alerts stoppen die Nutzung nicht und begrenzen keine Kosten.",
+          usageAlertEmpty:
+            "Noch keine Alerts. Lege einen Schwellenwert fest, um bei Erreichen benachrichtigt zu werden.",
+          usageAlertThreshold: "Alarm-Schwellenwert",
+          usageAlertReached: "Schwellenwert erreicht",
+          usageAlertCurrentAndThreshold:
+            "Nutzung: {{current}} · Alarmschwelle: {{threshold}} pro {{period}}",
+          usageAlertDay: "Tag",
+          usageAlertMonth: "Monat",
           dataLoadFailed: "Daten konnten nicht geladen werden",
           dataLoadFailedDescription: "Dispatch konnte diese Daten nicht laden.",
           appAdoption: "App-Nutzung",
@@ -2657,6 +2691,7 @@ export const messagesByLocale = {
           monitoring: "Überwachung",
           database: "Datenbank",
           chatAcrossApps: "App-übergreifend chatten",
+          chatHomeTitle: "Was sollten wir heute tun?",
           chatAcrossAppsDescription:
             "Leite Arbeit weiter, prüfe den Status oder erstelle Neues an einem Ort.",
           overviewPromptPlaceholder: "Was möchtest du erledigen?",
@@ -2769,15 +2804,11 @@ export const messagesByLocale = {
       },
       settings: {
         title: "設定",
-        description: "言語、ワークスペース、リソース、エージェント設定。",
-        languageTitle: "言語",
-        languageDescription:
-          "インターフェース言語を選択します。この設定はアカウントに保存されます。",
-        languageLabel: "インターフェース言語",
         workspaceTitle: "ワークスペース",
         workspaceDescription:
           "Dispatch のチームアクセスと共有ワークスペースリソースを管理します。",
         openTeamSettings: "チーム設定を開く",
+        resourcesTitle: "リソース",
         openResourceSettings: "リソース設定を開く",
         automationsTitle: "自動化",
         automationsDescription:
@@ -2791,8 +2822,6 @@ export const messagesByLocale = {
         chatFirstDescription:
           "チャットを中心に保ち、ワークスペースアプリを隣のコンテキストパネルで開きます。この設定で変わるのはローカルの Dispatch シェルだけです。",
         chatFirstAriaLabel: "チャット中心のナビゲーションを使用",
-        chatFirstSessionWatchDescription:
-          "このブラウザパネルでもセッションの監視とフォローアップメッセージを利用できます。ローカル CLI サブスクリプションの検出は Electron アプリに残り、Dispatch はワークスペース/プロバイダーの認証情報を使用します。",
         chatFirstStorageUnavailable:
           "このブラウザではローカル設定が許可されないため、チャット中心モードを保存できません。",
         chatFirstStorageBlocked:
@@ -3082,6 +3111,16 @@ export const messagesByLocale = {
           adminConnections: "接続",
           adminAgentPlatform: "エージェントプラットフォーム",
           adminWorkspaceExtensions: "ワークスペース拡張機能",
+          usageAlertDescription:
+            "使用量がしきい値に達すると、アプリ内またはメールで通知します。通知は利用を停止したり請求額を制限したりしません。",
+          usageAlertEmpty:
+            "アラートはまだありません。使用量の通知を受け取るしきい値を追加してください。",
+          usageAlertThreshold: "通知しきい値",
+          usageAlertReached: "しきい値に到達",
+          usageAlertCurrentAndThreshold:
+            "使用量：{{current}}・通知しきい値：{{threshold}}／{{period}}",
+          usageAlertDay: "日",
+          usageAlertMonth: "月",
           dataLoadFailed: "データを読み込めませんでした",
           dataLoadFailedDescription:
             "Dispatch はこのデータを読み込めませんでした。",
@@ -3102,6 +3141,7 @@ export const messagesByLocale = {
           monitoring: "監視",
           database: "データベース",
           chatAcrossApps: "アプリを横断してチャット",
+          chatHomeTitle: "今日は何をしましょうか？",
           chatAcrossAppsDescription:
             "1 か所から作業を振り分け、状況を確認し、新しいものを作成できます。",
           overviewPromptPlaceholder: "何をしたいですか？",
@@ -3211,15 +3251,11 @@ export const messagesByLocale = {
       },
       settings: {
         title: "설정",
-        description: "언어, 워크스페이스, 리소스 및 에이전트 환경설정입니다.",
-        languageTitle: "언어",
-        languageDescription:
-          "인터페이스 언어를 선택하세요. 이 기본 설정은 계정에 저장됩니다.",
-        languageLabel: "인터페이스 언어",
         workspaceTitle: "워크스페이스",
         workspaceDescription:
           "Dispatch의 팀 접근 권한과 공유 워크스페이스 리소스를 관리합니다.",
         openTeamSettings: "팀 설정 열기",
+        resourcesTitle: "리소스",
         openResourceSettings: "리소스 설정 열기",
         automationsTitle: "자동화",
         automationsDescription:
@@ -3233,8 +3269,6 @@ export const messagesByLocale = {
         chatFirstDescription:
           "채팅을 중심에 두고 작업공간 앱을 옆의 컨텍스트 패널에서 엽니다. 이 설정은 로컬 Dispatch 셸만 변경합니다.",
         chatFirstAriaLabel: "채팅 중심 탐색 사용",
-        chatFirstSessionWatchDescription:
-          "이 브라우저 패널에서도 세션을 지켜보고 후속 메시지를 보낼 수 있습니다. 로컬 CLI 구독 감지는 Electron 앱에 남아 있으며, Dispatch는 작업공간/공급자 자격 증명을 사용합니다.",
         chatFirstStorageUnavailable:
           "이 브라우저에서는 로컬 환경설정을 허용하지 않아 채팅 중심 모드를 저장할 수 없습니다.",
         chatFirstStorageBlocked:
@@ -3520,6 +3554,16 @@ export const messagesByLocale = {
           adminConnections: "연결",
           adminAgentPlatform: "에이전트 플랫폼",
           adminWorkspaceExtensions: "워크스페이스 확장",
+          usageAlertDescription:
+            "사용량이 임계값에 도달하면 앱 내 또는 이메일 알림을 받습니다. 알림은 사용을 중단하거나 청구 금액을 제한하지 않습니다.",
+          usageAlertEmpty:
+            "아직 알림이 없습니다. 사용량 알림을 받을 임계값을 추가하세요.",
+          usageAlertThreshold: "알림 임계값",
+          usageAlertReached: "임계값 도달",
+          usageAlertCurrentAndThreshold:
+            "사용량: {{current}} · {{period}} 알림 임계값: {{threshold}}",
+          usageAlertDay: "일",
+          usageAlertMonth: "월",
           dataLoadFailed: "데이터를 불러올 수 없습니다",
           dataLoadFailedDescription:
             "Dispatch에서 이 데이터를 불러오지 못했습니다.",
@@ -3540,6 +3584,7 @@ export const messagesByLocale = {
           monitoring: "모니터링",
           database: "데이터베이스",
           chatAcrossApps: "앱 전체에서 채팅",
+          chatHomeTitle: "오늘은 무엇을 하면 좋을까요?",
           chatAcrossAppsDescription:
             "한곳에서 작업을 전달하고 상태를 확인하거나 새로운 것을 만드세요.",
           overviewPromptPlaceholder: "무엇을 하고 싶으신가요?",
@@ -3646,16 +3691,11 @@ export const messagesByLocale = {
       },
       settings: {
         title: "Configurações",
-        description:
-          "Preferências de idioma, espaço de trabalho, recursos e agente.",
-        languageTitle: "Idioma",
-        languageDescription:
-          "Escolha o idioma da interface. Essa preferência é salva na sua conta.",
-        languageLabel: "Idioma da interface",
         workspaceTitle: "Espaço de trabalho",
         workspaceDescription:
           "Gerencie acesso da equipe e recursos compartilhados do Dispatch.",
         openTeamSettings: "Abrir configurações da equipe",
+        resourcesTitle: "Recursos",
         openResourceSettings: "Abrir configurações de recursos",
         automationsTitle: "Automações",
         automationsDescription:
@@ -3669,8 +3709,6 @@ export const messagesByLocale = {
         chatFirstDescription:
           "Mantenha os chats no centro e abra os apps do workspace em um painel contextual ao lado. Esta preferência altera apenas o shell local do Dispatch.",
         chatFirstAriaLabel: "Usar navegação com foco no chat",
-        chatFirstSessionWatchDescription:
-          "O acompanhamento de sessões e as mensagens de acompanhamento também funcionam neste painel do navegador. A detecção de assinaturas CLI locais continua no app Electron; o Dispatch usa credenciais do workspace/provedor.",
         chatFirstStorageUnavailable:
           "Este navegador não permite preferências locais, então o modo com foco no chat não pode ser salvo.",
         chatFirstStorageBlocked:
@@ -3970,6 +4008,16 @@ export const messagesByLocale = {
           adminConnections: "Conexões",
           adminAgentPlatform: "Plataforma de agentes",
           adminWorkspaceExtensions: "Extensões do espaço de trabalho",
+          usageAlertDescription:
+            "Receba um aviso no app ou por e-mail quando o uso atingir um limite. Os alertas não interrompem o uso nem limitam cobranças.",
+          usageAlertEmpty:
+            "Ainda não há alertas. Adicione um para receber avisos quando o uso atingir o limite.",
+          usageAlertThreshold: "Limite do alerta",
+          usageAlertReached: "Limite atingido",
+          usageAlertCurrentAndThreshold:
+            "Uso: {{current}} · limite do alerta: {{threshold}} por {{period}}",
+          usageAlertDay: "dia",
+          usageAlertMonth: "mês",
           dataLoadFailed: "Não foi possível carregar os dados",
           dataLoadFailedDescription:
             "O Dispatch não conseguiu carregar estes dados.",
@@ -3990,6 +4038,7 @@ export const messagesByLocale = {
           monitoring: "Monitoramento",
           database: "Banco de dados",
           chatAcrossApps: "Converse entre seus apps",
+          chatHomeTitle: "O que devemos fazer hoje?",
           chatAcrossAppsDescription:
             "Encaminhe trabalhos, verifique o status ou crie algo novo em um só lugar.",
           overviewPromptPlaceholder: "O que você gostaria de fazer?",
@@ -4103,14 +4152,11 @@ export const messagesByLocale = {
       },
       settings: {
         title: "सेटिंग्स",
-        description: "भाषा, कार्यस्थान, संसाधन और एजेंट प्राथमिकताएं।",
-        languageTitle: "भाषा",
-        languageDescription: "इंटरफ़ेस भाषा चुनें। यह पसंद आपके खाते में सहेजी जाती है।",
-        languageLabel: "इंटरफ़ेस भाषा",
         workspaceTitle: "कार्यस्थान",
         workspaceDescription:
           "Dispatch के लिए टीम पहुंच और साझा कार्यस्थान संसाधनों को प्रबंधित करें।",
         openTeamSettings: "टीम सेटिंग्स खोलें",
+        resourcesTitle: "संसाधन",
         openResourceSettings: "संसाधन सेटिंग्स खोलें",
         automationsTitle: "ऑटोमेशन",
         automationsDescription:
@@ -4123,8 +4169,6 @@ export const messagesByLocale = {
         chatFirstDescription:
           "चैट को केंद्र में रखें और कार्यक्षेत्र ऐप्स को बगल के संदर्भ पैनल में खोलें। यह प्राथमिकता केवल आपके स्थानीय Dispatch शेल को बदलती है।",
         chatFirstAriaLabel: "चैट-केंद्रित नेविगेशन का उपयोग करें",
-        chatFirstSessionWatchDescription:
-          "इस ब्राउज़र पैनल में भी सत्र देखना और फ़ॉलो-अप संदेश भेजना काम करता है। स्थानीय CLI सदस्यता पहचान Electron ऐप में रहती है; Dispatch कार्यक्षेत्र/प्रदाता क्रेडेंशियल का उपयोग करता है।",
         chatFirstStorageUnavailable:
           "यह ब्राउज़र स्थानीय प्राथमिकताओं की अनुमति नहीं देता, इसलिए चैट-केंद्रित मोड सहेजा नहीं जा सकता।",
         chatFirstStorageBlocked:
@@ -4407,6 +4451,16 @@ export const messagesByLocale = {
           adminConnections: "कनेक्शन",
           adminAgentPlatform: "एजेंट प्लेटफ़ॉर्म",
           adminWorkspaceExtensions: "वर्कस्पेस एक्सटेंशन",
+          usageAlertDescription:
+            "उपयोग सीमा तक पहुँचने पर ऐप में या ईमेल से सूचना पाएं। अलर्ट उपयोग को रोकते या शुल्क को सीमित नहीं करते।",
+          usageAlertEmpty:
+            "अभी कोई अलर्ट नहीं है। उपयोग की सूचना पाने के लिए एक सीमा जोड़ें।",
+          usageAlertThreshold: "अलर्ट सीमा",
+          usageAlertReached: "सीमा तक पहुँचे",
+          usageAlertCurrentAndThreshold:
+            "उपयोग: {{current}} · {{period}} की अलर्ट सीमा: {{threshold}}",
+          usageAlertDay: "दिन",
+          usageAlertMonth: "महीना",
           dataLoadFailed: "डेटा लोड नहीं हो सका",
           dataLoadFailedDescription: "Dispatch यह डेटा लोड नहीं कर सका।",
           appAdoption: "ऐप अपनाना",
@@ -4426,6 +4480,7 @@ export const messagesByLocale = {
           monitoring: "निगरानी",
           database: "डेटाबेस",
           chatAcrossApps: "अपने सभी ऐप्स में चैट करें",
+          chatHomeTitle: "आज हमें क्या करना चाहिए?",
           chatAcrossAppsDescription:
             "एक ही स्थान से काम भेजें, स्थिति जाँचें या कुछ नया बनाएँ।",
           overviewPromptPlaceholder: "आप क्या करना चाहते हैं?",
@@ -4530,14 +4585,11 @@ export const messagesByLocale = {
       },
       settings: {
         title: "الإعدادات",
-        description: "تفضيلات اللغة ومساحة العمل والموارد والوكيل.",
-        languageTitle: "اللغة",
-        languageDescription: "اختر لغة الواجهة. يتم حفظ هذا التفضيل في حسابك.",
-        languageLabel: "لغة الواجهة",
         workspaceTitle: "مساحة العمل",
         workspaceDescription:
           "إدارة وصول الفريق وموارد مساحة العمل المشتركة في Dispatch.",
         openTeamSettings: "فتح إعدادات الفريق",
+        resourcesTitle: "الموارد",
         openResourceSettings: "فتح إعدادات الموارد",
         automationsTitle: "الأتمتة",
         automationsDescription:
@@ -4551,8 +4603,6 @@ export const messagesByLocale = {
         chatFirstDescription:
           "أبقِ الدردشات في المركز وافتح تطبيقات مساحة العمل في لوحة سياقية بجانبها. يغيّر هذا التفضيل واجهة Dispatch المحلية فقط.",
         chatFirstAriaLabel: "استخدام التنقل المتمحور حول الدردشة",
-        chatFirstSessionWatchDescription:
-          "تعمل مراقبة الجلسات وإرسال رسائل المتابعة أيضًا في لوحة المتصفح هذه. يبقى اكتشاف اشتراكات CLI المحلية في تطبيق Electron؛ ويستخدم Dispatch بيانات اعتماد مساحة العمل/الموفر.",
         chatFirstStorageUnavailable:
           "لا يسمح هذا المتصفح بالتفضيلات المحلية، لذلك لا يمكن حفظ وضع التركيز على الدردشة.",
         chatFirstStorageBlocked:
@@ -4874,6 +4924,16 @@ export const messagesByLocale = {
           adminConnections: "الاتصالات",
           adminAgentPlatform: "منصة الوكلاء",
           adminWorkspaceExtensions: "امتدادات مساحة العمل",
+          usageAlertDescription:
+            "تلقَّ إشعارًا داخل التطبيق أو عبر البريد الإلكتروني عند بلوغ الاستخدام العتبة. لا توقف التنبيهات الاستخدام ولا تحدّ من الرسوم.",
+          usageAlertEmpty:
+            "لا توجد تنبيهات بعد. أضف تنبيهًا لتلقي إشعار عند بلوغ الاستخدام العتبة.",
+          usageAlertThreshold: "عتبة التنبيه",
+          usageAlertReached: "تم بلوغ العتبة",
+          usageAlertCurrentAndThreshold:
+            "الاستخدام: {{current}} · عتبة التنبيه: {{threshold}} لكل {{period}}",
+          usageAlertDay: "يوم",
+          usageAlertMonth: "شهر",
           dataLoadFailed: "تعذر تحميل البيانات",
           dataLoadFailedDescription: "تعذر على Dispatch تحميل هذه البيانات.",
           appAdoption: "اعتماد التطبيقات",
@@ -4893,6 +4953,7 @@ export const messagesByLocale = {
           monitoring: "المراقبة",
           database: "قاعدة البيانات",
           chatAcrossApps: "تحدث عبر تطبيقاتك",
+          chatHomeTitle: "ماذا ينبغي أن نفعل اليوم؟",
           chatAcrossAppsDescription:
             "وجّه العمل وتحقق من الحالة أو أنشئ شيئًا جديدًا من مكان واحد.",
           overviewPromptPlaceholder: "ماذا تريد أن تفعل؟",

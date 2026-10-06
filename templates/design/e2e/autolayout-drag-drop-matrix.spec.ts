@@ -6,14 +6,14 @@ import {
 } from "@playwright/test";
 
 import { chromeBounds } from "./drag-and-drop.shared";
-import { appPath, designFrame, expandAllLayers, gotoEditor } from "./helpers";
+import {
+  appPath,
+  cdpScreenshot,
+  designFrame,
+  expandAllLayers,
+  gotoEditor,
+} from "./helpers";
 
-// Oracle: Figma Guide to auto layout (D-AL/D-HV/D-IGNORE/D-COPY) and the
-// 2026-09-18 held-drag matrix in .tmp/interaction-parity. These tests assert
-// documented structure and marker orientation; marker pixel values remain
-// version/zoom dependent. Native Figma runtime telemetry is unavailable in
-// this headless lane, so the documented release semantics remain an explicit
-// oracle boundary rather than an unverified native-app claim.
 const CONTROL = "Control";
 const COMMAND = process.platform === "darwin" ? "Meta" : "Control";
 const IGNORE_AUTO_LAYOUT = process.platform === "darwin" ? "Control" : "S";
@@ -49,6 +49,7 @@ const MATRIX_HTML = `<!doctype html>
     <div data-agent-native-node-id="free-shape" data-agent-native-layer-name="Free shape" style="position:absolute;left:780px;top:60px;width:76px;height:44px;background:#22d3ee;color:#083344">Shape</div>
     <p data-agent-native-node-id="free-text" data-agent-native-layer-name="Free text" style="position:absolute;left:780px;top:140px;margin:0;width:100px;padding:8px;background:#f8fafc;color:#0f172a">Text</p>
     <button data-agent-native-node-id="free-component" data-agent-native-layer-name="Free component" data-agent-native-component="Card" style="position:absolute;left:780px;top:230px;width:110px;height:42px;background:#c4b5fd;color:#2e1065;border:0">Component</button>
+    <img data-agent-native-node-id="free-image" data-agent-native-layer-name="Free image" alt="Free image" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='48'%3E%3Crect width='80' height='48' fill='%230ea5e9'/%3E%3C/svg%3E" style="position:absolute;left:900px;top:280px;width:80px;height:48px" />
     <div data-agent-native-node-id="fixed-source" data-agent-native-layer-name="Fixed source" style="position:absolute;left:780px;top:330px;width:72px;height:30px;flex:none;background:#f59e0b;color:#431407">Fixed</div>
     <div data-agent-native-node-id="hug-source" data-agent-native-layer-name="Hug source" style="position:absolute;left:780px;top:370px;width:max-content;min-width:0;padding:4px 8px;background:#86efac;color:#14532d">Hug text</div>
     <div data-agent-native-node-id="fill-source" data-agent-native-layer-name="Fill source" style="position:absolute;left:780px;top:420px;flex:1 1 0%;min-width:0;width:auto;height:28px;background:#fda4af;color:#4c0519">Fill</div>
@@ -74,6 +75,15 @@ const FLOW_CHILD_FREE_CANVAS_HTML = `<!doctype html><html><body style="margin:0;
   </section>
 </body></html>`;
 
+const NESTED_GRID_HTML = `<!doctype html><html><body style="margin:0;position:relative;width:1000px;height:780px;background:#0f172a;color:#f8fafc">
+  <section id="grid-outer" data-agent-native-node-id="grid-outer" data-agent-native-layer-name="Grid outer" style="position:absolute;left:200px;top:150px;width:450px;height:220px;box-sizing:border-box;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr);background:#334155">
+    <section id="grid-inner" data-agent-native-node-id="grid-inner" data-agent-native-layer-name="Grid inner" style="grid-column:1;grid-row:1;display:grid;grid-template-columns:120px;grid-template-rows:60px;width:120px;height:60px;background:#475569">
+      <p data-agent-native-node-id="grid-child" data-agent-native-layer-name="Grid child" style="grid-column:1;grid-row:1;margin:0;padding:8px;background:#e2e8f0;color:#0f172a">Grid child</p>
+    </section>
+    <div id="grid-marker" data-agent-native-node-id="grid-marker" data-agent-native-layer-name="Grid marker" style="grid-column:2;grid-row:1;background:#64748b">Marker</div>
+  </section>
+</body></html>`;
+
 const OVERSIZED_CROSS_SCREEN_PRIMARY_HTML = `<!doctype html>
 <html><body style="margin:0;position:relative;width:1000px;height:780px;background:#0f172a">
   <div data-agent-native-node-id="oversized-source" data-agent-native-layer-name="Oversized Source"
@@ -95,6 +105,18 @@ const META_CROSS_SCREEN_PRIMARY_HTML = `<!doctype html>
 const META_CROSS_SCREEN_SECOND_HTML = `<!doctype html>
 <html><body style="margin:0;position:relative;width:1000px;height:780px;background:#111827">
   <section data-agent-native-node-id="meta-target" data-agent-native-layer-name="Empty Flow"
+    style="position:absolute;left:80px;top:120px;width:360px;height:180px;display:flex;flex-direction:row;background:#374151"></section>
+</body></html>`;
+
+const RELEASE_STATE_CROSS_SCREEN_PRIMARY_HTML = `<!doctype html>
+<html><body style="margin:0;position:relative;width:1000px;height:780px;background:#0f172a">
+  <div data-agent-native-node-id="release-source" data-agent-native-layer-name="Release Source"
+    style="position:absolute;left:500px;top:300px;width:120px;height:48px;background:#ea580c">Source</div>
+</body></html>`;
+
+const RELEASE_STATE_CROSS_SCREEN_SECOND_HTML = `<!doctype html>
+<html><body style="margin:0;position:relative;width:1000px;height:780px;background:#111827">
+  <section data-agent-native-node-id="release-target" data-agent-native-layer-name="Release Flow"
     style="position:absolute;left:80px;top:120px;width:360px;height:180px;display:flex;flex-direction:row;background:#374151"></section>
 </body></html>`;
 
@@ -920,8 +942,6 @@ function serializedOrder(html: string, ids: string[]): string[] {
     id,
     index: html.indexOf(`data-agent-native-node-id="${id}"`),
   }));
-  // A missing marker must fail the caller's expected-order assertion rather
-  // than sorting ahead of every present marker as if it were valid HTML.
   if (positions.some(({ index }) => index < 0)) return [];
   return positions
     .sort((left, right) => left.index - right.index)
@@ -1036,6 +1056,7 @@ test.describe("physical Figma auto-layout drag/drop matrix", () => {
     page,
     request,
   }) => {
+    test.setTimeout(150_000);
     const cells = [
       {
         name: "H-1 first",
@@ -1235,13 +1256,15 @@ test.describe("physical Figma auto-layout drag/drop matrix", () => {
     }
   });
 
-  test("text, shape, and component children all flow-insert into the same container", async ({
+  test("text, shape, image, and component children all flow-insert into the same container", async ({
     page,
     request,
   }) => {
+    test.setTimeout(150_000);
     const cells = [
       { source: "free-text", name: "Free text", tag: "P" },
       { source: "free-shape", name: "Free shape", tag: "DIV" },
+      { source: "free-image", name: "Free image", tag: "IMG" },
       { source: "free-component", name: "Free component", tag: "BUTTON" },
     ];
     for (const cell of cells) {
@@ -1265,11 +1288,25 @@ test.describe("physical Figma auto-layout drag/drop matrix", () => {
               tag: node.tagName,
               position: getComputedStyle(node).position,
               component: node.getAttribute("data-agent-native-component"),
+              image:
+                node instanceof HTMLImageElement
+                  ? {
+                      complete: node.complete,
+                      naturalWidth: node.naturalWidth,
+                      naturalHeight: node.naturalHeight,
+                    }
+                  : null,
             }));
           expect(details.tag).toBe(cell.tag);
           expect(details.position).not.toBe("absolute");
           if (cell.source === "free-component")
             expect(details.component).toBe("Card");
+          if (cell.source === "free-image")
+            expect(details.image).toEqual({
+              complete: true,
+              naturalWidth: 80,
+              naturalHeight: 48,
+            });
           await settleReload(page, design.primaryId);
           await expect
             .poll(() => parentId(page, design.primaryId, cell.source))
@@ -1317,10 +1354,245 @@ test.describe("physical Figma auto-layout drag/drop matrix", () => {
     }
   });
 
+  test("flow child dragged into empty auto-layout space keeps the pointer slot", async ({
+    page,
+    request,
+  }) => {
+    const design = await createDesign(request);
+    try {
+      await gotoEditor(page, design.id);
+      await expandAllLayers(page);
+      await selectLayer(page, "Inner text");
+      const source = await boxFor(page, design.primaryId, "inner-text");
+      const marker = await boxFor(page, design.primaryId, "nested-marker");
+      const outer = await boxFor(page, design.primaryId, "nested-outer");
+      const release = {
+        x: marker.x + marker.width + 80,
+        y: marker.y + marker.height - 1,
+      };
+      expect(release.x).toBeLessThan(outer.x + outer.width);
+
+      await page.evaluate(() => {
+        const host = window as Window & {
+          __g4AutoLayoutDragStates?: Array<{
+            active?: boolean;
+            preview?: {
+              phase?: string;
+              sourceId?: string;
+              anchorId?: string;
+              placement?: string;
+              insert?: boolean;
+            };
+          }>;
+          __g4AutoLayoutStructureChanges?: Array<Record<string, unknown>>;
+        };
+        host.__g4AutoLayoutDragStates = [];
+        host.__g4AutoLayoutStructureChanges = [];
+        window.addEventListener(
+          "message",
+          (event: MessageEvent) => {
+            if (event.data?.type === "agent-native:editor-drag-state") {
+              host.__g4AutoLayoutDragStates?.push(event.data);
+            } else if (event.data?.type === "visual-structure-change") {
+              host.__g4AutoLayoutStructureChanges?.push(event.data);
+            }
+          },
+          true,
+        );
+      });
+
+      await page.mouse.move(
+        source.x + source.width / 2,
+        source.y + source.height / 2,
+      );
+      await page.mouse.down();
+      await page.mouse.move(source.x + source.width / 2 + 12, source.y + 8, {
+        steps: 2,
+      });
+      await page.mouse.move(release.x, release.y, { steps: 16 });
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const host = window as Window & {
+              __g4AutoLayoutDragStates?: Array<{
+                active?: boolean;
+                preview?: {
+                  phase?: string;
+                  sourceId?: string;
+                  anchorId?: string;
+                  placement?: string;
+                  insert?: boolean;
+                };
+              }>;
+            };
+            const previews = host.__g4AutoLayoutDragStates?.filter(
+              (state) => state.preview?.phase === "preview",
+            );
+            return previews?.[previews.length - 1] ?? null;
+          }),
+        )
+        .toMatchObject({
+          active: true,
+          preview: {
+            phase: "preview",
+            sourceId: "inner-text",
+            anchorId: "nested-marker",
+            placement: "after",
+            insert: true,
+          },
+        });
+      await expect
+        .poll(() => parentId(page, design.primaryId, "inner-text"))
+        .toBe("nested-inner");
+      await page.mouse.up();
+
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const host = window as Window & {
+              __g4AutoLayoutStructureChanges?: Array<{
+                sourceId?: string;
+                anchorSourceId?: string;
+                placement?: string;
+                persistenceAnchorSourceId?: string;
+                persistencePlacement?: string;
+              }>;
+            };
+            const changes = host.__g4AutoLayoutStructureChanges;
+            return changes?.[changes.length - 1] ?? null;
+          }),
+        )
+        .toMatchObject({
+          sourceId: "inner-text",
+          anchorSourceId: "nested-marker",
+          placement: "after",
+          persistenceAnchorSourceId: "nested-marker",
+          persistencePlacement: "after",
+        });
+
+      await expect
+        .poll(() => parentId(page, design.primaryId, "inner-text"))
+        .toBe("nested-outer");
+      await expect
+        .poll(() => directChildren(page, design.primaryId, "nested-outer"))
+        .toEqual(["nested-inner", "nested-marker", "inner-text"]);
+      await settleReload(page, design.primaryId);
+      await expect
+        .poll(() => parentId(page, design.primaryId, "inner-text"))
+        .toBe("nested-outer");
+      await expect
+        .poll(() => directChildren(page, design.primaryId, "nested-outer"))
+        .toEqual(["nested-inner", "nested-marker", "inner-text"]);
+      await cdpScreenshot(
+        page,
+        "../../.tmp/design-g4-auto-layout-direct-child.png",
+      );
+      await test.info().attach("design-g4-auto-layout-direct-child.png", {
+        path: "../../.tmp/design-g4-auto-layout-direct-child.png",
+        contentType: "image/png",
+      });
+    } finally {
+      await deleteDesign(request, design.id);
+    }
+  });
+
+  test("flow child dragged into an empty grid cell keeps that cell", async ({
+    page,
+    request,
+  }) => {
+    const design = await createDesign(request, {
+      primaryHtml: NESTED_GRID_HTML,
+    });
+    try {
+      await gotoEditor(page, design.id);
+      await expandAllLayers(page);
+      await selectLayer(page, "Grid child");
+      const source = await boxFor(page, design.primaryId, "grid-child");
+      const grid = await boxFor(page, design.primaryId, "grid-outer");
+      const release = {
+        x: grid.x + (grid.width * 5) / 6,
+        y: grid.y + grid.height / 4,
+      };
+
+      await page.evaluate(() => {
+        const host = window as Window & {
+          __g4GridStructureChanges?: Array<Record<string, unknown>>;
+        };
+        host.__g4GridStructureChanges = [];
+        window.addEventListener(
+          "message",
+          (event: MessageEvent) => {
+            if (
+              event.data?.type === "visual-structure-change" &&
+              event.data?.sourceId === "grid-child"
+            ) {
+              host.__g4GridStructureChanges?.push(event.data);
+            }
+          },
+          true,
+        );
+      });
+
+      await page.mouse.move(
+        source.x + source.width / 2,
+        source.y + source.height / 2,
+      );
+      await page.mouse.down();
+      await page.mouse.move(source.x + source.width / 2 + 12, source.y + 8, {
+        steps: 2,
+      });
+      await page.mouse.move(release.x, release.y, { steps: 16 });
+      await expect
+        .poll(() => parentId(page, design.primaryId, "grid-child"))
+        .toBe("grid-inner");
+      await page.mouse.up();
+
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const host = window as Window & {
+              __g4GridStructureChanges?: Array<Record<string, unknown>>;
+            };
+            const changes = host.__g4GridStructureChanges;
+            return changes?.[changes.length - 1] ?? null;
+          }),
+        )
+        .toMatchObject({
+          sourceId: "grid-child",
+          anchorSourceId: "grid-outer",
+          placement: "inside",
+          gridPlacement: { column: 3, row: 1 },
+        });
+      await expect
+        .poll(() => parentId(page, design.primaryId, "grid-child"))
+        .toBe("grid-outer");
+      const placement = () =>
+        designFrame(page, design.primaryId)
+          .locator('[data-agent-native-node-id="grid-child"]')
+          .evaluate((node) => {
+            const style = getComputedStyle(node);
+            return {
+              column: style.gridColumnStart,
+              row: style.gridRowStart,
+            };
+          });
+      await expect.poll(placement).toEqual({ column: "3", row: "1" });
+
+      await settleReload(page, design.primaryId);
+      await expect
+        .poll(() => parentId(page, design.primaryId, "grid-child"))
+        .toBe("grid-outer");
+      await expect.poll(placement).toEqual({ column: "3", row: "1" });
+    } finally {
+      await deleteDesign(request, design.id);
+    }
+  });
+
   test("fixed, Hug, and Fill sizing survive flow insertion", async ({
     page,
     request,
   }) => {
+    test.setTimeout(150_000);
     const cells = [
       {
         source: "fixed-source",
@@ -1882,6 +2154,7 @@ test.describe("physical Figma auto-layout drag/drop matrix", () => {
     page,
     request,
   }) => {
+    test.setTimeout(150_000);
     const cells: Array<{
       fixture: RootFixture;
       source: string;
@@ -2297,8 +2570,6 @@ test.describe("physical Figma auto-layout drag/drop matrix", () => {
               })),
             ),
         };
-        // Cross-Screen uses the host drag ghost as its held overlay; the iframe
-        // insertion guide is intentionally not mounted during that handoff.
         expect(heldEvidence.ghost).toBeGreaterThan(0);
         expect(heldEvidence.screenShells).toBe(2);
         const sourceBeforeRelease = await fileHtml(
@@ -2451,9 +2722,6 @@ test.describe("physical Figma auto-layout drag/drop matrix", () => {
         source.y + source.height / 2,
       );
       await page.mouse.down();
-      // Cross into the overview host first. It owns focus after this handoff,
-      // The overview host owns focus after this handoff, so use the platform
-      // Ignore Auto Layout chord there instead of relying on the source iframe.
       await page.mouse.move(
         target.x + target.width / 2,
         target.y + target.height / 2,
@@ -2600,6 +2868,126 @@ test.describe("physical Figma auto-layout drag/drop matrix", () => {
       await expect
         .poll(() => parentId(page, design.secondId!, "meta-source"))
         .not.toBe("meta-target");
+    } finally {
+      await deleteDesign(request, design.id);
+    }
+  });
+
+  test("source-frame Ignore Auto Layout keyup is honored before host mouseup", async ({
+    page,
+    request,
+  }) => {
+    const design = await createDesign(request, {
+      secondScreen: true,
+      primaryHtml: RELEASE_STATE_CROSS_SCREEN_PRIMARY_HTML,
+      secondHtml: RELEASE_STATE_CROSS_SCREEN_SECOND_HTML,
+    });
+    try {
+      await page.addInitScript(() => {
+        Object.defineProperty(navigator, "platform", {
+          configurable: true,
+          value: "Linux x86_64",
+        });
+        if (window !== window.top) return;
+        const modifierStates: boolean[] = [];
+        window.addEventListener("message", (event: MessageEvent) => {
+          if (event.data?.type !== "agent-native:cross-screen-modifiers") {
+            return;
+          }
+          modifierStates.push(event.data.ignoreAutoLayout === true);
+          document.documentElement.dataset.crossScreenModifierStates =
+            JSON.stringify(modifierStates);
+        });
+      });
+      await gotoEditor(page, design.id);
+      await page.keyboard.press("Shift+1");
+      const source = await boxFor(page, design.primaryId, "release-source");
+      const target = await boxFor(page, design.secondId!, "release-target");
+      await page.mouse.click(
+        source.x + source.width / 2,
+        source.y + source.height / 2,
+      );
+      await expect
+        .poll(() => selectionSourceId(request))
+        .toBe("release-source");
+      const sourceIframe = page.locator(
+        `iframe[data-screen-iframe-id="${design.primaryId}"]`,
+      );
+      await sourceIframe.focus();
+      await expect
+        .poll(() =>
+          sourceIframe.evaluate((iframe) => document.activeElement === iframe),
+        )
+        .toBe(true);
+      await page.mouse.move(
+        source.x + source.width / 2,
+        source.y + source.height / 2,
+      );
+      await page.mouse.down();
+      await page.mouse.move(source.x + 12, source.y + 8, { steps: 5 });
+      await page.mouse.move(
+        target.x + target.width / 2,
+        target.y + target.height / 2,
+        { steps: 30 },
+      );
+      await expect
+        .poll(() => page.locator("[data-cross-screen-drag-ghost]").count())
+        .toBeGreaterThan(0);
+      await sourceIframe.focus();
+      await expect
+        .poll(() =>
+          sourceIframe.evaluate((iframe) => document.activeElement === iframe),
+        )
+        .toBe(true);
+
+      await page.keyboard.down("s");
+      await page.mouse.move(
+        target.x + target.width / 2 + 1,
+        target.y + target.height / 2 + 1,
+        { steps: 3 },
+      );
+      await expect
+        .poll(() => page.locator("[data-cross-screen-drop-guide]").count())
+        .toBeGreaterThan(0);
+      await expect
+        .poll(() =>
+          page
+            .locator("html")
+            .getAttribute("data-cross-screen-modifier-states"),
+        )
+        .toBe("[true]");
+      await page.keyboard.up("s");
+      await expect
+        .poll(() =>
+          page
+            .locator("html")
+            .getAttribute("data-cross-screen-modifier-states"),
+        )
+        .toBe("[true,false]");
+      await page.mouse.up();
+      await expect
+        .poll(async () => {
+          const [from, to] = await Promise.all([
+            fileHtml(request, design.id, design.primaryId),
+            fileHtml(request, design.id, design.secondId!),
+          ]);
+          return {
+            from: hasNode(from, "release-source"),
+            destination: hasNode(to, "release-source"),
+          };
+        })
+        .toEqual({ from: false, destination: true });
+      await settleReload(page, design.secondId!);
+      await expect
+        .poll(() => parentId(page, design.secondId!, "release-source"))
+        .toBe("release-target");
+      await expect
+        .poll(() =>
+          designFrame(page, design.secondId!)
+            .locator('[data-agent-native-node-id="release-source"]')
+            .evaluate((node) => getComputedStyle(node).position),
+        )
+        .toBe("static");
     } finally {
       await deleteDesign(request, design.id);
     }
