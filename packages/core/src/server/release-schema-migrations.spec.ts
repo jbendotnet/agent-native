@@ -43,12 +43,21 @@ describe("framework release schema migrations", () => {
         "message_count",
         "scope_type",
         "org_id",
+        "team_group_id",
         "visibility",
       ]),
     );
     expect(await columns(db, "chat_thread_shares")).toEqual(
       expect.arrayContaining(["resource_id", "principal_id"]),
     );
+    expect(
+      await db
+        .prepare(
+          "SELECT indexname FROM pg_indexes WHERE tablename = 'chat_threads' AND indexname = 'chat_threads_team_group_idx'",
+        )
+        .all(),
+    ).toHaveLength(1);
+    await applyMigrations(db, CHAT_THREAD_SCHEMA_MIGRATIONS);
     await db.close();
   });
   it("creates the run and event columns used by failure diagnostics", async () => {

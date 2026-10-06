@@ -2,6 +2,8 @@
 
 Source: [accepted ADR](../../../design/organization-team-tenancy.md).
 
+Status: A-01–A-04 verified on 2026-10-03. See the [epic completion evidence](epic.md#completion-evidence).
+
 | ID   | Requirement                                                                                                                                                                                                                                                                                                            | Acceptance evidence                                                                                                |
 | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | A-01 | Add nullable `team_group_id TEXT` and lookup index, without cascade/deletion-blocking FK. New creation validates marked team/current org and creator membership and persists once. Old threads stay null; no selection-based backfill or rebind.                                                                       | Migration/projections, normal/draft/fork insertion paths, forged ID and later selection cases.                     |

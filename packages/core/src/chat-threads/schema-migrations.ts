@@ -75,4 +75,12 @@ export const CHAT_THREAD_SCHEMA_MIGRATIONS: MigrationEntry[] = [
       ALTER TABLE IF EXISTS chat_thread_shares ADD COLUMN IF NOT EXISTS notified_at TEXT
     `,
   },
+  {
+    version: 5,
+    name: "chat-threads-team-binding",
+    sql: `
+      ALTER TABLE chat_threads ADD COLUMN IF NOT EXISTS team_group_id TEXT;
+      CREATE INDEX IF NOT EXISTS chat_threads_team_group_idx ON chat_threads (team_group_id)
+    `,
+  },
 ];

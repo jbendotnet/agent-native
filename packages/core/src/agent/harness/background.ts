@@ -1,4 +1,5 @@
 import { redactArgsToValue, redactTextToSummary } from "../../audit/redact.js";
+import { accessibleThreadIds } from "../../chat-threads/store.js";
 import type {
   BackgroundAgentControlInput,
   BackgroundAgentControlResult,
@@ -11,6 +12,7 @@ import type {
   ListBackgroundAgentRunsOptions,
 } from "../../code-agents/background-run.js";
 import { abortRun } from "../run-manager.js";
+import { callerHasThreadAccess } from "../run-ownership.js";
 import { getRunEventsSince } from "../run-store.js";
 import type { AgentChatEvent, RunEvent } from "../types.js";
 import {
@@ -53,16 +55,22 @@ export async function listAgentHarnessBackgroundRuns(
 ): Promise<BackgroundAgentRun[]> {
   if (options.goalId && options.goalId !== "agent-harness") return [];
   const sessions = await listAgentHarnessSessions({
-    ownerEmail: options.ownerEmail,
     orgId: options.orgId,
+    summaryOnly: true,
   });
-  return sessions
-    .filter((session) => session.ownerEmail === (options.ownerEmail ?? null))
+  const scoped = sessions
     .filter(
       (session) =>
         options.orgId === undefined || session.orgId === options.orgId,
     )
-    .filter((session) => session.runId)
+    .filter((session) => session.runId);
+  const permitted = await accessibleThreadIds(
+    options.ownerEmail,
+    scoped.map((session) => session.threadId),
+    options.orgId,
+  );
+  return scoped
+    .filter((session) => permitted.has(session.threadId))
     .map(toAgentHarnessBackgroundRun);
 }
 
@@ -72,8 +80,18 @@ export async function getAgentHarnessBackgroundRun(
 ): Promise<BackgroundAgentRun | null> {
   const session = await getAgentHarnessSessionByRunId(runId);
   if (
-    session?.ownerEmail !== options.ownerEmail ||
-    (options.orgId !== undefined && session.orgId !== options.orgId)
+    (session &&
+      options.orgId !== undefined &&
+      session.orgId !== options.orgId) ||
+    (session &&
+      !(await callerHasThreadAccess(
+        options.ownerEmail ?? "",
+        session.threadId,
+        "viewer",
+        {
+          orgId: options.orgId ?? undefined,
+        },
+      )))
   ) {
     return null;
   }
@@ -86,8 +104,18 @@ export async function listAgentHarnessBackgroundTranscriptEvents(
 ): Promise<BackgroundAgentTranscriptEvent[]> {
   const session = await getAgentHarnessSessionByRunId(runId);
   if (
-    session?.ownerEmail !== options.ownerEmail ||
-    (options.orgId !== undefined && session.orgId !== options.orgId)
+    (session &&
+      options.orgId !== undefined &&
+      session.orgId !== options.orgId) ||
+    (session &&
+      !(await callerHasThreadAccess(
+        options.ownerEmail ?? "",
+        session.threadId,
+        "viewer",
+        {
+          orgId: options.orgId ?? undefined,
+        },
+      )))
   ) {
     return [];
   }
@@ -110,7 +138,15 @@ export async function stopAgentHarnessBackgroundRun(
   if (!session) return missingHarnessRunResult(runId);
   if (
     session.ownerEmail !== options.ownerEmail ||
-    (options.orgId !== undefined && session.orgId !== options.orgId)
+    (options.orgId !== undefined && session.orgId !== options.orgId) ||
+    !(await callerHasThreadAccess(
+      options.ownerEmail ?? "",
+      session.threadId,
+      "owner",
+      {
+        orgId: options.orgId ?? undefined,
+      },
+    ))
   ) {
     return missingHarnessRunResult(runId);
   }
@@ -331,7 +367,15 @@ async function controlAgentHarnessBackgroundRun(
     if (
       !session ||
       session.ownerEmail !== scope.ownerEmail ||
-      (scope.orgId !== undefined && session.orgId !== scope.orgId)
+      (scope.orgId !== undefined && session.orgId !== scope.orgId) ||
+      !(await callerHasThreadAccess(
+        scope.ownerEmail ?? "",
+        session.threadId,
+        "owner",
+        {
+          orgId: scope.orgId ?? undefined,
+        },
+      ))
     ) {
       return missingHarnessRunResult(input.runId);
     }

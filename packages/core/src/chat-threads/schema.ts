@@ -19,6 +19,7 @@ export const chatThreads = table("chat_threads", {
   sourcePlatform: text("source_platform"),
   sourceAppId: text("source_app_id"),
   sourceUrl: text("source_url"),
+  teamGroupId: text("team_group_id"),
   ...ownableColumns(),
 });
 

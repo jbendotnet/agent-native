@@ -9,7 +9,7 @@ This files the six-epic roadmap for the [accepted ADR](../../design/organization
 ## Assumptions
 
 - Core owns the tenancy contract. Shared Toolkit controls consume it, so this roadmap lives in Core's docs scope rather than creating separate product roadmaps.
-- The ADR controls product decisions; requirements IDs below make the work traceable. Epic 1's completed children record delivered identity behavior. Later epics and full V1 acceptance remain pending.
+- The ADR controls product decisions; requirements IDs below make the work traceable. Epic 1's completed children record delivered identity behavior. Epic 2 records verified authorization behavior. Epics 3–6 and full V1 acceptance remain pending.
 - No new dependency, general resource ownership model, team/member table, resource move, successor ownership, automatic share, or continuous stream revocation is needed.
 
 ## Done condition
@@ -22,7 +22,7 @@ Use `verifying-changes` and `adding-tests-and-ci` for Core runtime and PostgreSQ
 
 ## Lifecycle notes
 
-- This file remains in `todo/`. Epic 1 was reopened at the user's request on 2026-10-02 and remains in outer `in-progress/`. Its storage, role-policy, and lifecycle children are implemented and independently verified in inner `completed/`. Retained-binding integration proof remains required in Epic 6 before release. Epics 2–6 and their child plans remain in outer and inner `wip/`, respectively.
+- This file remains in `todo/`. Epic 1's status records reopening at the user's request on 2026-10-02, although its directory is currently filed in outer `completed/`. Its storage, role-policy, and lifecycle children are implemented and independently verified in inner `completed/`. Epic 2 was completed at the user's request on 2026-10-03 and is filed in outer `completed/`, preserving its three completed children. Retained-binding integration proof remains required in Epic 6 before release. Epics 3–6 remain pending.
 - Before execution, load and follow `workflow`, `execute-plan`, `plans-organisation`, and `subagent-delegation`. Move this workflow to `in-progress/`.
 - The first child execution moves its whole epic to outer `in-progress/` and that child to inner `in-progress/`. Repair relative links after lifecycle moves, including this index. Move verified children to inner `completed/`; do not mark the entire epic completed without explicit user declaration.
 - Each delegation MUST read the current child plan, its parent `epic.md`, `requirements.md`, and the ADR in full. The leader retains sequencing, documentation, state changes, and signoff.
@@ -34,13 +34,13 @@ Execute whole epics in numerical order: identity → authorization → context �
 
 1. <tranche id="team-identity" owner="leader">
 
-   [Epic 1](../../plans/in-progress/organization-team-tenancy-01-identity/epic.md) has three completed, independently verified children. Preserve their storage, role-policy, and conversion/deletion contracts. Retained-binding integration proof remains assigned to Epic 6 before release. No UI may expose team creation before the mutation and compatibility gates pass.
+   [Epic 1](../../plans/completed/organization-team-tenancy-01-identity/epic.md) has three completed, independently verified children. Preserve their storage, role-policy, and conversion/deletion contracts. Retained-binding integration proof remains assigned to Epic 6 before release. No UI may expose team creation before the mutation and compatibility gates pass.
 
    </tranche>
 
 2. <tranche id="conversation-security" owner="leader">
 
-   MUST load and follow `execute-plan` for [Epic 2](../../plans/wip/organization-team-tenancy-02-authorization/epic.md): immutable creation binding and direct/list policy, public token exclusion, then linked-run/background access. Prove the complete contract with internal creation inputs, linked-run fixtures, and seeded existing group-share rows. Verify denial after current membership changes, not only initial grants. Reject bound prompt execution explicitly until Epic 3 supplies required context; expose user/agent bound creation only in Epic 4. Later context, UI, and share actions are not prerequisites for Epic 2 completion.
+   [Epic 2](../../plans/completed/organization-team-tenancy-02-authorization/epic.md) is complete: immutable creation binding and direct/list policy, public token exclusion, and linked-run/background access. Its 16-file, 209-test authorization matrix covers internal creation inputs, linked-run fixtures, seeded existing group-share rows, and denial after current membership changes. Bound prompt execution remains explicitly rejected until Epic 3 supplies required context; user/agent bound creation is exposed only in Epic 4. Later context, UI, and share actions are not prerequisites for Epic 2 completion.
 
    </tranche>
 
