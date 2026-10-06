@@ -1485,6 +1485,11 @@ export function useDbSync(
             .filter((evt) => evt.source === "app-state")
             .map((evt) => evt.key)
             .map((key) => (typeof key === "string" && key ? key : "*"));
+          if (hasAppStateEvent(invalidating, "active-workspace-team")) {
+            invalidateWithoutCancel({
+              queryKey: ["action", "get-active-workspace-team"],
+            });
+          }
           if (appStateKeys.length > 0) {
             const appStateDedupeKey = Array.from(new Set(appStateKeys))
               .sort()

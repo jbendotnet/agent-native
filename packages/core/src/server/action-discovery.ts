@@ -575,6 +575,16 @@ export async function mergeCoreSharingActions(
         import("../workspace-connections/actions/set-workspace-team-leads.js"),
     ],
     [
+      "set-active-workspace-team",
+      () =>
+        import("../workspace-connections/actions/set-active-workspace-team.js"),
+    ],
+    [
+      "get-active-workspace-team",
+      () =>
+        import("../workspace-connections/actions/get-active-workspace-team.js"),
+    ],
+    [
       "delete-workspace-user-group",
       () =>
         import("../workspace-connections/actions/delete-workspace-user-group.js"),

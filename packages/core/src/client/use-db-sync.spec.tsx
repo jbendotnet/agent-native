@@ -589,6 +589,27 @@ describe("useDbSync", () => {
     expect(keys).not.toContainEqual(["tools"]);
   });
 
+  it("refreshes mounted team selection when its session mirror changes", async () => {
+    const result = await renderWithEvent({
+      version: 1,
+      source: "app-state",
+      type: "change",
+      key: "active-workspace-team",
+      requestSource: "agent",
+    });
+    roots.push(result.root);
+    containers.push(result.container);
+
+    expect(result.fetchMock).toHaveBeenCalled();
+    expect(invalidatedQueryKeys(result.queryClient.calls)).toContainEqual([
+      "action",
+      "get-active-workspace-team",
+    ]);
+    expect(invalidatedQueryKeys(result.queryClient.calls)).not.toContainEqual([
+      "action",
+    ]);
+  });
+
   it("still refetches action queries when an action event rides alongside app-state churn", async () => {
     const queryClient = new QueryClientProbe();
     const fetchMock = vi.fn(

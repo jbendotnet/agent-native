@@ -119,6 +119,7 @@ const threadMocks = vi.hoisted(() => ({
   searchThreads: vi.fn(async () => []),
   refreshThreads: vi.fn(async () => undefined),
   isNewThread: vi.fn(() => false),
+  getCreationTeam: vi.fn(() => null),
   pinThread: vi.fn(async () => true),
   renameThread: vi.fn(async () => true),
 }));
@@ -217,6 +218,31 @@ vi.mock("@agent-native/core/client/use-action", async (importOriginal) => {
       typeof import("@agent-native/core/client/use-action")
     >();
   return { ...actual, ...actionMocks };
+});
+
+vi.mock("@agent-native/core/client/org", () => ({
+  useOrg: () => ({
+    data: { orgId: "org-1", email: "member@example.test" },
+    isLoading: false,
+    isError: false,
+  }),
+}));
+vi.mock("@agent-native/core/client/org-team", () => ({
+  useActiveWorkspaceTeam: () => ({
+    data: { orgId: "org-1", teamGroupId: null },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  }),
+  useSetActiveWorkspaceTeam: () => ({ isPending: false, mutateAsync: vi.fn() }),
+}));
+vi.mock("@agent-native/core/client/hooks", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@agent-native/core/client/hooks")>();
+  return {
+    ...actual,
+    useActionQuery: () => ({ data: [], isLoading: false, isError: false }),
+  };
 });
 
 function stubCatalog(
@@ -330,6 +356,8 @@ vi.mock("./AgentKitAssistantChat.js", async () => {
           models?: string[];
         }>;
         composerDisabled?: boolean;
+        composerSubmissionDisabled?: boolean;
+        creationTeam?: { orgId: string; teamGroupId: string | null } | null;
         composerDisabledPlaceholder?: string;
         isActiveComposer?: boolean;
         contextScope?: ChatThreadScope | null;
@@ -374,6 +402,7 @@ vi.mock("./AgentKitAssistantChat.js", async () => {
           data-composer-submission-disabled={
             props.composerSubmissionDisabled ? "true" : "false"
           }
+          data-creation-team={JSON.stringify(props.creationTeam)}
           data-disabled-placeholder={props.composerDisabledPlaceholder}
           data-composer-active={props.isActiveComposer ? "true" : "false"}
           data-context-scope={
@@ -418,6 +447,8 @@ function resetThreadMocks() {
   threadMocks.switchThread.mockReset();
   threadMocks.isNewThread.mockReset();
   threadMocks.isNewThread.mockReturnValue(false);
+  threadMocks.getCreationTeam.mockReset();
+  threadMocks.getCreationTeam.mockReturnValue(null);
   threadMocks.pinThread.mockReset();
   threadMocks.pinThread.mockImplementation(async () => true);
   threadMocks.renameThread.mockReset();
@@ -459,6 +490,57 @@ function ensureLocalStorage() {
 describe("MultiTabAssistantChat postMessage bridge", () => {
   let container: HTMLDivElement;
   let root: Root;
+
+  it("does not display a missing stored binding as an explicit no-team chat", async () => {
+    expect(container.textContent).toContain("Team selection unavailable");
+    threadMocks.threads = [{ ...threadMocks.threads[0], teamGroupId: null }];
+    await act(async () => {
+      root.render(<MultiTabAssistantChat storageKey="bridge-test" />);
+    });
+    expect(container.textContent).toContain("This chat: No team");
+  });
+
+  it("refuses a new draft whose captured creation choice is unavailable", async () => {
+    threadMocks.isNewThread.mockReturnValue(true);
+    await act(async () => {
+      root.render(<MultiTabAssistantChat storageKey="bridge-test" />);
+    });
+    expect(
+      container
+        .querySelector('[data-testid="assistant-chat"]')
+        ?.getAttribute("data-composer-submission-disabled"),
+    ).toBe("true");
+    threadMocks.getCreationTeam.mockReturnValue({
+      orgId: "org-1",
+      teamGroupId: null,
+    });
+    await act(async () => {
+      root.render(<MultiTabAssistantChat storageKey="bridge-test" />);
+    });
+    expect(
+      container
+        .querySelector('[data-testid="assistant-chat"]')
+        ?.getAttribute("data-composer-submission-disabled"),
+    ).toBe("false");
+    expect(
+      container
+        .querySelector('[data-testid="assistant-chat"]')
+        ?.getAttribute("data-creation-team"),
+    ).toBe('{"orgId":"org-1","teamGroupId":null}');
+    threadMocks.getCreationTeam.mockReturnValue({
+      orgId: "org-1",
+      teamGroupId: "removed-team",
+    });
+    await act(async () => {
+      root.render(<MultiTabAssistantChat storageKey="bridge-test" />);
+    });
+    expect(
+      container
+        .querySelector('[data-testid="assistant-chat"]')
+        ?.getAttribute("data-composer-submission-disabled"),
+    ).toBe("true");
+    expect(container.textContent).toContain("Team selection unavailable");
+  });
 
   beforeEach(async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);

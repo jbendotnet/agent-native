@@ -25,6 +25,25 @@ const storageMocks = vi.hoisted(() => ({
   setup: null as (() => void) | null,
 }));
 
+const saveMocks = vi.hoisted(() => ({
+  resource: null as null | {
+    id: string;
+    path: string;
+    owner: string;
+    content: string;
+    mimeType: string;
+  },
+  isError: false,
+  refetch: vi.fn(async () => ({ isError: true })),
+  mutate:
+    vi.fn<
+      (
+        variables: { id: string; teamGroupId?: string; content?: string },
+        options?: { onError?: (error: Error) => void },
+      ) => void
+    >(),
+}));
+
 vi.mock("@agent-native/core/client/uploads/use-file-upload-status", () => ({
   useFileUploadStatus: () => ({
     ...storageMocks.status,
@@ -42,9 +61,13 @@ vi.mock("@agent-native/core/client/i18n", () => ({
 }));
 vi.mock("@agent-native/core/client/resources/use-resources", () => ({
   useResourceTree: () => ({ data: [], isLoading: false }),
-  useResource: () => ({ data: undefined, isError: false }),
+  useResource: () => ({
+    data: saveMocks.resource,
+    isError: saveMocks.isError,
+    refetch: saveMocks.refetch,
+  }),
   useCreateResource: () => ({ isPending: false, mutate: vi.fn() }),
-  useUpdateResource: () => ({ mutate: vi.fn() }),
+  useUpdateResource: () => ({ mutate: saveMocks.mutate }),
   useDeleteResource: () => ({ isPending: false, mutate: vi.fn() }),
   useExportResourcePack: () => ({ isPending: false, mutateAsync: vi.fn() }),
   useImportResourcePack: () => ({ isPending: false, mutateAsync: vi.fn() }),
@@ -52,6 +75,25 @@ vi.mock("@agent-native/core/client/resources/use-resources", () => ({
   withMcpServersFolder: (tree: unknown[]) => tree,
   withAgentScratchFolder: (tree: unknown[]) => tree,
 }));
+vi.mock("./ResourceEditor.js", async () => {
+  const React = await import("react");
+  return {
+    ResourceEditor: ({ onSave }: { onSave: (content: string) => void }) => {
+      const [content, setContent] = React.useState("Previously saved");
+      return React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: () => {
+            setContent("Unsaved denied edit");
+            onSave("Unsaved denied edit");
+          },
+        },
+        `Edit resource: ${content}`,
+      );
+    },
+  };
+});
 vi.mock("@agent-native/core/client/resources/use-mcp-servers", () => ({
   useMcpServers: () => ({ data: undefined }),
   useCreateMcpServer: () => ({ mutateAsync: vi.fn() }),
@@ -788,6 +830,73 @@ describe("ResourcesPanel storage retries", () => {
         textContent: "Claude Sonnet 5",
       }),
     );
+  });
+});
+
+describe("ResourcesPanel rejected saves", () => {
+  it("shows the rejection without re-reading inaccessible content or losing the open editor", () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const openResourceRef = {
+      current: null as ((id: string, teamGroupId?: string) => void) | null,
+    };
+    saveMocks.resource = {
+      id: "resource-1",
+      path: "AGENTS.md",
+      owner: "__team__:team-1",
+      content: "Previously saved",
+      mimeType: "text/markdown",
+    };
+    saveMocks.isError = false;
+    saveMocks.refetch.mockReset();
+    saveMocks.refetch.mockImplementation(async () => {
+      saveMocks.isError = true;
+      return { isError: true };
+    });
+    saveMocks.mutate.mockReset();
+    saveMocks.mutate.mockImplementation((_variables, options) => {
+      options?.onError?.(new Error("Team not found or access denied"));
+    });
+
+    act(() => {
+      root.render(
+        createElement(ResourcesPanel, {
+          scope: "team",
+          teamGroupId: "team-1",
+          showOnlyRequestedScope: true,
+          resourceFilter: "instructions",
+          showMcpServers: false,
+          openResourceRef,
+        }),
+      );
+    });
+    act(() => openResourceRef.current?.("resource-1", "team-1"));
+    expect(container.textContent).toContain("Edit resource: Previously saved");
+    act(() => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.startsWith("Edit resource:"))
+        ?.click();
+    });
+    expect(saveMocks.mutate).toHaveBeenCalledWith(
+      {
+        id: "resource-1",
+        teamGroupId: "team-1",
+        content: "Unsaved denied edit",
+      },
+      expect.objectContaining({ onError: expect.any(Function) }),
+    );
+    expect(saveMocks.refetch).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Team not found or access denied");
+    expect(container.textContent).toContain(
+      "Edit resource: Unsaved denied edit",
+    );
+    expect(container.textContent).not.toContain("Failed to load resource");
+    act(() => root.unmount());
+    container.remove();
+    saveMocks.resource = null;
+    vi.unstubAllGlobals();
   });
 });
 

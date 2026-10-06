@@ -4737,8 +4737,22 @@ export const authSessionHandler = defineEventHandler(async (event: H3Event) => {
     setResponseStatus(event, 503);
     return { error: "Session unavailable" };
   }
-  if (session) setFrameworkSessionHintCookie(event);
-  else clearFrameworkSessionHintCookies(event);
+  if (session) {
+    setFrameworkSessionHintCookie(event);
+    const { getOrgContext } = await import("../org/context.js");
+    const { ActiveWorkspaceTeamError, restoreActiveWorkspaceTeam } =
+      await import("../workspace-connections/active-team.js");
+    const org = await getOrgContext(event);
+    try {
+      await restoreActiveWorkspaceTeam(session.email, org.orgId);
+    } catch (error) {
+      if (error instanceof ActiveWorkspaceTeamError) {
+        setResponseStatus(event, error.statusCode);
+        return { error: error.message };
+      }
+      throw error;
+    }
+  } else clearFrameworkSessionHintCookies(event);
   return session ?? { error: "Not authenticated" };
 });
 

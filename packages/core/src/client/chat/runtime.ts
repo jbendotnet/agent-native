@@ -887,6 +887,7 @@ export interface CreateAgentNativeChatRuntimeOptions {
   readonly headers?: HeadersFactory;
   readonly fetch?: FetchLike;
   readonly threadId?: string;
+  readonly creationTeam?: { orgId: string; teamGroupId: string | null } | null;
   readonly browserTabId?: string;
   readonly surface?: "app" | "dev-frame" | "desktop";
   readonly mode?: "act" | "plan";
@@ -2703,6 +2704,12 @@ export function createAgentNativeChatRuntime(
           : {}),
         turnId: continuationTurnId ?? turn.queuePromotion?.turnId ?? turnId,
         threadId: session.threadId ?? options.threadId,
+        ...(options.creationTeam
+          ? {
+              creationOrgId: options.creationTeam.orgId,
+              teamGroupId: options.creationTeam.teamGroupId,
+            }
+          : {}),
         ...(turn.queuePromotion
           ? {
               queuedMessageId: turn.queuePromotion.messageId,

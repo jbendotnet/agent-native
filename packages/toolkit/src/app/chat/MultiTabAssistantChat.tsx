@@ -37,12 +37,18 @@ import { agentNativePath, appPath } from "@agent-native/core/client/api-path";
 import { getBrowserTabId } from "@agent-native/core/client/hooks";
 import { useChangeVersion } from "@agent-native/core/client/hooks";
 import { usePollLoop } from "@agent-native/core/client/hooks";
+import { useActionQuery } from "@agent-native/core/client/hooks";
 import { isTrustedFrameMessage } from "@agent-native/core/client/host";
 import {
   DEFAULT_LOCALE,
   useOptionalLocale,
   useT,
 } from "@agent-native/core/client/i18n";
+import { useOrg } from "@agent-native/core/client/org";
+import {
+  useActiveWorkspaceTeam,
+  useSetActiveWorkspaceTeam,
+} from "@agent-native/core/client/org-team";
 import {
   DEFAULT_REASONING_EFFORT,
   isReasoningEffort,
@@ -59,6 +65,13 @@ import {
   PopoverAnchor,
   PopoverContent,
 } from "@agent-native/toolkit/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@agent-native/toolkit/ui/select";
 import {
   Tooltip,
   TooltipContent,
@@ -1068,6 +1081,34 @@ export function MultiTabAssistantChat({
     ],
   );
 
+  const orgQuery = useOrg();
+  const { data: org } = orgQuery;
+  const noOrgMode =
+    !orgQuery.isLoading && !orgQuery.isError && !!org && !org.orgId;
+  const activeTeam = useActiveWorkspaceTeam();
+  const setActiveTeam = useSetActiveWorkspaceTeam();
+  const [teamSelectionError, setTeamSelectionError] = useState(false);
+  const teamsQuery = useActionQuery<
+    { id: string; name: string; isTeam: boolean; memberEmails: string[] }[]
+  >("list-workspace-user-groups", {}, { enabled: Boolean(org?.orgId) });
+  const teamChoices = (teamsQuery.data ?? []).filter(
+    (group) =>
+      group.isTeam &&
+      group.memberEmails.some(
+        (email) => email.toLowerCase() === org?.email?.toLowerCase(),
+      ),
+  );
+  const selectionReady =
+    Boolean(org?.orgId) &&
+    !orgQuery.isLoading &&
+    !orgQuery.isError &&
+    activeTeam.data?.orgId === org?.orgId &&
+    !activeTeam.isError &&
+    !setActiveTeam.isPending &&
+    !teamsQuery.isError &&
+    !teamsQuery.isLoading &&
+    (activeTeam.data.teamGroupId === null ||
+      teamChoices.some((team) => team.id === activeTeam.data?.teamGroupId));
   const {
     threads,
     activeThreadId,
@@ -1089,6 +1130,7 @@ export function MultiTabAssistantChat({
     isNewThread,
     pinThread,
     renameThread,
+    getCreationTeam,
   } = useChatThreads(apiUrl, storageKey, scope, {
     restoreActiveThread,
     browserTabId,
@@ -1096,7 +1138,30 @@ export function MultiTabAssistantChat({
       ? urlThreadId
       : (activeDeepLinkedThreadId ?? undefined),
     isolateHistoryByScope,
+    creationTeam: noOrgMode
+      ? undefined
+      : selectionReady &&
+          !teamSelectionError &&
+          org?.orgId &&
+          activeTeam.data?.orgId === org.orgId
+        ? { orgId: org.orgId, teamGroupId: activeTeam.data.teamGroupId }
+        : null,
   });
+  useEffect(() => {
+    setTeamSelectionError(false);
+  }, [activeThreadId]);
+  const draftAvailable = (id: string) => {
+    if (teamSelectionError) return false;
+    if (noOrgMode) return getCreationTeam(id) === null;
+    const captured = getCreationTeam(id);
+    return (
+      !!captured &&
+      selectionReady &&
+      captured.orgId === org?.orgId &&
+      (captured.teamGroupId === null ||
+        teamChoices.some((team) => team.id === captured.teamGroupId))
+    );
+  };
 
   const switchThread = useCallback(
     (threadId: string, options: { replace?: boolean } = {}) => {
@@ -2717,6 +2782,8 @@ export function MultiTabAssistantChat({
             title,
             preview: message.slice(0, 120),
             titleSource: "generated",
+          }).catch((error) => {
+            console.error("Could not save chat title:", error);
           });
         }
       });
@@ -2734,7 +2801,10 @@ export function MultiTabAssistantChat({
         messageCount: number;
       },
     ) => {
-      void saveThreadData(threadId, data);
+      void saveThreadData(threadId, data).catch((error) => {
+        console.error("Could not save chat thread:", error);
+        if (isNewThread(threadId)) setTeamSelectionError(true);
+      });
       if (
         data.messageCount > 0 &&
         threadId === activeThreadIdRef.current &&
@@ -2743,7 +2813,7 @@ export function MultiTabAssistantChat({
         writeThreadUrl(threadId);
       }
     },
-    [saveThreadData, writeThreadUrl],
+    [isNewThread, saveThreadData, writeThreadUrl],
   );
 
   // ─── Slash command handler ──────────────────────────────────────────
@@ -3144,6 +3214,90 @@ export function MultiTabAssistantChat({
       >
         {renderOverlay ? renderOverlay(headerProps) : null}
 
+        {org?.orgId && (
+          <div className="flex min-w-0 items-center gap-2 border-b border-border px-3 py-1 text-xs">
+            <span className="text-muted-foreground shrink-0">
+              {translate("agentChat.team.nextChat")}
+            </span>
+            <Select
+              value={
+                activeTeam.data?.orgId === org.orgId
+                  ? (activeTeam.data.teamGroupId ?? "none")
+                  : undefined
+              }
+              disabled={
+                orgQuery.isLoading ||
+                orgQuery.isError ||
+                activeTeam.isLoading ||
+                activeTeam.isError ||
+                teamsQuery.isLoading ||
+                teamsQuery.isError ||
+                setActiveTeam.isPending
+              }
+              onValueChange={(value) => {
+                setTeamSelectionError(false);
+                void setActiveTeam
+                  .mutateAsync({ teamGroupId: value === "none" ? null : value })
+                  .then(() => activeTeam.refetch())
+                  .catch(() => setTeamSelectionError(true));
+              }}
+            >
+              <SelectTrigger
+                aria-label={translate("agentChat.team.nextChat")}
+                className="h-7 w-auto max-w-36 gap-1 border-0 bg-transparent px-1 text-xs shadow-none"
+              >
+                <SelectValue placeholder="—" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">
+                  {translate("agentChat.team.noTeam")}
+                </SelectItem>
+                {teamChoices.map((team) => (
+                  <SelectItem key={team.id} value={team.id}>
+                    {team.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {activeThreadId &&
+              (() => {
+                const bound = threads.find(
+                  (thread) => thread.id === activeThreadId,
+                );
+                const draft = isNewThread(activeThreadId);
+                const teamId = draft
+                  ? getCreationTeam(activeThreadId)?.teamGroupId
+                  : bound?.teamGroupId;
+                return (
+                  <span
+                    className="ms-auto truncate text-muted-foreground"
+                    title={teamId ?? undefined}
+                  >
+                    {translate("agentChat.team.thisChat")}:{" "}
+                    {teamId === undefined ||
+                    (teamId !== null &&
+                      !teamChoices.some((team) => team.id === teamId))
+                      ? translate("agentChat.team.unavailable")
+                      : teamId
+                        ? (teamChoices.find((team) => team.id === teamId)
+                            ?.name ?? teamId)
+                        : translate("agentChat.team.noTeam")}
+                  </span>
+                );
+              })()}
+          </div>
+        )}
+        {!noOrgMode &&
+          (!selectionReady ||
+            teamSelectionError ||
+            (activeThreadId &&
+              isNewThread(activeThreadId) &&
+              !draftAvailable(activeThreadId))) && (
+            <p role="alert" className="px-3 py-1 text-xs text-destructive">
+              {translate("agentChat.team.unavailable")}
+            </p>
+          )}
+
         {/* History popover — rendered inside relative container so positioning works */}
         {showHistory && (
           <HistoryPopover
@@ -3203,6 +3357,9 @@ export function MultiTabAssistantChat({
                     }
                   }}
                   threadId={tabId}
+                  creationTeam={
+                    isNewThread(tabId) ? getCreationTeam(tabId) : null
+                  }
                   tabId={tabId}
                   browserTabId={browserTabId}
                   contextScope={scope}
@@ -3259,7 +3416,9 @@ export function MultiTabAssistantChat({
                     props.composerDisabled || Boolean(parentMap[tabId])
                   }
                   composerSubmissionDisabled={
-                    props.composerSubmissionDisabled || modelSelectionPending
+                    props.composerSubmissionDisabled ||
+                    modelSelectionPending ||
+                    (isNewThread(tabId) && !draftAvailable(tabId))
                   }
                   composerDisabledPlaceholder={
                     props.composerDisabled

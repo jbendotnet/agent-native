@@ -1601,6 +1601,12 @@ type AgentRunTrackingSource = Pick<
 > & { isSyntheticTraffic?: boolean };
 
 export interface ProductionAgentOptions {
+  prepareThreadBinding?: (details: {
+    threadId: string;
+    ownerEmail: string;
+    creationOrgId?: string;
+    teamGroupId?: string | null;
+  }) => Promise<void>;
   actions?: Record<string, ActionEntry>;
   /** @deprecated Use `actions` instead */
   scripts?: Record<string, ActionEntry>;
@@ -1629,6 +1635,8 @@ export interface ProductionAgentOptions {
     runId: string;
     turnId: string;
     threadId: string | undefined;
+    creationOrgId?: string;
+    teamGroupId?: string | null;
     message: string;
     agentKitMessageId?: string;
     attachments?: AgentChatAttachment[];
@@ -1643,6 +1651,8 @@ export interface ProductionAgentOptions {
     runId: string;
     turnId: string;
     threadId: string;
+    creationOrgId?: string;
+    teamGroupId?: string | null;
     message: string;
     attachments?: AgentChatAttachment[];
     queuedMessageId?: string;
@@ -9256,6 +9266,8 @@ export function createProductionAgentHandler(
           runId: unstartedTurnId,
           turnId: unstartedTurnId,
           threadId,
+          creationOrgId: body.creationOrgId,
+          teamGroupId: body.teamGroupId,
           message:
             typeof requestDisplayMessage === "string" &&
             requestDisplayMessage.trim()
@@ -9286,6 +9298,20 @@ export function createProductionAgentHandler(
           );
           controller.close();
         },
+      });
+    }
+
+    if (
+      threadId &&
+      ownerEmail &&
+      !internalContinuation &&
+      !isBackgroundWorker
+    ) {
+      await options.prepareThreadBinding?.({
+        threadId,
+        ownerEmail,
+        creationOrgId: body.creationOrgId,
+        teamGroupId: body.teamGroupId,
       });
     }
 
@@ -10031,6 +10057,8 @@ export function createProductionAgentHandler(
           runId,
           turnId: effectiveTurnId,
           threadId,
+          creationOrgId: body.creationOrgId,
+          teamGroupId: body.teamGroupId,
           message: messageToPersist,
           ...(agentKitMessageId ? { agentKitMessageId } : {}),
           attachments: requestAttachments,

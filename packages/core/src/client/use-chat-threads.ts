@@ -14,6 +14,8 @@ export interface ChatThreadScope {
 
 export interface ChatThreadSummary {
   id: string;
+  orgId?: string | null;
+  teamGroupId?: string | null;
   title: string;
   preview: string;
   messageCount: number;
@@ -33,6 +35,7 @@ export interface ChatThreadSource {
 
 export interface ChatThreadData {
   id: string;
+  teamGroupId?: string | null;
   ownerEmail: string;
   title: string;
   preview: string;
@@ -78,12 +81,14 @@ export interface UseChatThreadsOptions {
   routeThreadId?: string | null;
   includeExternal?: boolean;
   isolateHistoryByScope?: boolean;
+  creationTeam?: { orgId: string; teamGroupId: string | null } | null;
 }
 
 const ACTIVE_THREAD_KEY = "agent-chat-active-thread";
 const THREADS_UPDATED_EVENT = "agent-chat:threads-updated";
 const THREADS_PAGE_SIZE = 50;
 const CLIENT_DRAFT_THREAD_PREFIX = "agent-chat-client-draft-thread:";
+const CLIENT_DRAFT_TEAM_PREFIX = "agent-chat-client-draft-team:";
 const MAX_THREAD_SAVE_RETRIES = 3;
 const THREAD_SAVE_RETRYABLE_STATUSES = new Set([408, 409, 429]);
 
@@ -93,6 +98,40 @@ function shouldRetryThreadSave(status: number): boolean {
 
 function clientDraftThreadKey(id: string): string {
   return `${CLIENT_DRAFT_THREAD_PREFIX}${encodeURIComponent(id)}`;
+}
+
+type CreationTeam = { orgId: string; teamGroupId: string | null };
+
+function draftTeamKey(id: string): string {
+  return `${CLIENT_DRAFT_TEAM_PREFIX}${encodeURIComponent(id)}`;
+}
+
+function clearDraftTeam(id: string): void {
+  try {
+    localStorage.removeItem(draftTeamKey(id));
+  } catch {
+    // A confirmed thread no longer uses its local draft snapshot.
+  }
+}
+
+function readDraftTeam(id: string): CreationTeam | null {
+  try {
+    const raw = localStorage.getItem(draftTeamKey(id));
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "orgId" in parsed &&
+      typeof parsed.orgId === "string" &&
+      "teamGroupId" in parsed &&
+      (parsed.teamGroupId === null || typeof parsed.teamGroupId === "string")
+    )
+      return { orgId: parsed.orgId, teamGroupId: parsed.teamGroupId };
+  } catch {
+    // Unreadable snapshots cannot be replaced with a later preference.
+  }
+  return null;
 }
 
 function hasClientDraftThreadMarker(id: string): boolean {
@@ -308,6 +347,38 @@ export function useChatThreads(
   options?: UseChatThreadsOptions,
 ) {
   const autoCreate = options?.autoCreate !== false;
+  const selectionAware = options?.creationTeam !== undefined;
+  const creationTeamRef = useRef(options?.creationTeam);
+  creationTeamRef.current = options?.creationTeam;
+  const draftTeamsRef = useRef(
+    new Map<string, { orgId: string; teamGroupId: string | null }>(),
+  );
+  const captureDraftTeam = (id: string) => {
+    if (draftTeamsRef.current.has(id)) return;
+    if (hasClientDraftThreadMarker(id)) {
+      const restored = readDraftTeam(id);
+      if (restored) draftTeamsRef.current.set(id, restored);
+      return;
+    }
+    if (creationTeamRef.current) {
+      draftTeamsRef.current.set(id, { ...creationTeamRef.current });
+      try {
+        localStorage.setItem(
+          draftTeamKey(id),
+          JSON.stringify(creationTeamRef.current),
+        );
+      } catch {
+        // The snapshot is retained in memory for this session.
+      }
+    }
+  };
+  const getCreationTeam = (id: string) => {
+    if (!draftTeamsRef.current.has(id) && hasClientDraftThreadMarker(id)) {
+      const restored = readDraftTeam(id);
+      if (restored) draftTeamsRef.current.set(id, restored);
+    }
+    return draftTeamsRef.current.get(id) ?? null;
+  };
   const restoreActiveThread = options?.restoreActiveThread !== false;
   const includeExternal = options?.includeExternal === true;
   const isolateHistoryByScope = options?.isolateHistoryByScope === true;
@@ -370,9 +441,10 @@ export function useChatThreads(
           id = null;
         }
       }
-      if (!id && autoCreate) {
+      if (!id && autoCreate && (!selectionAware || options?.creationTeam)) {
         id = createLocalThreadId();
         isNew = true;
+        captureDraftTeam(id);
       }
     }
     initialActiveThreadRef.current = { id, isNew, seenAt };
@@ -475,6 +547,7 @@ export function useChatThreads(
         createdAt: stamp,
         updatedAt: stamp,
         scope: threadScope,
+        teamGroupId: draftTeamsRef.current.get(id)?.teamGroupId,
       };
       optimisticThreadScopesRef.current.set(id, threadScope);
       setThreads((prev) =>
@@ -581,8 +654,13 @@ export function useChatThreads(
           nextActiveThreadId = null;
         }
       }
-      if (!nextActiveThreadId && autoCreate) {
+      if (
+        !nextActiveThreadId &&
+        autoCreate &&
+        (!selectionAware || creationTeamRef.current)
+      ) {
         nextActiveThreadId = createLocalThreadId();
+        captureDraftTeam(nextActiveThreadId);
         newlyCreatedRef.current.add(nextActiveThreadId);
         markClientDraftThread(nextActiveThreadId);
         addOptimisticThread(nextActiveThreadId, scopeRef.current ?? null);
@@ -647,6 +725,8 @@ export function useChatThreads(
         for (const thread of loaded) {
           knownThreadScopesRef.current.set(thread.id, thread.scope ?? null);
           serverConfirmedThreadIdsRef.current.add(thread.id);
+          draftTeamsRef.current.delete(thread.id);
+          clearDraftTeam(thread.id);
           clearClientDraftThreadMarker(thread.id);
           newlyCreatedRef.current.delete(thread.id);
         }
@@ -859,6 +939,8 @@ export function useChatThreads(
           restoredThread.scope ?? null,
         );
         clearClientDraftThreadMarker(restoredThread.id);
+        draftTeamsRef.current.delete(restoredThread.id);
+        clearDraftTeam(restoredThread.id);
         newlyCreatedRef.current.delete(restoredThread.id);
       }
       if (restoredThread === undefined && lookupRestored && !restoredOnPage) {
@@ -920,8 +1002,13 @@ export function useChatThreads(
         addOptimisticThread(savedId, scopeRef.current ?? null, seenAt);
         // activeThreadId already === savedId from the localStorage
         // initializer; nothing else to set.
-      } else if (!savedId && autoCreate) {
+      } else if (
+        !savedId &&
+        autoCreate &&
+        (!selectionAware || creationTeamRef.current)
+      ) {
         const id = createLocalThreadId();
+        captureDraftTeam(id);
         newlyCreatedRef.current.add(id);
         markClientDraftThread(id);
         addOptimisticThread(id, scopeRef.current ?? null);
@@ -942,7 +1029,10 @@ export function useChatThreads(
 
   const createThread = useCallback(
     (preferredId?: string): Promise<string | null> => {
+      if (selectionAware && !creationTeamRef.current)
+        return Promise.resolve(null);
       const id = preferredId || createLocalThreadId();
+      captureDraftTeam(id);
       newlyCreatedRef.current.add(id);
       markClientDraftThread(id);
       addOptimisticThread(id, scopeRef.current ?? null);
@@ -950,8 +1040,26 @@ export function useChatThreads(
       setActiveThreadId(id);
       return Promise.resolve(id);
     },
-    [addOptimisticThread, persistActiveThreadId],
+    [addOptimisticThread, persistActiveThreadId, selectionAware],
   );
+
+  useEffect(() => {
+    if (
+      selectionAware &&
+      creationTeamRef.current &&
+      !activeThreadIdRef.current &&
+      autoCreate &&
+      !routeThreadId
+    ) {
+      void createThread();
+    }
+  }, [
+    autoCreate,
+    createThread,
+    options?.creationTeam,
+    routeThreadId,
+    selectionAware,
+  ]);
 
   useEffect(() => {
     if (!routeControlsActiveThread) return;
@@ -972,12 +1080,13 @@ export function useChatThreads(
       (currentThread?.messageCount ?? 0) === 0;
     if (currentIsUnsavedNewThread) return;
 
-    if (!autoCreate) {
+    if (!autoCreate || (selectionAware && !creationTeamRef.current)) {
       if (currentId !== null) setActiveThreadId(null);
       return;
     }
 
     const id = createLocalThreadId();
+    captureDraftTeam(id);
     newlyCreatedRef.current.add(id);
     markClientDraftThread(id);
     addOptimisticThread(id, scopeRef.current ?? null);
@@ -1253,14 +1362,10 @@ export function useChatThreads(
     ],
   );
 
-  const isNewThread = useCallback(
-    (id: string) => {
-      if (routeControlsActiveThread && routeThreadId === id) return false;
-      if (serverConfirmedThreadIdsRef.current.has(id)) return false;
-      return newlyCreatedRef.current.has(id) || hasClientDraftThreadMarker(id);
-    },
-    [routeControlsActiveThread, routeThreadId],
-  );
+  const isNewThread = useCallback((id: string) => {
+    if (serverConfirmedThreadIdsRef.current.has(id)) return false;
+    return newlyCreatedRef.current.has(id) || hasClientDraftThreadMarker(id);
+  }, []);
 
   const switchThread = useCallback(
     (id: string) => {
@@ -1290,6 +1395,8 @@ export function useChatThreads(
       knownThreadScopesRef.current.set(thread.id, thread.scope ?? null);
       serverConfirmedThreadIdsRef.current.add(thread.id);
       clearClientDraftThreadMarker(thread.id);
+      draftTeamsRef.current.delete(thread.id);
+      clearDraftTeam(thread.id);
       newlyCreatedRef.current.delete(thread.id);
       explicitlyOpenedThreadIdsRef.current.add(id);
       setEvictedThreadIds((prev) => prev.filter((evicted) => evicted !== id));
@@ -1320,6 +1427,8 @@ export function useChatThreads(
         emitThreadsUpdated();
       } catch {}
       clearUserRenamedThread(id);
+      draftTeamsRef.current.delete(id);
+      clearDraftTeam(id);
       optimisticThreadScopesRef.current.delete(id);
       setThreads((prev) => prev.filter((t) => t.id !== id));
       if (id === activeThreadIdRef.current) {
@@ -1374,6 +1483,12 @@ export function useChatThreads(
               body: JSON.stringify(payload),
             },
           );
+        const isDraft =
+          newlyCreatedRef.current.has(id) || hasClientDraftThreadMarker(id);
+        const creationTeam = isDraft ? getCreationTeam(id) : null;
+        if (isDraft && selectionAware && !creationTeam) {
+          throw new Error("Chat team selection is unavailable for this draft.");
+        }
         let response = await putThread();
         if (response.status === 404) {
           const created = await fetch(
@@ -1385,10 +1500,20 @@ export function useChatThreads(
                 id,
                 title,
                 ...(knownScope ? { scope: knownScope } : {}),
+                ...(creationTeam
+                  ? {
+                      creationOrgId: creationTeam.orgId,
+                      teamGroupId: creationTeam.teamGroupId,
+                    }
+                  : {}),
               }),
             },
           );
-          if (!created.ok && created.status !== 409) return;
+          if (!created.ok && created.status !== 409) {
+            throw new Error(
+              `Could not create chat thread (HTTP ${created.status}).`,
+            );
+          }
           response = await putThread();
         }
         for (
@@ -1403,17 +1528,39 @@ export function useChatThreads(
           );
           response = await putThread();
         }
-        if (!response.ok) return;
+        if (!response.ok)
+          throw new Error(
+            `Could not save chat thread (HTTP ${response.status}).`,
+          );
+        const savedThread = await response.json();
         const reportedScope = savedThreadScope(
           // coercion-ok: a save response without a readable body carries no scope, and the local scope stays as it was.
-          await response.json().catch(() => null),
+          savedThread,
         );
         // A response that was in flight across a detach describes the thread
         // as it was before it, so it must not put the old scope back.
         const scopeChangedDuringSave =
           (scopeMutationsRef.current.get(id) ?? 0) !== scopeEpoch;
         const savedScope = scopeChangedDuringSave ? undefined : reportedScope;
+        const authoritativeThread =
+          selectionAware && !("teamGroupId" in savedThread)
+            ? await fetchThreadById(apiUrl, id, null)
+            : savedThread;
+        if (
+          selectionAware &&
+          (!authoritativeThread ||
+            (authoritativeThread.teamGroupId !== null &&
+              typeof authoritativeThread.teamGroupId !== "string"))
+        ) {
+          throw new Error(`Could not read saved chat thread binding ${id}.`);
+        }
+        const savedTeamGroupId =
+          authoritativeThread && "teamGroupId" in authoritativeThread
+            ? authoritativeThread.teamGroupId
+            : (localThread?.teamGroupId ?? null);
         serverConfirmedThreadIdsRef.current.add(id);
+        draftTeamsRef.current.delete(id);
+        clearDraftTeam(id);
         clearClientDraftThreadMarker(id);
         newlyCreatedRef.current.delete(id);
         emitThreadsUpdated();
@@ -1436,6 +1583,7 @@ export function useChatThreads(
                         },
                       ),
                       preview: data.preview,
+                      teamGroupId: savedTeamGroupId,
                       ...(data.messageCount != null && {
                         messageCount: data.messageCount,
                       }),
@@ -1459,6 +1607,7 @@ export function useChatThreads(
           return sortThreadSummaries([
             {
               id,
+              teamGroupId: savedTeamGroupId,
               title,
               preview: data.preview,
               messageCount: data.messageCount ?? 0,
@@ -1472,7 +1621,10 @@ export function useChatThreads(
             ...prev,
           ]);
         });
-      } catch {}
+      } catch (error) {
+        console.error("Could not save chat thread:", error);
+        throw error;
+      }
     },
     [apiUrl, historyScope, readKnownThreadScope],
   );
@@ -1508,7 +1660,10 @@ export function useChatThreads(
     ): Promise<string | null> => {
       const id = createLocalThreadId();
       const fallbackForkFromSnapshot = async (
-        source: ForkSnapshotWithScope,
+        source: ForkSnapshotWithScope & {
+          orgId: string | null;
+          teamGroupId: string | null;
+        },
       ): Promise<ChatThreadSummary | null> => {
         const title = source.title ? `${source.title} (fork)` : "";
         const createdAt = Date.now();
@@ -1520,11 +1675,20 @@ export function useChatThreads(
             body: JSON.stringify({
               id,
               title,
+              ...(source.orgId !== null ? { creationOrgId: source.orgId } : {}),
+              teamGroupId: source.teamGroupId,
               ...(source.scope ? { scope: source.scope } : {}),
             }),
           },
         );
         if (!createRes.ok) return null;
+        const created: ChatThreadSummary = await createRes.json();
+        if (
+          created.id !== id ||
+          (created.teamGroupId !== null &&
+            typeof created.teamGroupId !== "string")
+        )
+          return null;
 
         const saveRes = await fetch(
           withChatThreadScope(
@@ -1547,6 +1711,7 @@ export function useChatThreads(
 
         return {
           id,
+          teamGroupId: created.teamGroupId,
           title,
           preview: source.preview,
           messageCount: source.messageCount,
@@ -1557,11 +1722,25 @@ export function useChatThreads(
       };
 
       try {
+        const sourceThread = await fetchThreadById(apiUrl, sourceId, null);
+        if (
+          !sourceThread ||
+          (sourceThread.orgId !== null &&
+            typeof sourceThread.orgId !== "string") ||
+          (sourceThread.teamGroupId !== null &&
+            typeof sourceThread.teamGroupId !== "string")
+        )
+          return null;
         const localScope =
           threadsRef.current.find((t) => t.id === sourceId)?.scope ?? null;
         const source =
           sourceSnapshot && sourceSnapshot.messageCount > 0
-            ? { ...sourceSnapshot, scope: localScope }
+            ? {
+                ...sourceSnapshot,
+                scope: localScope,
+                orgId: sourceThread.orgId,
+                teamGroupId: sourceThread.teamGroupId,
+              }
             : undefined;
         const res = await fetch(
           withChatThreadScope(
@@ -1590,6 +1769,7 @@ export function useChatThreads(
         setThreads((prev) => [
           {
             id: t.id,
+            teamGroupId: t.teamGroupId,
             title: t.title,
             preview: t.preview,
             messageCount: t.messageCount,
@@ -1703,6 +1883,7 @@ export function useChatThreads(
     activeThreadId,
     isLoading,
     createThread,
+    getCreationTeam,
     openThread,
     switchThread,
     deleteThread: removeThread,

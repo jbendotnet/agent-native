@@ -9,7 +9,7 @@ This files the six-epic roadmap for the [accepted ADR](../../design/organization
 ## Assumptions
 
 - Core owns the tenancy contract. Shared Toolkit controls consume it, so this roadmap lives in Core's docs scope rather than creating separate product roadmaps.
-- The ADR controls product decisions; requirements IDs below make the work traceable. Epic 1's completed children record delivered identity behavior. Epic 2 records verified authorization behavior. Epic 3 is complete with verified resource operations and bound prompt context; Epics 4–6 and full V1 acceptance remain pending.
+- The ADR controls product decisions; requirements IDs below make the work traceable. Epic 1's completed children record delivered identity behavior. Epic 2 records verified authorization behavior. Epic 3 is complete with verified resource operations and bound prompt context. Epic 4 is complete with verified selection and management UX; Epics 5–6 and full V1 acceptance remain pending.
 - No new dependency, general resource ownership model, team/member table, resource move, successor ownership, automatic share, or continuous stream revocation is needed.
 
 ## Done condition
@@ -22,7 +22,7 @@ Use `verifying-changes` and `adding-tests-and-ci` for Core runtime and PostgreSQ
 
 ## Lifecycle notes
 
-- This file remains in `todo/` because execution was requested for individual child plans, not this whole workflow. Epic 1's status records reopening at the user's request on 2026-10-02, although its directory is currently filed in outer `completed/`. Its storage, role-policy, and lifecycle children are implemented and independently verified in inner `completed/`. Epic 2 was completed at the user's request on 2026-10-03 and is filed in outer `completed/`, preserving its three completed children. Epic 3 was completed at the user's request on 2026-10-03 and is filed in outer `completed/`, preserving both independently verified children; its proof gates satisfy the context prerequisite for Epic 4. Epics 4–6 remain pending. Retained-binding integration proof remains required in Epic 6 before release.
+- This file remains in `todo/` because execution was requested for individual child plans, not this whole workflow. Epic 1's status records reopening at the user's request on 2026-10-02, although its directory is currently filed in outer `completed/`. Its storage, role-policy, and lifecycle children are implemented and independently verified in inner `completed/`. Epic 2 was completed at the user's request on 2026-10-03 and is filed in outer `completed/`, preserving its three completed children. Epic 3 was completed at the user's request on 2026-10-03 and is filed in outer `completed/`, preserving both independently verified children; its proof gates satisfy the context prerequisite for Epic 4. Epic 4 was completed at the user's request on 2026-10-06 and is filed in outer `completed/`, preserving its three completed children and handover. Its proof gates clear the selection/management prerequisite for Epic 5. Epics 5–6 remain pending. Retained-binding integration proof remains required in Epic 6 before release.
 - Before execution, load and follow `workflow`, `execute-plan`, `plans-organisation`, and `subagent-delegation`. Move this workflow to `in-progress/`.
 - The first child execution moves its whole epic to outer `in-progress/` and that child to inner `in-progress/`. Repair relative links after lifecycle moves, including this index. Move verified children to inner `completed/`; do not mark the entire epic completed without explicit user declaration.
 - Each delegation MUST read the current child plan, its parent `epic.md`, `requirements.md`, and the ADR in full. The leader retains sequencing, documentation, state changes, and signoff.
@@ -54,7 +54,9 @@ Execute whole epics in numerical order: identity → authorization → context �
 
 4. <tranche id="selection-and-management" owner="leader">
 
-   MUST load and follow `execute-plan` for [Epic 4](../../plans/wip/organization-team-tenancy-04-selection-ux/epic.md): durable user/org selection, management/context controls, then new-chat selection and binding display. MUST follow `frontend-design`, `agent-native-toolkit`, `client-methods`, and `internationalization` for UI work. Browser proof covers multi-session selection, switching organizations, and draft versus persisted threads.
+   [Epic 4](../../plans/completed/organization-team-tenancy-04-selection-ux/epic.md) is complete: durable user/org selection, management/context controls, and new-chat selection with stable binding display. Shared UI and agent operations use the authorized Core action surface.
+
+   Completion status, 2026-10-06: all three children and their independent local proof gates passed. Team management covers rejected-save recovery with visible failure, retained unsaved text, and unchanged stored instructions. New-chat proof covers first-send context, stable A/B/no-team bindings, mounted refresh, denied creation, and per-organization switching/reload restoration. The authorized disposable second organization was deleted and original state restored. The user-requested runtime and page 21 remain open. Epic 5's prerequisite is clear; full V1 release and deployed acceptance remain separate.
 
    </tranche>
 

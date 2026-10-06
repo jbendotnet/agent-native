@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { fail } from "../action.js";
 import { deriveActorKind } from "../audit/config.js";
 import { ensureAuditTables } from "../audit/store.js";
 import {
@@ -359,7 +360,7 @@ export async function assertWorkspaceUserGroupManager(
 ): Promise<void> {
   const role = await workspaceUserGroupRole(orgId, userEmail);
   if (role === "owner" || role === "admin") return;
-  throw new Error("Only workspace admins can manage user groups.");
+  fail("Only workspace admins can manage user groups.", { statusCode: 403 });
 }
 
 export async function workspaceUserGroupRole(
@@ -401,7 +402,9 @@ async function mutateWorkspaceUserGroup(
 ): Promise<WorkspaceUserGroup> {
   await ensureWorkspaceUserGroupsTable();
   if (!(await isOrgMember(orgId, actor))) {
-    throw new Error("Only current workspace members can manage user groups.");
+    fail("Only current workspace members can manage user groups.", {
+      statusCode: 403,
+    });
   }
   const client = getDbExec();
   if (!client.transaction) {
@@ -422,7 +425,9 @@ async function mutateWorkspaceUserGroup(
       (roles[0] as { role?: string } | undefined)?.role ?? "",
     );
     if (role !== "owner" && role !== "admin" && role !== "member") {
-      throw new Error("Only current workspace members can manage user groups.");
+      fail("Only current workspace members can manage user groups.", {
+        statusCode: 403,
+      });
     }
     const current = id
       ? (
@@ -511,7 +516,7 @@ async function lockCurrentOrgMembers(
 
 function requireGroupManager(role: string): void {
   if (role !== "owner" && role !== "admin") {
-    throw new Error("Only workspace admins can manage user groups.");
+    fail("Only workspace admins can manage user groups.", { statusCode: 403 });
   }
 }
 
@@ -698,16 +703,16 @@ export async function updateWorkspaceUserGroupMembers(
         role === "member" &&
         (!group.isTeam || !group.leadEmails.includes(requestScope.userEmail))
       ) {
-        throw new Error(
-          "Only workspace admins or team leads can manage group members.",
-        );
+        fail("Only workspace admins or team leads can manage group members.", {
+          statusCode: 403,
+        });
       }
       if (
         role === "member" &&
         input.operation === "remove" &&
         memberEmails.some((email) => group.leadEmails.includes(email))
       ) {
-        throw new Error("Team leads cannot remove team leads.");
+        fail("Team leads cannot remove team leads.", { statusCode: 403 });
       }
       if (input.operation !== "add" && input.operation !== "remove") {
         throw new Error("Invalid group membership operation.");

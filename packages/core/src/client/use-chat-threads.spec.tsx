@@ -21,6 +21,334 @@ describe("useChatThreads", () => {
   let container: HTMLDivElement;
   let root: Root;
 
+  it("captures a draft's team once and restores it without adopting a later preference", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ threads: [] })),
+    );
+    let selection: { orgId: string; teamGroupId: string | null } | null = null;
+    let hook: ReturnType<typeof useChatThreads> | null = null;
+    function Harness() {
+      hook = useChatThreads("/chat", "team-binding", null, {
+        creationTeam: selection,
+      });
+      return null;
+    }
+    await act(async () => {
+      root.render(<Harness />);
+    });
+    expect(hook!.activeThreadId).toBeNull();
+    selection = { orgId: "org-1", teamGroupId: null };
+    await act(async () => {
+      root.render(<Harness />);
+    });
+    const id = hook!.activeThreadId!;
+    expect(hook!.getCreationTeam(id)).toEqual({
+      orgId: "org-1",
+      teamGroupId: null,
+    });
+    selection = { orgId: "org-1", teamGroupId: "team-b" };
+    await act(async () => {
+      root.render(<Harness />);
+    });
+    expect(hook!.getCreationTeam(id)?.teamGroupId).toBeNull();
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Harness />);
+    });
+    expect(hook!.getCreationTeam(id)?.teamGroupId).toBeNull();
+    await act(async () => {
+      await hook!.createThread("next-team-draft");
+    });
+    expect(hook!.getCreationTeam(hook!.activeThreadId!)?.teamGroupId).toBe(
+      "team-b",
+    );
+  });
+
+  it("keeps a locally created draft new when its URL starts controlling the thread id", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ threads: [] })),
+    );
+    let routeThreadId: string | null = null;
+    let hook: ReturnType<typeof useChatThreads> | null = null;
+    function Harness() {
+      hook = useChatThreads("/chat", "team-route", null, {
+        routeThreadId,
+        creationTeam: { orgId: "org-a", teamGroupId: "team-a" },
+      });
+      return null;
+    }
+    await act(async () => {
+      root.render(<Harness />);
+    });
+    const id = hook!.activeThreadId!;
+    expect(hook!.isNewThread(id)).toBe(true);
+    routeThreadId = id;
+    await act(async () => {
+      root.render(<Harness />);
+    });
+    expect(hook!.isNewThread(id)).toBe(true);
+    expect(hook!.getCreationTeam(id)?.teamGroupId).toBe("team-a");
+  });
+
+  it("never recaptures a restored draft whose creation snapshot is missing", async () => {
+    window.localStorage.setItem(
+      "agent-chat-client-draft-thread:restored-draft",
+      "1",
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ threads: [] })),
+    );
+    let hook: ReturnType<typeof useChatThreads> | null = null;
+    function Harness() {
+      hook = useChatThreads("/chat", "missing-snapshot", null, {
+        creationTeam: { orgId: "org-new", teamGroupId: "team-new" },
+      });
+      return null;
+    }
+    await act(async () => {
+      root.render(<Harness />);
+    });
+    await act(async () => {
+      await hook!.createThread("restored-draft");
+    });
+    expect(hook!.getCreationTeam("restored-draft")).toBeNull();
+    await act(async () => {
+      await expect(
+        hook!.saveThreadData("restored-draft", {
+          threadData: "{}",
+          title: "hi",
+          preview: "hi",
+          messageCount: 1,
+        }),
+      ).rejects.toThrow("selection is unavailable");
+    });
+  });
+
+  it("saves the captured no-team choice rather than a later selected team", async () => {
+    let exists = false;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/chat/threads" && !init)
+        return jsonResponse({ threads: [] });
+      if (url === "/chat/threads/forked-thread" && init?.method === "PUT")
+        return exists
+          ? jsonResponse({ teamGroupId: null, scope: null })
+          : new Response(null, { status: 404 });
+      if (url === "/chat/threads" && init?.method === "POST") {
+        exists = true;
+        return jsonResponse({ id: "forked-thread", teamGroupId: null });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let selection: { orgId: string; teamGroupId: string | null } = {
+      orgId: "org-a",
+      teamGroupId: null,
+    };
+    let hook: ReturnType<typeof useChatThreads> | null = null;
+    function Harness() {
+      hook = useChatThreads("/chat", "save-team", null, {
+        creationTeam: selection,
+      });
+      return null;
+    }
+    await act(async () => {
+      root.render(<Harness />);
+    });
+    selection = { orgId: "org-a", teamGroupId: "team-b" };
+    await act(async () => {
+      root.render(<Harness />);
+    });
+    await act(async () => {
+      await hook!.saveThreadData("forked-thread", {
+        threadData: "{}",
+        title: "hello",
+        preview: "hello",
+        messageCount: 1,
+      });
+    });
+    const creation = fetchMock.mock.calls.find(
+      ([url, init]) => url === "/chat/threads" && init?.method === "POST",
+    );
+    expect(JSON.parse(String(creation![1]!.body))).toMatchObject({
+      creationOrgId: "org-a",
+      teamGroupId: null,
+    });
+    expect(
+      hook!.threads.find((thread) => thread.id === "forked-thread")
+        ?.teamGroupId,
+    ).toBeNull();
+  });
+
+  it("keeps a rejected team draft unsaved instead of retrying without its binding", async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/chat/threads" && !init)
+        return jsonResponse({ threads: [] });
+      if (url === "/chat/threads/forked-thread" && init?.method === "PUT")
+        return new Response(null, { status: 404 });
+      if (url === "/chat/threads" && init?.method === "POST")
+        return new Response(null, { status: 403 });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let hook: ReturnType<typeof useChatThreads> | null = null;
+    function Harness() {
+      hook = useChatThreads("/chat", "rejected-team", null, {
+        creationTeam: { orgId: "org-a", teamGroupId: "removed-team" },
+      });
+      return null;
+    }
+    await act(async () => {
+      root.render(<Harness />);
+    });
+    await act(async () => {
+      await expect(
+        hook!.saveThreadData("forked-thread", {
+          threadData: "{}",
+          title: "hi",
+          preview: "hi",
+          messageCount: 1,
+        }),
+      ).rejects.toThrow("HTTP 403");
+    });
+    expect(hook!.isNewThread("forked-thread")).toBe(true);
+    expect(hook!.getCreationTeam("forked-thread")?.teamGroupId).toBe(
+      "removed-team",
+    );
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) => url === "/chat/threads" && init?.method === "POST",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    { binding: "team-a", createdBinding: "team-a", status: 200 },
+    { binding: null, createdBinding: null, status: 200 },
+    { binding: "team-a", createdBinding: null, status: 200 },
+    { binding: "team-a", createdBinding: null, status: 403 },
+  ])(
+    "fork fallback carries source org and reads server binding ($binding, $status)",
+    async ({ binding, createdBinding, status }) => {
+      const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "/chat/threads" && !init)
+          return jsonResponse({ threads: [] });
+        if (url === "/chat/threads/source" && !init)
+          return jsonResponse({ orgId: "org-a", teamGroupId: binding });
+        if (url === "/chat/threads/source/fork" && init?.method === "POST")
+          return new Response(null, { status: 405 });
+        if (url === "/chat/threads" && init?.method === "POST")
+          return status === 200
+            ? jsonResponse({ id: "forked-thread", teamGroupId: createdBinding })
+            : new Response(null, { status });
+        if (url === "/chat/threads/forked-thread" && init?.method === "PUT")
+          return jsonResponse({ id: "forked-thread" });
+        throw new Error(`Unexpected fetch: ${url}`);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      let hook: ReturnType<typeof useChatThreads> | null = null;
+      function Harness() {
+        hook = useChatThreads("/chat", "fork-fallback", null, {
+          autoCreate: false,
+          creationTeam: { orgId: "org-b", teamGroupId: "team-b" },
+        });
+        return null;
+      }
+      await act(async () => root.render(<Harness />));
+      let forked: string | null = null;
+      await act(async () => {
+        forked = await hook!.forkThread("source", {
+          title: "Source",
+          preview: "Text",
+          threadData: "{}",
+          messageCount: 1,
+        });
+      });
+      const create = fetchMock.mock.calls.find(
+        ([url, init]) => url === "/chat/threads" && init?.method === "POST",
+      );
+      expect(JSON.parse(String(create![1]!.body))).toMatchObject({
+        creationOrgId: "org-a",
+        teamGroupId: binding,
+      });
+      if (status === 403) {
+        expect(forked).toBeNull();
+        expect(
+          fetchMock.mock.calls.some(([, init]) => init?.method === "PUT"),
+        ).toBe(false);
+      } else {
+        expect(forked).toBe("forked-thread");
+        expect(hook!.threads[0]?.teamGroupId).toBe(createdBinding);
+      }
+    },
+  );
+
+  it("keeps a reopened legacy null binding after the preference changes", async () => {
+    window.localStorage.setItem(
+      "agent-chat-active-thread:legacy-reopen",
+      "legacy",
+    );
+    const legacy = {
+      id: "legacy",
+      orgId: "org-a",
+      teamGroupId: null,
+      title: "Legacy",
+      preview: "Text",
+      messageCount: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      scope: null,
+    };
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/chat/threads" && !init)
+        return jsonResponse({ threads: [legacy] });
+      if (url === "/chat/threads/legacy" && !init) return jsonResponse(legacy);
+      if (url === "/chat/threads/legacy" && init?.method === "PUT")
+        return jsonResponse({ ...legacy, preview: "New turn" });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let creationTeam = { orgId: "org-a", teamGroupId: null as string | null };
+    let hook: ReturnType<typeof useChatThreads> | null = null;
+    function Harness() {
+      hook = useChatThreads("/chat", "legacy-reopen", null, {
+        autoCreate: false,
+        creationTeam,
+      });
+      return null;
+    }
+    await act(async () => root.render(<Harness />));
+    creationTeam = { orgId: "org-a", teamGroupId: "team-b" };
+    await act(async () => root.render(<Harness />));
+    await act(async () => {
+      await hook!.openThread("legacy");
+    });
+    expect(
+      hook!.threads.find((thread) => thread.id === "legacy")?.teamGroupId,
+    ).toBeNull();
+    await act(async () =>
+      hook!.saveThreadData("legacy", {
+        title: "Legacy",
+        preview: "New turn",
+        threadData: "{}",
+        messageCount: 2,
+      }),
+    );
+    expect(
+      hook!.threads.find((thread) => thread.id === "legacy")?.teamGroupId,
+    ).toBeNull();
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => url === "/chat/threads" && init?.method === "POST",
+      ),
+    ).toBe(false);
+  });
+
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("crypto", { randomUUID: () => "forked-thread" });
@@ -2147,6 +2475,8 @@ describe("useChatThreads", () => {
   it("sends the current client snapshot when forking a thread", async () => {
     const sourceThread: ChatThreadSummary = {
       id: "source-thread",
+      orgId: "org-a",
+      teamGroupId: null,
       title: "Pipeline",
       preview: "make this slide better",
       messageCount: 2,
@@ -2158,6 +2488,8 @@ describe("useChatThreads", () => {
       if (url === "/chat/threads" && !init) {
         return jsonResponse({ threads: [sourceThread] });
       }
+      if (url === "/chat/threads/source-thread" && !init)
+        return jsonResponse(sourceThread);
       if (url === "/chat/threads/source-thread/fork") {
         return jsonResponse({
           ...sourceThread,
@@ -2202,13 +2534,20 @@ describe("useChatThreads", () => {
     expect(forkCall).toBeDefined();
     expect(JSON.parse(forkCall![1]!.body as string)).toEqual({
       id: "forked-thread",
-      source: { ...snapshot, scope: sourceThread.scope },
+      source: {
+        ...snapshot,
+        scope: sourceThread.scope,
+        orgId: "org-a",
+        teamGroupId: null,
+      },
     });
   });
 
   it("creates a fork from the client snapshot when the fork endpoint cannot find the source", async () => {
     const sourceThread: ChatThreadSummary = {
       id: "source-thread",
+      orgId: "org-a",
+      teamGroupId: null,
       title: "Pipeline",
       preview: "make this slide better",
       messageCount: 2,
@@ -2220,6 +2559,8 @@ describe("useChatThreads", () => {
       if (url === "/chat/threads" && !init) {
         return jsonResponse({ threads: [sourceThread] });
       }
+      if (url === "/chat/threads/source-thread" && !init)
+        return jsonResponse(sourceThread);
       if (url === "/chat/threads/source-thread/fork") {
         return new Response(JSON.stringify({ error: "Thread not found" }), {
           status: 404,
@@ -2229,6 +2570,7 @@ describe("useChatThreads", () => {
       if (url === "/chat/threads" && init?.method === "POST") {
         return jsonResponse({
           id: "forked-thread",
+          teamGroupId: null,
           title: "Pipeline (fork)",
           preview: "",
           messageCount: 0,
@@ -2278,6 +2620,8 @@ describe("useChatThreads", () => {
     expect(JSON.parse(createCall![1]!.body as string)).toEqual({
       id: "forked-thread",
       title: "Pipeline (fork)",
+      creationOrgId: "org-a",
+      teamGroupId: null,
       scope: sourceThread.scope,
     });
     const saveCall = fetchMock.mock.calls.find(

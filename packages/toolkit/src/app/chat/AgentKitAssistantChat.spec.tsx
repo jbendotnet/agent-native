@@ -614,6 +614,7 @@ import type {
   AssistantChatComposerContextProviderProps,
   AssistantChatHandle,
   AssistantChatSendOptions,
+  AssistantChatAdapterContext,
 } from "./chat/surface-types.js";
 
 let container: HTMLDivElement;
@@ -3209,6 +3210,35 @@ describe("AgentKitAssistantChat host behavior", () => {
       id: "app-two",
     });
   });
+
+  it.each(["team-a", null])(
+    "passes the captured creation team %s to a custom transport",
+    async (teamGroupId) => {
+      const creationTeam = { orgId: "org-a", teamGroupId };
+      const createTransport = vi.fn(
+        (_context: AssistantChatAdapterContext) => chatMocks.transport,
+      );
+      await mount(baseProps({ creationTeam, createTransport }));
+      const context = createTransport.mock.calls[0]?.[0];
+      expect(context.creationTeam).toEqual(creationTeam);
+
+      await act(async () => {
+        root.render(
+          <AgentKitAssistantChat
+            {...baseProps({
+              creationTeam: { orgId: "org-b", teamGroupId: "team-b" },
+              createTransport,
+            })}
+          />,
+        );
+      });
+      expect(createTransport).toHaveBeenCalledOnce();
+      expect(context.creationTeam).toEqual({
+        orgId: "org-b",
+        teamGroupId: "team-b",
+      });
+    },
+  );
 
   it("acknowledges accepted sends after transport acceptance", async () => {
     const ref = createRef<AssistantChatHandle>();

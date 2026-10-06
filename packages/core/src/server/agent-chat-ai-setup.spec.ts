@@ -244,6 +244,7 @@ describe("Agent-Native chat AI setup gate", () => {
       invokeStart,
     );
     expect(fallback).toContain("teamGroupId: body.teamGroupId");
+    expect(fallback).toContain("creationOrgId: body.creationOrgId");
     expect(fallback).toContain("await recordUnstartedTurn({");
     const recordUnstartedTurn = plugin.slice(
       plugin.indexOf("const recordUnstartedTurn = async"),
@@ -251,6 +252,24 @@ describe("Agent-Native chat AI setup gate", () => {
     );
     expect(recordUnstartedTurn).toContain(
       "await persistSubmittedUserMessage(details);",
+    );
+    const firstInsert = plugin.slice(
+      plugin.indexOf("const persistSubmittedUserMessage = async"),
+      plugin.indexOf("const recordUnstartedTurn = async"),
+    );
+    expect(firstInsert.indexOf("validateChatCreationInput(")).toBeLessThan(
+      firstInsert.indexOf("thread = await createThread(owner"),
+    );
+    expect(firstInsert).toContain("teamGroupId: details.teamGroupId");
+    const threadPost = plugin.slice(
+      plugin.indexOf("// ── Thread list: GET/POST /threads ──"),
+      plugin.indexOf(
+        "// Shared per-request invocation:",
+        plugin.indexOf("// ── Thread list: GET/POST /threads ──"),
+      ),
+    );
+    expect(threadPost.indexOf("validateChatCreationInput(")).toBeLessThan(
+      threadPost.indexOf("const thread = await createThread(owner"),
     );
 
     const queueStart = plugin.indexOf("// POST /threads/:id/queued");
@@ -261,6 +280,33 @@ describe("Agent-Native chat AI setup gate", () => {
     expect(queueBlock.indexOf("requireAgentChatAiSetup()")).toBeLessThan(
       queueBlock.indexOf("const result = await mutateThreadQueuedMessages("),
     );
+  });
+
+  it("refuses malformed first-insertion and POST creation inputs without coercing no-team", async () => {
+    const { validateChatCreationInput } =
+      await import("./agent-chat-plugin.js");
+    for (const input of [42, false, {}, " "]) {
+      try {
+        validateChatCreationInput("org-a", input, "org-a");
+        throw new Error("Invalid team was accepted");
+      } catch (error) {
+        expect(error).toMatchObject({ statusCode: 400 });
+      }
+    }
+    for (const input of [null, 42, " "]) {
+      try {
+        validateChatCreationInput(input, null, "org-a");
+        throw new Error("Invalid organization was accepted");
+      } catch (error) {
+        expect(error).toMatchObject({ statusCode: 400 });
+      }
+    }
+    expect(() => validateChatCreationInput("org-b", null, "org-a")).toThrow(
+      "Chat draft belongs to another organization",
+    );
+    expect(() =>
+      validateChatCreationInput("org-a", null, "org-a"),
+    ).not.toThrow();
   });
 
   it("exposes strict chat eligibility on the existing engine status response", () => {
