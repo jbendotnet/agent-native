@@ -10,6 +10,12 @@ const mockResourceListAccessible = vi.fn();
 const mockResourceEffectiveContext = vi.fn();
 const mockEnsurePersonalDefaults = vi.fn();
 const mockGetOrgRoleForEmail = vi.fn();
+const mockGetWorkspaceTeamForMember = vi.fn();
+
+vi.mock("../workspace-connections/groups.js", () => ({
+  getWorkspaceTeamForMember: (...args: unknown[]) =>
+    mockGetWorkspaceTeamForMember(...args),
+}));
 
 vi.mock("./store.js", () => ({
   SHARED_OWNER: "__shared__",
@@ -54,12 +60,106 @@ describe("resources script-helpers", () => {
     vi.clearAllMocks();
     mockEnsurePersonalDefaults.mockResolvedValue(undefined);
     mockGetOrgRoleForEmail.mockResolvedValue("admin");
+    mockGetWorkspaceTeamForMember.mockImplementation(async (_orgId, id) => ({
+      id,
+      isTeam: true,
+    }));
     mockResourceDeleteIfCurrent.mockResolvedValue(true);
     mockIsLegacyOrganizationWorkspaceFile.mockReturnValue(false);
   });
 
   afterEach(() => {
     process.env = originalEnv;
+  });
+
+  describe("team scope", () => {
+    const context = { orgId: "org-a", userEmail: "member@example.test" };
+    const target = { scope: "team" as const, teamGroupId: "team-a" };
+
+    it("reads, lists, writes and conditionally deletes without inheriting organization defaults", async () => {
+      const row = {
+        id: "team-resource",
+        path: "memory/note.md",
+        owner: "__team__:team-a",
+        content: "team",
+      };
+      mockResourceGetByPath.mockResolvedValue(row);
+      mockResourceList.mockResolvedValue([row]);
+      await runWithRequestContext(context, async () => {
+        expect(await readResource(row.path, target)).toBe("team");
+        expect(await listResources("memory/", target)).toEqual([row]);
+        await writeResource(row.path, "new", target);
+        expect(await deleteResource(row.path, target)).toBe(true);
+      });
+      expect(mockResourceGetByPath).toHaveBeenCalledWith(row.owner, row.path, {
+        orgId: "org-a",
+      });
+      expect(mockResourceList).toHaveBeenCalledWith(row.owner, "memory/", {
+        orgId: "org-a",
+      });
+      expect(mockResourcePut).toHaveBeenCalledWith(
+        row.owner,
+        row.path,
+        "new",
+        undefined,
+      );
+      expect(mockResourceDeleteIfCurrent).toHaveBeenCalledWith(row);
+      expect(mockResourceDeleteByPath).not.toHaveBeenCalled();
+      expect(mockGetWorkspaceTeamForMember).toHaveBeenCalledWith(
+        "org-a",
+        "team-a",
+        context.userEmail,
+      );
+    });
+
+    it("preserves an authorized empty result and fails closed on missing membership or lookup failure", async () => {
+      mockResourceGetByPath.mockResolvedValue(null);
+      mockResourceList.mockResolvedValue([]);
+      await runWithRequestContext(context, async () => {
+        expect(await readResource("missing.md", target)).toBeNull();
+        expect(await listResources(undefined, target)).toEqual([]);
+        mockGetWorkspaceTeamForMember.mockResolvedValue(null);
+        for (const operation of [
+          () => readResource("missing.md", target),
+          () => listResources(undefined, target),
+          () => writeResource("missing.md", "new", target),
+          () => deleteResource("missing.md", target),
+        ])
+          await expect(operation()).rejects.toThrow();
+        mockGetWorkspaceTeamForMember.mockRejectedValue(
+          new Error("lookup failed"),
+        );
+        await expect(readResource("missing.md", target)).rejects.toThrow(
+          "lookup failed",
+        );
+      });
+      expect(mockResourcePut).not.toHaveBeenCalled();
+      expect(mockResourceDeleteIfCurrent).not.toHaveBeenCalled();
+    });
+
+    it("rejects mismatched target and ambient-only identity, including wrong organization", async () => {
+      process.env.AGENT_USER_EMAIL = "ambient@example.test";
+      await expect(
+        runWithRequestContext({ orgId: "org-a" }, () =>
+          listResources(undefined, target),
+        ),
+      ).rejects.toThrow();
+      await expect(
+        runWithRequestContext(context, () =>
+          writeResource("x.md", "x", {
+            scope: "personal",
+            teamGroupId: "team-a",
+          }),
+        ),
+      ).rejects.toThrow();
+      mockGetWorkspaceTeamForMember.mockResolvedValue(null);
+      await expect(
+        runWithRequestContext({ ...context, orgId: "org-b" }, () =>
+          deleteResource("x.md", target),
+        ),
+      ).rejects.toThrow();
+      expect(mockResourcePut).not.toHaveBeenCalled();
+    });
   });
 
   describe("owner resolution", () => {

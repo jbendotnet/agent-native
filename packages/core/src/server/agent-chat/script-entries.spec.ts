@@ -97,6 +97,39 @@ describe("cross-app script entries", () => {
 });
 
 describe("mixed script entry Plan-mode effects", () => {
+  it("discovers team resource operations and rejects ambiguous targets", async () => {
+    const resources = (await createResourceScriptEntries()).resources;
+    expect(resources.tool.parameters.properties.scope.enum).toContain("team");
+    expect(
+      resources.tool.parameters.properties.teamGroupId.description,
+    ).toContain("current organization");
+    expect(
+      classify(resources, {
+        action: "list",
+        scope: "team",
+        teamGroupId: "team-a",
+      }),
+    ).toBe("read");
+    await expect(
+      resources.run({ action: "list", scope: "team" }),
+    ).rejects.toThrow("teamGroupId");
+    await expect(
+      resources.run({
+        action: "write",
+        teamGroupId: "team-a",
+        path: "AGENTS.md",
+        content: "bad",
+      }),
+    ).rejects.toThrow("scope=team");
+    await expect(
+      resources.run({
+        action: "effective",
+        scope: "team",
+        teamGroupId: "team-a",
+        path: "AGENTS.md",
+      }),
+    ).rejects.toThrow("does not support team");
+  });
   it("limits resources, chat history, and engine management to reads", async () => {
     const resources = (await createResourceScriptEntries()).resources;
     const chats = (await createChatScriptEntries())["chat-history"];

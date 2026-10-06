@@ -6,6 +6,7 @@ import {
   WORKSPACE_OWNER,
   type Resource,
 } from "../../resources/store.js";
+import { authorizedTeamResourceOwner } from "../../resources/team-access.js";
 import { parseSkillFrontmatter } from "../../server/agent-chat/skill-frontmatter.js";
 import {
   getAmbientUserEmail,
@@ -104,10 +105,28 @@ Options:
     );
   }
 
-  if (scope !== "shared" && scope !== "workspace") {
+  if (scope !== "shared" && scope !== "workspace" && scope !== "team") {
     await ensurePersonalDefaults(owner);
   }
 
+  if (scope === "team") {
+    const orgId = getRequestOrgId() ?? null;
+    const teamGroupId = parsed.teamGroupId ?? parsed["team-group-id"];
+    const teamOwner = await authorizedTeamResourceOwner(
+      teamGroupId,
+      orgId,
+      getRequestUserEmail(),
+    );
+    const resource = await resourceGetByPath(teamOwner, resourcePath, {
+      orgId,
+    });
+    if (!resource) {
+      console.log(`Resource not found: ${resourcePath} (scope: team).`);
+      return;
+    }
+    await writeResource(resource, resourcePath, owner, orgId);
+    return;
+  }
   if (scope === "workspace") {
     const orgId = getRequestOrgId() ?? null;
     const resource = await resourceGetByPath(WORKSPACE_OWNER, resourcePath, {

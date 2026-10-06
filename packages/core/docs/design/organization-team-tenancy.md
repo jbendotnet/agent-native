@@ -161,14 +161,19 @@ Public-token issuance and indexed/legacy redemption reject a persisted binding, 
 
 `agent/run-ownership.ts`, mounted chat run routes, team-task services, harness controllers, and durable-worker reentry resolve fresh linked-conversation access before protected reads or controls. Missing conversations deny access. Projected task candidates apply organization and conversation access before the limit; lists fail explicitly above 200 authorized candidates rather than silently truncating. Stream authorization remains connection-scoped: an open stream may finish, but new connections and replay requests recheck access.
 
-Bound prompt execution fails explicitly until required team-context loading exists. Authorization is implemented, not successful team-context assembly. Focused tests cover store projections, mounted routes, cached background reads, worker reentry, and stream reconnect/replay. This is not live-PostgreSQL or deployed proof, and Epic 6 remains the retained-binding release integration gate.
+Bound prompt execution now loads the authorized stored team binding in normal and background turns. Focused tests cover store projections, mounted routes, cached background reads, worker reentry, and stream reconnect/replay. This is not live-PostgreSQL or deployed proof, and Epic 6 remains the retained-binding release integration gate.
+
+### Implemented team agent context
+
+Existing resource operations authorize `__team__:<group-id>` owners through current organization and team membership. Normal and background prompt loading use the conversation's stored binding, not a later active selection. Instructions load workspace/app, organization, bound team, then personal. Exact-name skills prefer personal, bound team, organization, then defaults, with team-scoped overflow discovery. Memory retains separate organization, team, and personal provenance through selection and body loading.
+
+An authorized empty team is valid. Failed or incomplete required team lookups, missing selected bodies, and retrieval timeouts fail the turn instead of omitting context. Local mounted tests capture assembled prompts and failed foreground/background turns. Independent verification passed the combined 25-file, 792-test context and authorization matrix on 2026-10-03. Binding remains separate from connection and credential scope. UI selection, team-sharing actions, live PostgreSQL, and release integration are not proved by this context implementation.
 
 ### Remaining integration surfaces
 
 These existing surfaces still need the remaining V1 behavior:
 
 - Shared principals, list and direct access: `packages/core/src/sharing/access.ts`, `packages/core/src/sharing/actions/share-resource.ts`
-- Agent resources and prompt assembly: `packages/core/src/resources/store.ts`, `packages/core/src/server/agent-chat/prompt-resources.ts`
 - Session application state and user/organization selection: `packages/core/src/application-state/store.ts` (currently session-keyed; extend persistence without replacing session behavior)
 - User/agent creation and selection: expose validated creation inputs through the shared action/UI surface after team-context loading exists.
 - Chat-specific viewer grants, revocation, and team-shared discovery: extend existing thread/share actions without generic resource-admin authority or separate run shares.

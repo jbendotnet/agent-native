@@ -1,3 +1,4 @@
+import { listResources } from "../../resources/script-helpers.js";
 import {
   resourceList,
   resourceListAccessible,
@@ -46,12 +47,18 @@ Options:
     );
   }
 
-  if (scope !== "shared" && scope !== "workspace") {
+  if (scope !== "shared" && scope !== "workspace" && scope !== "team") {
     await ensurePersonalDefaults(owner);
   }
 
   let resources;
-  if (scope === "personal") {
+  if (scope === "team") {
+    resources = await listResources(prefix, {
+      scope: "team",
+      teamGroupId: parsed.teamGroupId ?? parsed["team-group-id"],
+      includeAgentScratch,
+    });
+  } else if (scope === "personal") {
     resources = includeAgentScratch
       ? await resourceList(owner, prefix, { includeAgentScratch: true })
       : await resourceList(owner, prefix);

@@ -5,18 +5,11 @@ import {
   mergeThreadDataForClientSave,
 } from "../agent/thread-data-builder.js";
 import {
-  assertBoundThreadPromptContext,
   foldAgentChatRunCompletion,
   parseQueuedMessageForThread,
 } from "./agent-chat-plugin.js";
 
 describe("AgentKit thread history", () => {
-  it("explicitly refuses bound prompts until team context is available", () => {
-    expect(() => assertBoundThreadPromptContext("team-1")).toThrow(
-      "Team-bound chat execution requires team context support",
-    );
-    expect(() => assertBoundThreadPromptContext(null)).not.toThrow();
-  });
   it("rejects queued messages with invalid run options", () => {
     const queued = {
       id: "queued-options",

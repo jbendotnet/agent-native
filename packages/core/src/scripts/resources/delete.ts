@@ -1,5 +1,6 @@
 import { getOrgRoleForEmail } from "../../mcp/actions/service-token-access.js";
 import { canManageOrg } from "../../org/permissions.js";
+import { deleteResource } from "../../resources/script-helpers.js";
 import {
   canWriteLocalWorkspaceResourcePath,
   isLegacyOrganizationWorkspaceFile,
@@ -94,7 +95,12 @@ Options:
     }
   }
   let deleted: boolean;
-  if (scope === "shared") {
+  if (scope === "team") {
+    deleted = await deleteResource(resourcePath, {
+      scope: "team",
+      teamGroupId: parsed.teamGroupId ?? parsed["team-group-id"],
+    });
+  } else if (scope === "shared") {
     await assertCanDeleteSharedResource();
     deleted = await deleteSharedResource(resourcePath);
   } else if (scope === "workspace") {

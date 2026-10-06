@@ -9726,6 +9726,7 @@ export function createProductionAgentHandler(
         appId: options.appId,
         owner: ownerEmail ?? undefined,
         orgId: getRequestOrgId() ?? null,
+        teamGroupId: getRequestRunContext()?.boundTeamGroupId ?? null,
         apiKey: jevContextCredentials.apiKey,
         personalApiKey: jevContextCredentials.personalApiKey,
         builderAuth: jevContextCredentials.builderAuth,
