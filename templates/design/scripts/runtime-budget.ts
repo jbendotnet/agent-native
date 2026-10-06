@@ -299,24 +299,35 @@ const zoomOf = () =>
       document.querySelector<HTMLElement>("[data-multi-screen-canvas-world]")
         ?.style.transform ?? "";
     const match = /scale\(([0-9.]+)\)/.exec(transform);
-    return match ? Number(match[1]) * 100 : null;
+    const zoom = match ? Number(match[1]) * 100 : NaN;
+    if (!Number.isFinite(zoom) || zoom <= 0) {
+      throw new Error(
+        `Cannot read canvas zoom from ${JSON.stringify(transform)}`,
+      );
+    }
+    return zoom;
   });
 async function zoomTo(target: number, x: number, y: number): Promise<boolean> {
-  const distance = async () => Math.log(((await zoomOf()) ?? 10) / target);
+  const distance = async () => Math.log((await zoomOf()) / target);
   // A CI runner reads the zoom back several times slower than a laptop.
   const giveUpAt = Date.now() + 60_000;
   while (Date.now() < giveUpAt) {
     const off = await distance();
-    if (Math.abs(off) < 0.06) break;
-    // Fire and forget: awaiting each wheel event lets the camera settle between
-    // them. Smaller steps near the target, because events queued behind a long
-    // frame all land at once and overshoot.
-    void cdp.send("Input.dispatchMouseEvent", {
+    if (Math.abs(off) < 0.06) {
+      await page.waitForTimeout(1500);
+      const actual = await zoomOf();
+      console.log(`  zoom ${target}% ended at ${actual}%`);
+      if (Math.abs(Math.log(actual / target)) < 0.15) return true;
+      continue;
+    }
+    // Keep each wheel below the mouse-notch cutoff (40px) so the camera
+    // classifies this entire continuous Ctrl+wheel gesture as a pinch.
+    await cdp.send("Input.dispatchMouseEvent", {
       type: "mouseWheel",
       x,
       y,
       deltaX: 0,
-      deltaY: Math.sign(off) * Math.min(40, Math.max(2, Math.abs(off) * 40)),
+      deltaY: Math.sign(off) * Math.min(30, Math.max(2, Math.abs(off) * 40)),
       modifiers: 2,
     });
     // Near the target, let the camera apply each step before reading again;
@@ -325,8 +336,8 @@ async function zoomTo(target: number, x: number, y: number): Promise<boolean> {
       setTimeout(resolve, Math.abs(off) < 0.3 ? 120 : 16),
     );
   }
-  await page.waitForTimeout(1500);
-  return Math.abs(await distance()) < 0.15;
+  console.log(`  zoom ${target}% ended at ${await zoomOf()}%`);
+  return false;
 }
 
 async function until(check: () => Promise<boolean>, timeoutMs = 30_000) {
