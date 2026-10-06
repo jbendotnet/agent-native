@@ -202,4 +202,10 @@ export const WORKSPACE_CONNECTIONS_MIGRATIONS: MigrationEntry[] = [
             AND duplicate.id <> group_row.id
         )`,
   },
+  {
+    version: 15,
+    name: "workspace-user-groups-team-fields",
+    sql: `ALTER TABLE workspace_user_groups ADD COLUMN IF NOT EXISTS is_team BOOLEAN NOT NULL DEFAULT false;
+      ALTER TABLE workspace_user_groups ADD COLUMN IF NOT EXISTS lead_emails_json TEXT NOT NULL DEFAULT '[]'`,
+  },
 ];

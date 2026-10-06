@@ -1,0 +1,12 @@
+# Epic 4 requirements
+
+Source: [accepted ADR](../../../design/organization-team-tenancy.md).
+
+| ID   | Requirement                                                                                                                                                                                                                                                           | Acceptance evidence                                                                          |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| S-01 | Persist active team per normalized user and org across sessions/devices. Null means no team. Validate current org/team membership on non-null writes and restored reads; clear or reject invalid values explicitly.                                                   | Two sessions, two users, two orgs, removal/deletion, explicit null.                          |
+| S-02 | Add `set-active-workspace-team(teamGroupId or null)` returning durable selection and mirroring it into current session application state. Org switching restores that org's choice. Session state is not the source of truth.                                         | Action/UI parity, session mirror, cross-org isolation, failed write not reported successful. |
+| S-03 | New-conversation UI captures an explicit creation choice and server validates it at durable insertion. Existing thread display uses stored binding. A later preference change never rebinds persisted threads; unbound threads stay unbound.                          | Draft/first-turn/routed new-chat paths, switching team after creation, forged binding.       |
+| S-04 | Extend shared group settings with explicit team create/convert, admin lead management, lead ordinary-member management, and member context editing. Nonmember admins get no context/chat read exception. UI uses the same actions and named client helpers as agents. | Browser actor matrix plus corresponding action calls; translations and accessibility checks. |
+
+Use compact standard controls. No additional ownership scope, page chrome, organization creation, credential UI, raw framework fetches, or new standalone team settings system.

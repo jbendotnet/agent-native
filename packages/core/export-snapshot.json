@@ -609,6 +609,9 @@
     "./workspace-connections/actions/bulk-update-workspace-user-groups": [
       "dist/workspace-connections/actions/bulk-update-workspace-user-groups.js"
     ],
+    "./workspace-connections/actions/set-workspace-team-leads": [
+      "dist/workspace-connections/actions/set-workspace-team-leads.js"
+    ],
     "./workspace-connections/actions/delete-workspace-user-group": [
       "dist/workspace-connections/actions/delete-workspace-user-group.js"
     ],
