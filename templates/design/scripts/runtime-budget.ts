@@ -308,36 +308,151 @@ const zoomOf = () =>
     return zoom;
   });
 async function zoomTo(target: number, x: number, y: number): Promise<boolean> {
+  let traceInstalled = false;
+  try {
+    await page.evaluate(() => {
+      const trace = window as unknown as {
+        __runtimeZoomTrace?: { events: object[]; stop: () => void };
+      };
+      trace.__runtimeZoomTrace?.stop();
+      const events: object[] = [];
+      const camera = () => {
+        const transform = document.querySelector<HTMLElement>(
+          "[data-multi-screen-canvas-world]",
+        )?.style.transform;
+        const scale = /scale\(([0-9.]+)\)/.exec(transform ?? "");
+        return scale ? Number(scale[1]) * 100 : null;
+      };
+      const recent = (row: object) => {
+        events.push(row);
+        if (events.length > 20) events.shift();
+      };
+      const onWheel = (event: WheelEvent) => {
+        const element = event.target instanceof Element ? event.target : null;
+        const row: Record<string, unknown> & {
+          prevented?: boolean;
+          after?: number | null;
+        } = {
+          kind: "wheel",
+          trusted: event.isTrusted,
+          ctrl: event.ctrlKey,
+          delta: event.deltaY,
+          mode: event.deltaMode,
+          target: element?.tagName ?? null,
+          screen: element?.hasAttribute("data-screen-card") ?? false,
+          frame: element?.hasAttribute("data-design-preview-iframe") ?? false,
+          canvas: Boolean(
+            element?.closest("[data-multi-screen-canvas-surface]"),
+          ),
+          before: camera(),
+        };
+        recent(row);
+        // A capture-listener microtask may run before the canvas's listener.
+        // This task also records wheels whose propagation stops before document.
+        setTimeout(() => {
+          row.prevented = event.defaultPrevented;
+          row.after = camera();
+        }, 0);
+      };
+      const onMessage = (event: MessageEvent) => {
+        if (event.data?.type !== "embedded-canvas-wheel") return;
+        recent({
+          kind: "bridge",
+          ctrl:
+            typeof event.data.ctrlKey === "boolean" ? event.data.ctrlKey : null,
+          delta:
+            typeof event.data.deltaY === "number" ? event.data.deltaY : null,
+          mode:
+            typeof event.data.deltaMode === "number"
+              ? event.data.deltaMode
+              : null,
+          before: camera(),
+        });
+      };
+      document.addEventListener("wheel", onWheel, {
+        capture: true,
+        passive: true,
+      });
+      window.addEventListener("message", onMessage);
+      trace.__runtimeZoomTrace = {
+        events,
+        stop: () => {
+          document.removeEventListener("wheel", onWheel, true);
+          window.removeEventListener("message", onMessage);
+        },
+      };
+    });
+    traceInstalled = true;
+  } catch (error) {
+    console.error(`  zoom ${target}% diagnostic unavailable:`, error);
+  }
+  let failed = true;
   const distance = async () => Math.log((await zoomOf()) / target);
   // A CI runner reads the zoom back several times slower than a laptop.
   const giveUpAt = Date.now() + 60_000;
-  while (Date.now() < giveUpAt) {
-    const off = await distance();
-    if (Math.abs(off) < 0.06) {
-      await page.waitForTimeout(1500);
-      const actual = await zoomOf();
-      console.log(`  zoom ${target}% ended at ${actual}%`);
-      if (Math.abs(Math.log(actual / target)) < 0.15) return true;
-      continue;
+  try {
+    while (Date.now() < giveUpAt) {
+      const off = await distance();
+      if (Math.abs(off) < 0.06) {
+        await page.waitForTimeout(1500);
+        const actual = await zoomOf();
+        console.log(`  zoom ${target}% ended at ${actual}%`);
+        if (Math.abs(Math.log(actual / target)) < 0.15) {
+          failed = false;
+          return true;
+        }
+        continue;
+      }
+      // Keep each wheel below the mouse-notch cutoff (40px) so the camera
+      // classifies this entire continuous Ctrl+wheel gesture as a pinch.
+      await cdp.send("Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        x,
+        y,
+        deltaX: 0,
+        deltaY: Math.sign(off) * Math.min(30, Math.max(2, Math.abs(off) * 40)),
+        modifiers: 2,
+      });
+      // Near the target, let the camera apply each step before reading again;
+      // otherwise a slow runner overshoots back and forth around it.
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.abs(off) < 0.3 ? 120 : 16),
+      );
     }
-    // Keep each wheel below the mouse-notch cutoff (40px) so the camera
-    // classifies this entire continuous Ctrl+wheel gesture as a pinch.
-    await cdp.send("Input.dispatchMouseEvent", {
-      type: "mouseWheel",
-      x,
-      y,
-      deltaX: 0,
-      deltaY: Math.sign(off) * Math.min(30, Math.max(2, Math.abs(off) * 40)),
-      modifiers: 2,
-    });
-    // Near the target, let the camera apply each step before reading again;
-    // otherwise a slow runner overshoots back and forth around it.
-    await new Promise((resolve) =>
-      setTimeout(resolve, Math.abs(off) < 0.3 ? 120 : 16),
-    );
+    console.log(`  zoom ${target}% ended at ${await zoomOf()}%`);
+    return false;
+  } finally {
+    if (traceInstalled) {
+      try {
+        const diagnostic = await page.evaluate(() => {
+          const trace = window as unknown as {
+            __runtimeZoomTrace?: { events: object[]; stop: () => void };
+          };
+          const events = trace.__runtimeZoomTrace?.events ?? null;
+          trace.__runtimeZoomTrace?.stop();
+          delete trace.__runtimeZoomTrace;
+          return { dpr: window.devicePixelRatio, events };
+        });
+        if (failed) console.log(`  zoom ${target}% input:`, diagnostic);
+      } catch (error) {
+        console.error(`  zoom ${target}% diagnostic unavailable:`, error);
+        await page
+          .evaluate(() => {
+            const trace = window as unknown as {
+              __runtimeZoomTrace?: { stop: () => void };
+            };
+            trace.__runtimeZoomTrace?.stop();
+            delete trace.__runtimeZoomTrace;
+          })
+          .catch((cleanupError) =>
+            console.error(
+              `  zoom ${target}% diagnostic cleanup unavailable:`,
+              cleanupError,
+            ),
+          );
+      }
+    }
   }
-  console.log(`  zoom ${target}% ended at ${await zoomOf()}%`);
-  return false;
 }
 
 async function until(check: () => Promise<boolean>, timeoutMs = 30_000) {
@@ -358,7 +473,7 @@ async function settledBox(locator: ReturnType<Page["locator"]>) {
     const box = await locator.boundingBox({ timeout: 5_000 }).catch(() => null);
     if (box) return box;
   }
-  throw new Error(`${locator} never appeared`);
+  throw new Error(`${locator.toString()} never appeared`);
 }
 
 const tree = page.getByRole("tree", { name: "Layers" });
