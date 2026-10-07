@@ -86,10 +86,10 @@ Mesmas capacidades. Economia diferente. Consulte [Aplicativos](/docs/cloneable-s
 
 ## Visão geral {#overview}
 
-Os recursos têm três escopos de tempo de execução:
+Os recursos têm três escopos base de tempo de execução:
 
 - **Pessoal** — com escopo para um único usuário (seu e-mail). Bom para preferências, notas e contexto por usuário.
-- **Compartilhado/organização** — visível para todos os usuários no aplicativo ou organização. Bom para instruções de aplicativos/equipes, skills e configuração compartilhada.
+- **Compartilhado/organização** — visível para todos os usuários no aplicativo ou organização. Bom para instruções do aplicativo, skills e configuração compartilhada.
 - **Workspace** — padrões globais herdados gerenciados de Dispatch Resources. Bom para fatos da empresa, posicionamento, diretrizes de marca, proteções globais, skills em todo o espaço de trabalho e servidores MCP compartilhados. Os aplicativos leem isso em tempo de execução; eles não são copiados em cada aplicativo.
 
 A guia Recursos do aplicativo mostra todos os três escopos. Recursos pessoais e compartilhados/organizacionais são editáveis ​​lá. Os recursos no escopo do espaço de trabalho são somente leitura em painéis de aplicativos e editados centralmente no Dispatch, para que cada aplicativo veja os mesmos arquivos canônicos sem uma etapa de sincronização.
@@ -104,7 +104,13 @@ Os caminhos canônicos que controlam como o agente usa cada recurso:
 | Perfis de agentes personalizados   | `agents/<slug>.md`                      | Disponível como perfis de agentes locais reutilizáveis             |
 | Servidores HTTP MCP compartilhados | `mcp-servers/<slug>.json`               | Carregado no registro da ferramenta MCP dos aplicativos concedidos |
 
-Esses caminhos se aplicam a todos os três escopos: espaço de trabalho, organização/aplicativo e pessoal. O escopo posterior vence quando o mesmo caminho existe em vários níveis.
+Esses caminhos se aplicam aos três escopos base: espaço de trabalho, organização/aplicativo e pessoal. O escopo posterior vence quando o mesmo caminho existe em vários níveis.
+
+### Contexto da equipe vinculada {#team-resources}
+
+A V1 acrescenta um escopo de equipe separado para instruções, skills e memória. Não concede à equipe propriedade sobre arquivos arbitrários, agentes personalizados, servidores MCP, tarefas ou dados do aplicativo. Recursos de equipe exigem `scope: "team"` e `teamGroupId`. Só se aplicam a conversas vinculadas, não a todas as conversas dos membros.
+
+Execuções em primeiro e segundo plano resolvem os padrões herdados do espaço de trabalho e do aplicativo, depois a organização, a equipe vinculada e os recursos pessoais. `AGENTS.md`, `instructions/*.md` e `memory/MEMORY.md` da equipe são contexto obrigatório. Skills de equipe são indexadas e lidas sob demanda. Uma skill pessoal com o mesmo nome prevalece. A memória da equipe é separada do `LEARNINGS.md` compartilhado e da memória pessoal. A associação atual é validada antes do carregamento. Veja [Contexto da equipe](/docs/organizations-teams-permissions#team-context).
 
 ## Leve os recursos com você {#resource-pack}
 
@@ -219,7 +225,7 @@ agents/<slug>.md                # reusable custom agent profiles
 
 Mantenha os arquivos `context/` factuais e fáceis de ler. Coloque regras que devem ser aplicadas a cada turno em `instructions/guardrails.md`. Use `skills/company-voice/SKILL.md` quando o agente deve transformar ou revisar deliberadamente a cópia na voz da empresa.
 
-Para substituir um padrão global para um aplicativo ou equipe, crie um recurso compartilhado/organizacional nesse aplicativo com o mesmo caminho. Para substituí-lo para uma pessoa, crie um recurso pessoal com o mesmo caminho. Não copie o arquivo do espaço de trabalho em todos os aplicativos; o tempo de execução resolve a pilha na leitura:
+Para substituir um padrão global para um aplicativo, crie nele um recurso compartilhado/organizacional com o mesmo caminho. Para uma pessoa, crie um recurso pessoal com o mesmo caminho. O tempo de execução resolve a pilha na leitura, sem copiar o arquivo para todos os aplicativos:
 
 ```text
 workspace context/brand.md
@@ -255,7 +261,7 @@ No início de cada conversa, o agente lê automaticamente:
 
 ### AGENTS.md e instruções {#agents-md}
 
-`AGENTS.md` é um recurso de instrução propagado por padrão e carregado a cada turno do espaço de trabalho, compartilhado/organização e escopos pessoais nesta ordem — espaço de trabalho para padrões de toda a empresa, compartilhado/aplicativo para regras de equipe, pessoal para preferências por usuário. Os arquivos em `instructions/` são documentos de proteção separados que também se aplicam a cada turno (regras de conformidade, política de escalonamento, voz da marca) e seguem a mesma precedência. Tanto o bate-papo normal quanto as execuções acionadas pela integração os carregam antes de responder.
+`AGENTS.md` e os arquivos de `instructions/` são carregados a cada turno. A ordem é: padrões herdados do espaço de trabalho e do aplicativo, organização, equipe vinculada quando aplicável e recursos pessoais. Execuções em primeiro e segundo plano usam o mesmo contexto vinculado. Mudar a equipe selecionada não altera o vínculo de uma conversa existente.
 
 ```text
 AGENTS.md
@@ -269,12 +275,12 @@ O contexto reutilizável da empresa reside em `context/` (personas, posicionamen
 
 ### Memória {#memory}
 
-Os recursos do agente têm duas superfícies de memória atuais:
+Os recursos do agente têm duas superfícies de memória base, além da memória da equipe vinculada descrita acima:
 
 - `LEARNINGS.md` em escopo **compartilhado** para convenções, correções e conhecimento duradouro da equipe em todo o projeto.
 - `memory/MEMORY.md` no escopo **Personal** para memória estruturada sobre o usuário atual.
 
-O sistema de recursos também gera um `LEARNINGS.md` pessoal para compatibilidade com espaços de trabalho mais antigos, mas o caminho de pré-carregamento do chat é `LEARNINGS.md` compartilhado mais `memory/MEMORY.md` pessoal.
+O sistema também gera um `LEARNINGS.md` pessoal por compatibilidade. O chat pré-carrega o `LEARNINGS.md` compartilhado e o `memory/MEMORY.md` pessoal, além do `memory/MEMORY.md` da equipe nas conversas vinculadas.
 
 **O que é salvo.** Quando você corrige o agente ("sempre use X em vez de Y"), compartilha uma preferência ("Prefiro respostas concisas") ou revela o contexto ("minha equipe chama isso de 'camada de despacho'"), o agente captura esse aprendizado para não repetir o erro ou perguntar novamente. O aprendizado de todo o projeto é compartilhado no `LEARNINGS.md`; a memória específica do usuário fica em `memory/`. A habilidade `capture-learnings` explica quando e como.
 
@@ -313,7 +319,7 @@ Cada uma dessas superfícies — `AGENTS.md`, skills, memória, agentes personal
         },
         {
           name: "scope",
-          type: "workspace | shared | personal",
+          type: "workspace | shared | team | personal",
           note: "Em qual nível esta linha reside",
         },
         {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 
 import { chromium } from "@playwright/test";
+import { test } from "vitest";
 
 import { canvasWheelPoint } from "./canvas-wheel-point";
 

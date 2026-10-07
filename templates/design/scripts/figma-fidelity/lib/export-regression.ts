@@ -6,7 +6,7 @@ import {
   readdirSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve, sep as pathSeparator } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { Browser } from "@playwright/test";
@@ -100,7 +100,7 @@ function corpusCases(): ExportCase[] {
         width: meta.width,
         height: meta.height,
         rootSelector: meta.rootSelector ?? null,
-        adHoc: root.includes(`${pathSeparator}.tmp${pathSeparator}`),
+        adHoc: root === corpusDirs[1],
       });
     }
   }

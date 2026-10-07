@@ -1,4 +1,3 @@
-import { useActionQuery } from "@agent-native/core/client/hooks";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import {
   IconDots,
@@ -55,6 +54,15 @@ export interface ChatHistoryListProps {
   ) => React.ReactNode;
   /** Recheck current thread access before showing edit controls in the row menu. */
   enforceThreadCapabilities?: boolean;
+  useThreadCapabilities?: (
+    threadId: string,
+    menuOpen: boolean,
+  ) => {
+    canManage: boolean;
+    isPending: boolean;
+    isFetching: boolean;
+    isError: boolean;
+  };
   capabilityLabels?: { readOnly: string; unavailable: string };
 
   searchValue?: string;
@@ -99,6 +107,7 @@ export function ChatHistoryList({
   renderRowActions,
   renderAdditionalRowActions,
   enforceThreadCapabilities = false,
+  useThreadCapabilities = unavailableThreadCapabilities,
   capabilityLabels,
   searchValue,
   onSearchChange,
@@ -199,6 +208,7 @@ export function ChatHistoryList({
                       renderRowActions={renderRowActions}
                       renderAdditionalRowActions={renderAdditionalRowActions}
                       enforceThreadCapabilities={enforceThreadCapabilities}
+                      useThreadCapabilities={useThreadCapabilities}
                       capabilityLabels={capabilityLabels}
                       labels={resolvedLabels}
                     />
@@ -228,6 +238,9 @@ type ChatHistoryRowProps = {
     closeMenu: () => void,
   ) => React.ReactNode;
   enforceThreadCapabilities: boolean;
+  useThreadCapabilities: NonNullable<
+    ChatHistoryListProps["useThreadCapabilities"]
+  >;
   capabilityLabels?: { readOnly: string; unavailable: string };
   labels: ChatHistoryListLabels;
 };
@@ -244,26 +257,22 @@ const ChatHistoryRow = React.memo(function ChatHistoryRow({
   renderRowActions,
   renderAdditionalRowActions,
   enforceThreadCapabilities,
+  useThreadCapabilities,
   capabilityLabels,
   labels,
 }: ChatHistoryRowProps) {
   const [isRenaming, setIsRenaming] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
-  const capabilities = useActionQuery<{ canManage: boolean }>(
-    "get-chat-thread-capabilities",
-    { threadId: item.id },
-    {
-      enabled: enforceThreadCapabilities && menuOpen,
-      staleTime: 0,
-      refetchOnWindowFocus: "always",
-    },
+  const capabilities = useThreadCapabilities(
+    item.id,
+    enforceThreadCapabilities && menuOpen,
   );
   const canManage =
     !enforceThreadCapabilities ||
     (!capabilities.isPending &&
       !capabilities.isError &&
-      capabilities.data?.canManage === true);
+      capabilities.canManage);
   const checkingAccess = enforceThreadCapabilities && capabilities.isFetching;
   const renameInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -482,3 +491,12 @@ const ChatHistoryRow = React.memo(function ChatHistoryRow({
     </div>
   );
 });
+
+function unavailableThreadCapabilities() {
+  return {
+    canManage: false,
+    isPending: true,
+    isFetching: false,
+    isError: false,
+  };
+}

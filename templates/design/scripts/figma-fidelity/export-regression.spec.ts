@@ -15,7 +15,7 @@ describe("Figma export fidelity corpus", () => {
 
   beforeAll(async () => {
     browser = await launchChromium(chromium);
-  });
+  }, 30_000);
 
   afterAll(async () => {
     await browser?.close();

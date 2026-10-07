@@ -86,10 +86,10 @@ Las mismas capacidades. Economía diferente. Consulte [Aplicaciones](/docs/clone
 
 ## Descripción general {#overview}
 
-Los recursos tienen tres alcances de ejecución:
+Los recursos tienen tres ámbitos base de ejecución:
 
 - **Personal**: dirigido a un único usuario (su correo electrónico). Bueno para preferencias, notas y contexto por usuario.
-- **Compartido/organización**: visible para todos los usuarios de la aplicación u organización. Bueno para instrucciones de aplicación/equipo, skills y configuración compartida.
+- **Compartido/organización**: visible para todos los usuarios de la aplicación u organización. Bueno para instrucciones de la aplicación, skills y configuración compartida.
 - **Espacio de trabajo**: valores predeterminados globales heredados administrados desde Dispatch Resources. Bueno para datos de la empresa, posicionamiento, pautas de marca, barreras de seguridad globales, skills en todo el espacio de trabajo y servidores MCP compartidos. Las aplicaciones los leen en tiempo de ejecución; no se copian en cada aplicación.
 
 La pestaña Recursos de la aplicación muestra los tres ámbitos. Los recursos personales y compartidos/de la organización se pueden editar allí. Los recursos del ámbito del espacio de trabajo son de solo lectura en los paneles de aplicaciones y se editan de forma centralizada desde Dispatch, por lo que cada aplicación ve los mismos archivos canónicos sin un paso de sincronización.
@@ -104,7 +104,13 @@ Las rutas canónicas que controlan cómo el agente usa cada recurso:
 | Perfiles de agentes personalizados | `agents/<slug>.md`                     | Disponibles como perfiles de agentes locales reutilizables                |
 | Servidores compartidos HTTP MCP    | `mcp-servers/<slug>.json`              | Cargado en el registro de herramientas MCP de las aplicaciones concedidas |
 
-Estas rutas se aplican en los tres ámbitos: espacio de trabajo, organización/aplicación y personal. El ámbito posterior gana cuando existe la misma ruta en múltiples niveles.
+Estas rutas se aplican en los tres ámbitos base: espacio de trabajo, organización/aplicación y personal. El ámbito posterior gana cuando existe la misma ruta en múltiples niveles.
+
+### Contexto del equipo vinculado {#team-resources}
+
+V1 añade un ámbito de equipo distinto para instrucciones, skills y memoria. No implica propiedad del equipo sobre archivos arbitrarios, agentes personalizados, servidores MCP, tareas o datos de la aplicación. Los recursos del equipo requieren `scope: "team"` y `teamGroupId`. Solo se aplican a conversaciones vinculadas, no a todas las conversaciones de sus miembros.
+
+Las ejecuciones en primer y segundo plano resuelven los valores heredados del espacio de trabajo y la aplicación, después la organización, el equipo vinculado y los recursos personales. `AGENTS.md`, `instructions/*.md` y `memory/MEMORY.md` del equipo son contexto obligatorio. Las skills del equipo se indexan y se leen bajo demanda. Una skill personal con el mismo nombre prevalece. La memoria del equipo está separada de `LEARNINGS.md` compartido y de la memoria personal. Se valida la pertenencia actual antes de cargarla. Véase [Contexto del equipo](/docs/organizations-teams-permissions#team-context).
 
 ## Llevar los recursos contigo {#resource-pack}
 
@@ -220,7 +226,7 @@ agents/<slug>.md                # reusable custom agent profiles
 
 Mantenga los archivos `context/` actualizados y fáciles de leer. Pon reglas que deben aplicarse en cada turno en `instructions/guardrails.md`. Utilice `skills/company-voice/SKILL.md` cuando el agente deba transformar o revisar deliberadamente una copia en la voz de la empresa.
 
-Para anular un valor predeterminado global para una aplicación o equipo, cree un recurso compartido/organizativo en esa aplicación con la misma ruta. Para anularlo para una persona, cree un recurso personal con la misma ruta. No copie el archivo del espacio de trabajo en cada aplicación; el tiempo de ejecución resuelve la pila al leer:
+Para anular un valor predeterminado global para una aplicación, cree un recurso compartido/organizativo en esa aplicación con la misma ruta. Para anularlo para una persona, cree un recurso personal con la misma ruta. El tiempo de ejecución resuelve la pila al leer, sin copiar el archivo a cada aplicación:
 
 ```text
 workspace context/brand.md
@@ -256,7 +262,7 @@ Al inicio de cada conversación, el agente lee automáticamente:
 
 ### AGENTS.md e instrucciones {#agents-md}
 
-`AGENTS.md` es un recurso de instrucción que se genera de forma predeterminada y se carga en cada turno desde ámbitos de espacio de trabajo, compartido/organización y personal en ese orden: espacio de trabajo para valores predeterminados de toda la empresa, compartido/aplicación para reglas de equipo, personal para preferencias por usuario. Los archivos bajo `instructions/` son documentos de seguridad separados que también se aplican en cada turno (reglas de cumplimiento, política de escalamiento, voz de marca) y siguen la misma precedencia. Tanto el chat normal como las ejecuciones activadas por integración los cargan antes de responder.
+`AGENTS.md` y los archivos de `instructions/` se cargan en cada turno. El orden es valores heredados del espacio de trabajo y la aplicación, organización, equipo vinculado cuando corresponda y recursos personales. Las ejecuciones en primer y segundo plano usan el mismo contexto vinculado. Cambiar el equipo seleccionado no cambia el vínculo de una conversación existente.
 
 ```text
 AGENTS.md
@@ -270,12 +276,12 @@ El contexto empresarial reutilizable se encuentra bajo `context/` (personas, pos
 
 ### Memoria {#memory}
 
-Los recursos del agente tienen dos superficies de memoria actuales:
+Los recursos del agente tienen dos superficies de memoria base, además de la memoria del equipo vinculado descrita arriba:
 
 - `LEARNINGS.md` en alcance **compartido** para convenciones, correcciones y conocimiento duradero del equipo en todo el proyecto.
 - `memory/MEMORY.md` en el ámbito **Personal** para la memoria estructurada sobre el usuario actual.
 
-El sistema de recursos también genera un `LEARNINGS.md` personal para compatibilidad con espacios de trabajo más antiguos, pero la ruta de precarga del chat es compartida `LEARNINGS.md` más `memory/MEMORY.md` personal.
+El sistema también genera un `LEARNINGS.md` personal por compatibilidad. El chat precarga `LEARNINGS.md` compartido y `memory/MEMORY.md` personal, además de `memory/MEMORY.md` del equipo cuando la conversación está vinculada.
 
 **Qué se guarda.** Cuando corrige al agente ("use siempre X en lugar de Y"), comparte una preferencia ("Prefiero respuestas concisas") o revela el contexto ("mi equipo llama a esto 'la capa de despacho'"), el agente captura ese aprendizaje para no repetir el error ni volver a preguntar. Los aprendizajes de todo el proyecto se comparten en `LEARNINGS.md`; La memoria específica del usuario se encuentra bajo `memory/`. La habilidad `capture-learnings` explica cuándo y cómo.
 
@@ -314,7 +320,7 @@ Cada una de estas superficies (`AGENTS.md`, skills, memoria, agentes personaliza
         },
         {
           name: "scope",
-          type: "workspace | shared | personal",
+          type: "workspace | shared | team | personal",
           note: "¿En qué nivel vive esta fila?",
         },
         {

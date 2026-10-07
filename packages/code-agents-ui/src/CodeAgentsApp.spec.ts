@@ -179,7 +179,10 @@ describe("CodeAgentsApp credential recovery", () => {
       );
     expect(getTrigger()).toBeDefined();
     click(getTrigger()!);
-    await finishLazyLoad();
+    for (let attempt = 0; attempt < 10; attempt++) {
+      if (document.body.textContent?.includes("Create and activate")) break;
+      await finishLazyLoad();
+    }
     expect(document.body.textContent).toContain("Create and activate");
     expect(document.body.textContent).toContain("I have a Builder.io account");
     expect(flow.start).not.toHaveBeenCalled();

@@ -9,17 +9,14 @@ const capability = vi.hoisted(() => ({
   canManage: true,
   isError: false,
 }));
-vi.mock("@agent-native/core/client/hooks", () => ({
-  useActionQuery: () => ({
-    data: {
-      canContinue: capability.canContinue,
-      canManage: capability.canManage,
-    },
+function useThreadCapabilities() {
+  return {
+    canManage: capability.canManage,
     isPending: false,
     isFetching: false,
     isError: capability.isError,
-  }),
-}));
+  };
+}
 
 import {
   ChatHistoryList,
@@ -139,6 +136,7 @@ describe("ChatHistoryList", () => {
           onDelete={remove}
           renderAdditionalRowActions={extra}
           enforceThreadCapabilities
+          useThreadCapabilities={useThreadCapabilities}
           capabilityLabels={{
             readOnly: "Read only",
             unavailable: "Unavailable",
@@ -178,6 +176,7 @@ describe("ChatHistoryList", () => {
           onTogglePin={() => {}}
           onDelete={() => {}}
           enforceThreadCapabilities
+          useThreadCapabilities={useThreadCapabilities}
           capabilityLabels={{
             readOnly: "Read only",
             unavailable: "Unavailable",

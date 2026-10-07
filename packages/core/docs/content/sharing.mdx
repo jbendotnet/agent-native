@@ -93,6 +93,62 @@ organization, and each current group member gets the selected share role on
 that resource. See [Organizations, Teams & Permissions → User groups](/docs/organizations-teams-permissions#user-groups)
 for what groups do and do not scope.
 
+### Team conversations {#team-conversations}
+
+Team conversations remain personally owned and private by default. Binding a
+conversation to a team selects its context, not a share grant. Only its recorded
+owner, while still a member of the organization and team, can share or unshare
+it. A bound conversation can be shared only with its bound team, with at most
+one team grant. That grant is viewer-only. It does not permit continuation,
+editing, deletion, or management, even for an organization admin or team lead.
+Generic resource editor/admin grants do not apply to this surface.
+
+These actions use the shared action client, not custom REST endpoints:
+
+| Action                          | Input                                              | Result                                                                        |
+| ------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `share-chat-thread-with-team`   | `{ threadId, teamGroupId }`                        | `{ threadId, teamGroupId, shared: true }`                                     |
+| `unshare-chat-thread-from-team` | `{ threadId, teamGroupId }`                        | `{ threadId, teamGroupId, shared: false }`                                    |
+| `list-team-shared-chat-threads` | `{ teamGroupId, limit?: 1..100, offset?: number }` | `{ threads, nextOffset }`, newest first. Defaults: limit `25`, offset `0`     |
+| `get-chat-thread-capabilities`  | `{ threadId }`                                     | `{ threadId, canRead: true, canContinue, canManage }` after access validation |
+
+The recorded owner can share an existing conversation:
+
+```ts
+import { callAction } from "@agent-native/core/client/hooks";
+
+await callAction("share-chat-thread-with-team", { threadId, teamGroupId });
+```
+
+A current team member can page through explicitly shared conversations. An
+unshared bound conversation is absent from this list:
+
+```ts
+const page = await callAction("list-team-shared-chat-threads", {
+  teamGroupId,
+  limit: 25,
+  offset: 0,
+});
+if (page.nextOffset !== null) {
+  await callAction("list-team-shared-chat-threads", {
+    teamGroupId,
+    limit: 25,
+    offset: page.nextOffset,
+  });
+}
+```
+
+Leaving the team or organization removes access on subsequent requests. If the
+owner leaves, authorized viewers can still read a shared conversation but cannot
+continue it. Deleting a team retains bound conversations, context, personal
+resources, and share rows, while ending access through that team. A new team with
+the same name gets a new ID and does not inherit them.
+
+Public link issuance and redemption reject bound conversations, including older
+tokens. Run reads, replay, reconnects, and new stream connections revalidate
+access. An already-open stream may finish. See
+[Team context and conversation binding](/docs/organizations-teams-permissions#team-context).
+
 ## What's covered {#covered}
 
 Every template that stores user-authored work uses this model. Concretely:

@@ -90,6 +90,47 @@ description: "使い慣れた一貫性のある共有機能をフレームワー
 
 一部のリソースはグループ共有に対応しています。グループはリソースと同じ組織に属している必要があり、現在の各メンバーにそのリソースで選択した共有ロールが適用されます。グループでできることとできないことは、[組織、チーム、権限 → ユーザーグループ](/docs/organizations-teams-permissions#user-groups)を参照してください。
 
+### チームの会話 {#team-conversations}
+
+会話は個人が所有し、初期状態では非公開です。チームへの紐付けはコンテキストを決めるだけで、会話を自動的に共有したり一覧に表示したりしません。共有と解除を行えるのは記録された所有者だけで、その組織と対象チームの現在のメンバーである必要があります。紐付け済みの会話は、そのチームだけに共有できます。チームへの閲覧者権限は最大 1 件です。閲覧者は会話の続行、編集、削除、管理を行えません。組織の管理者やチームリードにも追加の会話権限はありません。一般リソースの編集者や管理者の権限はチームの会話には適用されません。
+
+| アクション                      | 入力                               | 戻り値                                                |
+| ------------------------------- | ---------------------------------- | ----------------------------------------------------- |
+| `share-chat-thread-with-team`   | `{ threadId, teamGroupId }`        | `{ threadId, teamGroupId, shared: true }`             |
+| `unshare-chat-thread-from-team` | `{ threadId, teamGroupId }`        | `{ threadId, teamGroupId, shared: false }`            |
+| `list-team-shared-chat-threads` | `{ teamGroupId, limit?, offset? }` | `{ threads, nextOffset }`                             |
+| `get-chat-thread-capabilities`  | `{ threadId }`                     | `{ threadId, canRead: true, canContinue, canManage }` |
+
+一覧は新しい順です。`limit` は 1–100 で、既定値は 25 です。`offset` は非負の整数で、既定値は 0 です。能力の取得はアクセスを検証してから行われ、読めない会話は返されません。
+
+所有者は既存の会話とチームの ID を使って共有できます。
+
+```ts
+import { callAction } from "@agent-native/core/client/hooks";
+
+await callAction("share-chat-thread-with-team", { threadId, teamGroupId });
+```
+
+明示的に共有された会話をページ単位で取得します。チームに紐付けられたすべての非公開会話を取得するものではありません。
+
+```ts
+const page = await callAction("list-team-shared-chat-threads", {
+  teamGroupId,
+  limit: 25,
+});
+if (page.nextOffset !== null) {
+  const nextPage = await callAction("list-team-shared-chat-threads", {
+    teamGroupId,
+    limit: 25,
+    offset: page.nextOffset,
+  });
+}
+```
+
+チームや組織を離れると、それ以降のリクエストでアクセスできなくなります。所有者が離れた後も、権限を持つ閲覧者は共有済みの会話を読めますが、続行はできません。チームを削除しても、紐付けられた会話、コンテキスト、個人と共有の行は残り、アクセスは終了します。同名の新しいチームには新しい ID が付き、以前のアクセスは継承しません。
+
+紐付け済みの会話では公開リンクの発行も利用もできません。古いトークンも対象です。実行の読み取り、再生、再接続、新しいストリーム接続ではアクセスを再検証します。すでに開いているストリームは終了まで継続でき、途中で強制切断されません。選択と紐付けについては[チームコンテキスト](/docs/organizations-teams-permissions#team-context)を参照してください。
+
 ## 内容 {#covered}
 
 ユーザーが作成した作業を保存するすべてのテンプレートは、このモデルを使用します。具体的には:

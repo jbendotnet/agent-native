@@ -11,7 +11,7 @@ import type {
   DocumentPropertyType,
   DocumentPropertyValue,
 } from "@shared/api";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   DATABASE_NAVIGATION_STATE_MAX_BYTES,
@@ -119,6 +119,18 @@ import {
   type DatabaseSort,
   PERSONAL_DATABASE_VIEW_OVERRIDES_VERSION,
 } from "./DocumentDatabase";
+
+const toLocaleDateString = Date.prototype.toLocaleDateString;
+
+beforeAll(() => {
+  vi.spyOn(Date.prototype, "toLocaleDateString").mockImplementation(
+    function (this: Date, locales, options) {
+      return toLocaleDateString.call(this, locales ?? "en-US", options);
+    },
+  );
+});
+
+afterAll(() => vi.restoreAllMocks());
 
 function document(id: string, title: string): Document {
   return {

@@ -330,11 +330,82 @@ members. Owners and admins manage group membership, and one person can belong
 to multiple groups. Apps can use a group to share a resource that opts into
 group sharing or to limit access to a workspace connection.
 
-A group is an access list, not a child team. It has no separate organization or
-app roles, data boundary, or team-specific settings, instructions, context,
-skills, memory, or work view. A group share applies its resource role to every
-current group member. Access still requires membership in the resource's
-organization.
+A new group is an access list by default. Existing groups are not automatically
+converted to teams. An owner or admin explicitly marks a group with `isTeam: true`
+through `upsert-workspace-user-group`. Conversion preserves its ID, membership,
+resource grants, and connection grants. Omitting `isTeam` on an update preserves
+the current kind. A team remains inside its organization, not a separate tenant.
+
+Owners and admins create, convert, rename, and delete teams and replace the lead
+list. A team lead can add or remove ordinary members of their own team, but cannot
+change leads or organization roles. Lead authority does not grant access to private
+conversations. Group grants still require current organization membership.
+
+### Team selection and conversation context {#team-context}
+
+The active team is saved per user and organization. `get-active-workspace-team`
+restores and revalidates that choice. `set-active-workspace-team` accepts a team ID
+or `null` for personal context. Selection is not an access grant. It affects new
+conversations only. A conversation's team binding is immutable, so switching teams
+does not rebind an existing conversation. Legacy conversations with no team binding
+remain unbound.
+
+V1 team context supports instructions, skills, and memory only. It does not make
+arbitrary app rows team-owned. Bound-team context is loaded after organization
+context and before personal context in foreground and background runs. Resource
+operations use `scope: "team"` and `teamGroupId`. See [Agent resources](/docs/agent-resources).
+
+### Team actions {#team-actions}
+
+These registered actions use the same surface for the agent and client. The inputs
+below are object fields, not positional arguments.
+
+| Action                              | Input                                                                   | Result                                                                |
+| ----------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `upsert-workspace-user-group`       | `id?`, `name`, `memberEmails?` (default `[]`), `isTeam?`, `leadEmails?` | Group with `id`, `orgId`, members, team marker, leads, and timestamps |
+| `set-workspace-team-leads`          | `teamGroupId`, complete `leadEmails` list                               | Updated group                                                         |
+| `bulk-update-workspace-user-groups` | `groupId`, 1–100 `memberEmails`, `operation: "add" \| "remove"`         | Updated group                                                         |
+| `list-workspace-user-groups`        | `{}`                                                                    | Groups. Non-admins see member and lead lists only for their own teams |
+| `delete-workspace-user-group`       | `id`                                                                    | `{ id, deleted: true }`. Missing groups fail                          |
+| `get-active-workspace-team`         | `{}`                                                                    | `{ orgId, teamGroupId }`                                              |
+| `set-active-workspace-team`         | `teamGroupId: string \| null`                                           | `{ orgId, teamGroupId }`                                              |
+
+An owner or admin can create a team with current organization members:
+
+```ts
+import { callAction } from "@agent-native/core/client/hooks";
+
+await callAction("upsert-workspace-user-group", {
+  name: "Support",
+  memberEmails: ["lead@example.com", "member@example.com"],
+  isTeam: true,
+  leadEmails: ["lead@example.com"],
+});
+```
+
+Explicit conversion uses an existing group ID. Supply the intended member list
+because `memberEmails` defaults to an empty list. The caller must be an owner or
+admin, and must belong to the converted team to select it.
+
+```ts
+const groups = await callAction("list-workspace-user-groups", {});
+const group = groups.find((group) => group.name === "Support");
+if (!group) throw new Error("Support group not found");
+
+await callAction("upsert-workspace-user-group", {
+  id: group.id,
+  name: group.name,
+  memberEmails: group.memberEmails,
+  isTeam: true,
+});
+await callAction("set-active-workspace-team", { teamGroupId: null });
+```
+
+Deletion retains bound conversation rows, team context, personal resources, and
+historical shares, but ends access through the deleted team. Recreating a team with
+the same name creates a new ID. It does not restore the old team's access. See
+[Team conversations](/docs/sharing#team-conversations) for private-by-default,
+viewer-only sharing and connection-scoped revocation.
 
 See [Sharing & Privacy → Group grants](/docs/sharing#group-grants) and
 [Workspace Connections](/docs/workspace-connections) for details.

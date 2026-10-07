@@ -50,7 +50,7 @@ vi.mock("@agent-native/core/client/i18n", () => ({
   useT: () => (key: string, params?: { name: string }) =>
     `${key}${params ? `:${params.name}` : ""}`,
 }));
-vi.mock("../ui/dropdown-menu.js", () => ({
+vi.mock("@agent-native/toolkit/ui/dropdown-menu", () => ({
   DropdownMenuItem: ({
     children,
     disabled,
@@ -69,7 +69,8 @@ vi.mock("../ui/dropdown-menu.js", () => ({
   ),
 }));
 
-import { TeamShareMenu } from "./TeamShareMenu";
+import { TeamShareMenu as BarrelTeamShareMenu } from "../../chat-history/index.js";
+import { TeamShareMenu as LegacyTeamShareMenu } from "../../chat-history/TeamShareMenu.js";
 
 const labels = {
   unavailable: "chat.teamShareUnavailable",
@@ -80,6 +81,10 @@ const labels = {
 };
 
 describe("owner team share menu", () => {
+  it("keeps legacy focused and barrel exports on the same implementation", () => {
+    expect(BarrelTeamShareMenu).toBe(LegacyTeamShareMenu);
+  });
+
   let element: HTMLDivElement;
   let root: Root;
 
@@ -102,13 +107,13 @@ describe("owner team share menu", () => {
   function render() {
     act(() =>
       root.render(
-        <TeamShareMenu
+        <LegacyTeamShareMenu
           thread={
             {
               id: "thread-one",
               teamGroupId: "team-one",
               messageCount: 1,
-            } as Parameters<typeof TeamShareMenu>[0]["thread"]
+            } as Parameters<typeof LegacyTeamShareMenu>[0]["thread"]
           }
           closeMenu={vi.fn()}
           labels={labels}
@@ -153,13 +158,13 @@ describe("owner team share menu", () => {
     state.mutate.mockResolvedValueOnce({ shared: false });
     act(() =>
       root.render(
-        <TeamShareMenu
+        <LegacyTeamShareMenu
           thread={
             {
               id: "thread-one",
               teamGroupId: null,
               messageCount: 1,
-            } as Parameters<typeof TeamShareMenu>[0]["thread"]
+            } as Parameters<typeof LegacyTeamShareMenu>[0]["thread"]
           }
           closeMenu={vi.fn()}
           labels={labels}

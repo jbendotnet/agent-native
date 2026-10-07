@@ -21,6 +21,55 @@ Consulte [Implantações administradas](/docs/administered-deployments) para con
 
 Uma organização pode ter grupos reutilizáveis formados por seus membros atuais. Proprietários e administradores gerenciam a associação, e uma pessoa pode fazer parte de vários grupos. Os aplicativos podem usar um grupo para compartilhar um recurso compatível com compartilhamento por grupo ou limitar o acesso a uma conexão do workspace.
 
-Um grupo é uma lista de acesso, não uma equipe subordinada. Ele não tem funções próprias de organização ou aplicativo, limite de dados separado, nem configurações, instruções, contexto, habilidades, memória ou visualização de trabalho específicas da equipe. Ao compartilhar um recurso com um grupo, a mesma função do recurso se aplica a todos os membros atuais. O acesso ainda exige que a pessoa pertença à organização do recurso.
+Um grupo comum é uma lista de acesso. Somente `isTeam: true` o converte explicitamente em equipe. A conversão preserva ID, membros e permissões de recursos e conexões. Omitir `isTeam` na atualização preserva o tipo existente. Proprietários e administradores da organização criam, convertem, renomeiam e excluem equipes e definem líderes. Um líder só altera membros comuns da própria equipe. Não recebe funções da organização nem acesso a conversas privadas.
+
+### Contexto da equipe e vínculo das conversas {#team-context}
+
+A seleção é salva por usuário e organização. `get-active-workspace-team` restaura e valida a seleção. `set-active-workspace-team` seleciona uma equipe atual ou `null` para trabalho pessoal. Isso afeta somente conversas novas. O vínculo existente é imutável e conversas antigas sem equipe permanecem sem equipe. Selecionar uma equipe não concede acesso nem compartilha conversas.
+
+A V1 oferece instruções, habilidades e memória da equipe, não propriedade geral dos dados dos aplicativos. Os recursos usam `scope: "team"` e `teamGroupId`. Execuções em primeiro e segundo plano carregam o contexto da equipe vinculada depois do contexto da organização e antes do pessoal. Excluir a equipe preserva conversas vinculadas, contexto, recursos pessoais e registros de compartilhamento, mas encerra o acesso pela equipe. Outra equipe com o mesmo nome recebe um novo ID.
+
+### Ações de equipe {#team-actions}
+
+| Ação                                | Entrada                                                   | Resultado                                                                                                          |
+| ----------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `upsert-workspace-user-group`       | `{ id?, name, memberEmails?: [], isTeam?, leadEmails? }`  | Grupo com `id`, `orgId`, `name`, `memberEmails`, `isTeam`, `leadEmails` e metadados. Membros por padrão: `[]`      |
+| `set-workspace-team-leads`          | `{ teamGroupId, leadEmails }`                             | Grupo atualizado. Substitui a lista completa de líderes                                                            |
+| `bulk-update-workspace-user-groups` | `{ groupId, memberEmails, operation: "add" \| "remove" }` | Grupo atualizado. De 1 a 100 e-mails                                                                               |
+| `list-workspace-user-groups`        | `{}`                                                      | Grupos. Listas de membros e líderes ocultas exceto para proprietários, administradores e membros da própria equipe |
+| `delete-workspace-user-group`       | `{ id }`                                                  | `{ id, deleted: true }`. Falha se não existir                                                                      |
+| `set-active-workspace-team`         | `{ teamGroupId: string \| null }`                         | `{ orgId, teamGroupId }` após validar a participação                                                               |
+| `get-active-workspace-team`         | `{}`                                                      | `{ orgId, teamGroupId }` e seleção restaurada no estado do aplicativo                                              |
+
+Um proprietário ou administrador pode criar uma equipe. Também deve ser membro para selecioná-la:
+
+```ts
+import { callAction } from "@agent-native/core/client/hooks";
+
+await callAction("upsert-workspace-user-group", {
+  name: "Support",
+  isTeam: true,
+  memberEmails: ["lead@example.com", "member@example.com"],
+  leadEmails: ["lead@example.com"],
+});
+```
+
+A conversão de um grupo existente preserva explicitamente seus membros. Depois é possível voltar ao trabalho pessoal:
+
+```ts
+const groups = await callAction("list-workspace-user-groups", {});
+const group = groups.find((group) => group.name === "Support");
+if (!group) throw new Error("Grupo Support não encontrado");
+
+await callAction("upsert-workspace-user-group", {
+  id: group.id,
+  name: group.name,
+  memberEmails: group.memberEmails,
+  isTeam: true,
+});
+await callAction("set-active-workspace-team", { teamGroupId: null });
+```
+
+As conversas continuam pessoais e privadas por padrão. Consulte [Conversas de equipe](/docs/sharing#team-conversations) para compartilhamento somente de leitura.
 
 Consulte [Compartilhamento e privacidade → Compartilhamento com grupos](/docs/sharing#group-grants) e [Conexões do workspace](/docs/workspace-connections) para saber mais.

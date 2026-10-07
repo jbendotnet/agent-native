@@ -1,7 +1,24 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import { drizzle } from "drizzle-orm/pglite";
 import { describe, expect, it, vi } from "vitest";
+
+let lifecycleDb: Awaited<ReturnType<typeof createTestPglite>>["db"] | undefined;
+
+vi.mock("../db/create-get-db.js", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("../db/create-get-db.js")>();
+  return {
+    ...original,
+    createGetDb: <T extends Record<string, unknown>>(schema: T) => {
+      const getOriginal = original.createGetDb(schema);
+      return () =>
+        lifecycleDb ? drizzle({ client: lifecycleDb, schema }) : getOriginal();
+    },
+  };
+});
 
 vi.mock("../db/client.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../db/client.js")>();
@@ -14,6 +31,14 @@ vi.mock("../db/client.js", async (importOriginal) => {
 });
 
 import { createTestPglite } from "../a2a/test-pglite.js";
+import { AGENT_AUDIT_LOG_CREATE_SQL } from "../audit/store.js";
+import { CHAT_THREAD_SCHEMA_MIGRATIONS } from "../chat-threads/schema-migrations.js";
+import {
+  createThread,
+  getThreadByShareToken,
+  registerChatThreadsShareable,
+  resolveThreadAccess,
+} from "../chat-threads/store.js";
 import {
   createDbExec,
   getDbExec,
@@ -22,9 +47,20 @@ import {
 } from "../db/client.js";
 import { runMigrations } from "../db/migrations.js";
 import {
+  listResources,
+  readResource,
+  writeResource,
+} from "../resources/script-helpers.js";
+import { authorizedTeamResourceOwner } from "../resources/team-access.js";
+import { runWithRequestContext } from "../server/request-context.js";
+import deleteGroup from "./actions/delete-workspace-user-group.js";
+import upsertGroup from "./actions/upsert-workspace-user-group.js";
+import { upsertWorkspaceUserGroup } from "./groups.js";
+import {
   WORKSPACE_CONNECTIONS_MIGRATIONS,
   WORKSPACE_CONNECTIONS_MIGRATIONS_TABLE,
 } from "./migrations.js";
+import { resolveWorkspaceConnectionForApp } from "./store.js";
 
 function read(relative: string): string {
   return readFileSync(
@@ -58,6 +94,22 @@ function pgliteExec(
       };
     },
     async close() {},
+    transaction: (fn) =>
+      pglite.db.transaction((tx) =>
+        fn({
+          execute: async (statement) => {
+            const sql =
+              typeof statement === "string" ? statement : statement.sql;
+            const args =
+              typeof statement === "string" ? [] : (statement.args ?? []);
+            const result = await tx.query(postgresSql(sql), args);
+            return {
+              rows: result.rows,
+              rowsAffected: result.affectedRows ?? result.rowCount ?? 0,
+            };
+          },
+        }),
+      ),
   };
 }
 
@@ -320,6 +372,352 @@ describe("WORKSPACE_CONNECTIONS_MIGRATIONS", () => {
         .all();
       expect(named).toEqual([{ name: "workspace-user-groups-team-fields" }]);
     } finally {
+      vi.clearAllMocks();
+      await pglite.close();
+    }
+  }, 30_000);
+
+  it("retains migrated legacy grants through conversion and bound context through real team deletion", async () => {
+    const pglite = await createTestPglite();
+    const exec = pgliteExec(pglite);
+    const orgId = "org-old";
+    const owner = "owner@example.com";
+    const viewer = "viewer@example.com";
+    const token = "legacy-public-token";
+    const as = <T>(email: string, fn: () => Promise<T>) =>
+      runWithRequestContext({ userEmail: email, orgId }, fn);
+    try {
+      for (const migration of WORKSPACE_CONNECTIONS_MIGRATIONS) {
+        if (migration.version > 14) break;
+        const sql =
+          typeof migration.sql === "string"
+            ? migration.sql
+            : (migration.sql.postgres ?? "");
+        if (sql) await pglite.exec(sql);
+      }
+      for (const migration of CHAT_THREAD_SCHEMA_MIGRATIONS) {
+        if (migration.version > 4) break;
+        const sql =
+          typeof migration.sql === "string"
+            ? migration.sql
+            : (migration.sql.postgres ?? "");
+        if (sql) await pglite.exec(sql);
+      }
+      await pglite.exec(`CREATE TABLE org_members (
+        id TEXT PRIMARY KEY, org_id TEXT, email TEXT, role TEXT,
+        joined_at BIGINT, federation_removal_pending_at BIGINT
+      )`);
+      await pglite.query(
+        "INSERT INTO org_members (id, org_id, email, role, joined_at) VALUES ('owner-member', ?, ?, 'owner', 1), ('viewer-member', ?, ?, 'member', 1)",
+        [orgId, owner, orgId, viewer],
+      );
+      await pglite.exec(`
+        INSERT INTO workspace_user_groups (id, org_id, name, member_emails_json)
+          VALUES ('old-group', 'org-old', 'Legacy', '["owner@example.com","viewer@example.com"]');
+        INSERT INTO workspace_connections (id, provider, org_id, allowed_user_groups_json)
+          VALUES ('old-connection', 'github', 'org-old', '["old-group"]');
+        INSERT INTO workspace_connection_grants (id, connection_id, provider, app_id, org_id)
+          VALUES ('old-grant', 'old-connection', 'github', 'dispatch', 'org-old');
+        INSERT INTO chat_threads (id, owner_email, title, thread_data, created_at, updated_at, org_id, share_token_hash)
+          VALUES ('old-thread', 'owner@example.com', 'Legacy transcript', '{"messages":[{"text":"retained"}],"_share":{"tokenHash":"${createHash("sha256").update(token).digest("hex")}"}}', 1, 1, 'org-old', '${createHash("sha256").update(token).digest("hex")}');
+        INSERT INTO chat_thread_shares (id, resource_id, principal_type, principal_id, role, created_by)
+          VALUES ('old-share', 'old-thread', 'group', 'old-group', 'viewer', 'owner@example.com');
+      `);
+      const before = await Promise.all([
+        pglite.query(
+          "SELECT id, org_id, name, member_emails_json FROM workspace_user_groups",
+        ),
+        pglite.query(
+          "SELECT id, allowed_user_groups_json FROM workspace_connections",
+        ),
+        pglite.query(
+          "SELECT id, connection_id, app_id FROM workspace_connection_grants",
+        ),
+        pglite.query(
+          "SELECT id, title, thread_data, share_token_hash FROM chat_threads",
+        ),
+        pglite.query(
+          "SELECT id, resource_id, principal_id, role FROM chat_thread_shares",
+        ),
+      ]);
+
+      const teamMigration = WORKSPACE_CONNECTIONS_MIGRATIONS.find(
+        (migration) => migration.version === 15,
+      );
+      const bindingMigration = CHAT_THREAD_SCHEMA_MIGRATIONS.find(
+        (migration) => migration.version === 5,
+      );
+      if (!teamMigration || !bindingMigration)
+        throw new Error("Missing team migrations");
+      await pglite.exec(
+        typeof teamMigration.sql === "string"
+          ? teamMigration.sql
+          : (teamMigration.sql.postgres ?? ""),
+      );
+      await pglite.exec(
+        typeof bindingMigration.sql === "string"
+          ? bindingMigration.sql
+          : (bindingMigration.sql.postgres ?? ""),
+      );
+      const after = await Promise.all([
+        pglite.query(
+          "SELECT id, org_id, name, member_emails_json FROM workspace_user_groups",
+        ),
+        pglite.query(
+          "SELECT id, allowed_user_groups_json FROM workspace_connections",
+        ),
+        pglite.query(
+          "SELECT id, connection_id, app_id FROM workspace_connection_grants",
+        ),
+        pglite.query(
+          "SELECT id, title, thread_data, share_token_hash FROM chat_threads",
+        ),
+        pglite.query(
+          "SELECT id, resource_id, principal_id, role FROM chat_thread_shares",
+        ),
+      ]);
+      expect(after.map((result) => result.rows)).toEqual(
+        before.map((result) => result.rows),
+      );
+      expect(
+        (
+          await pglite.query(
+            "SELECT is_team, lead_emails_json FROM workspace_user_groups",
+          )
+        ).rows,
+      ).toEqual([{ is_team: false, lead_emails_json: "[]" }]);
+      expect(
+        (
+          await pglite.query(
+            "SELECT team_group_id FROM chat_threads WHERE id = 'old-thread'",
+          )
+        ).rows,
+      ).toEqual([{ team_group_id: null }]);
+      vi.mocked(getDbExec).mockReturnValue(exec);
+      vi.mocked(createDbExec).mockResolvedValue(exec);
+      lifecycleDb = pglite.db;
+      await pglite.exec(AGENT_AUDIT_LOG_CREATE_SQL);
+      registerChatThreadsShareable();
+      const connection = () =>
+        as(viewer, () =>
+          resolveWorkspaceConnectionForApp({
+            appId: "dispatch",
+            connectionId: "old-connection",
+          }),
+        );
+      const sharedThread = () =>
+        as(viewer, () =>
+          resolveThreadAccess(viewer, "old-thread", "viewer", { orgId }),
+        );
+      expect((await connection()).available).toBe(true);
+      expect(await sharedThread()).toMatchObject({
+        id: "old-thread",
+        teamGroupId: null,
+      });
+      expect((await as(owner, () => getThreadByShareToken(token)))?.id).toBe(
+        "old-thread",
+      );
+
+      const converted = await as(owner, () =>
+        upsertGroup.run(
+          {
+            id: "old-group",
+            name: "Legacy",
+            memberEmails: [owner, viewer],
+            isTeam: true,
+          },
+          { userEmail: owner, orgId },
+        ),
+      );
+      expect(converted).toMatchObject({ id: "old-group", isTeam: true });
+      expect((await connection()).available).toBe(true);
+      expect(await sharedThread()).toMatchObject({
+        id: "old-thread",
+        teamGroupId: null,
+      });
+      expect((await as(owner, () => getThreadByShareToken(token)))?.id).toBe(
+        "old-thread",
+      );
+      expect(
+        (await pglite.query("SELECT id, principal_id FROM chat_thread_shares"))
+          .rows,
+      ).toEqual([{ id: "old-share", principal_id: "old-group" }]);
+      expect(
+        (
+          await pglite.query(
+            "SELECT id, allowed_user_groups_json FROM workspace_connections",
+          )
+        ).rows,
+      ).toEqual([
+        { id: "old-connection", allowed_user_groups_json: '["old-group"]' },
+      ]);
+
+      const teamOwner = await as(viewer, () =>
+        authorizedTeamResourceOwner("old-group", orgId, viewer),
+      );
+      const paths = ["AGENTS.md", "skills/review/SKILL.md", "memory/MEMORY.md"];
+      for (const path of paths) {
+        await as(viewer, () =>
+          writeResource(path, `Legacy ${path}`, {
+            scope: "team",
+            teamGroupId: "old-group",
+          }),
+        );
+        expect(
+          await as(owner, () =>
+            readResource(path, { scope: "team", teamGroupId: "old-group" }),
+          ),
+        ).toBe(`Legacy ${path}`);
+      }
+      const resources = (
+        await pglite.query(
+          "SELECT id, owner, path, content FROM resources WHERE owner = ? ORDER BY path",
+          [teamOwner],
+        )
+      ).rows;
+      await as(owner, () =>
+        writeResource("memory/personal.md", "Personal context"),
+      );
+      const personal = (
+        await pglite.query(
+          "SELECT id, owner, path, content FROM resources WHERE owner = ?",
+          [owner],
+        )
+      ).rows;
+      expect(
+        await as(viewer, () =>
+          listResources(undefined, { scope: "team", teamGroupId: "old-group" }),
+        ),
+      ).toHaveLength(paths.length);
+      await as(owner, () =>
+        createThread(owner, {
+          id: "bound-after-conversion",
+          orgId,
+          teamGroupId: "old-group",
+        }),
+      );
+      const retained = (
+        await pglite.query(
+          "SELECT id, owner_email, team_group_id, thread_data FROM chat_threads ORDER BY id",
+        )
+      ).rows;
+      expect(retained).toMatchObject([
+        { id: "bound-after-conversion", team_group_id: "old-group" },
+        { id: "old-thread", team_group_id: null },
+      ]);
+      expect(
+        (
+          await as(owner, () =>
+            resolveThreadAccess(owner, "bound-after-conversion", "owner", {
+              orgId,
+            }),
+          )
+        )?.id,
+      ).toBe("bound-after-conversion");
+      expect(
+        await as(viewer, () =>
+          authorizedTeamResourceOwner("old-group", orgId, viewer),
+        ),
+      ).toBe(teamOwner);
+
+      expect(
+        await as(owner, () =>
+          deleteGroup.run({ id: "old-group" }, { userEmail: owner, orgId }),
+        ),
+      ).toEqual({ id: "old-group", deleted: true });
+      expect(
+        (
+          await pglite.query(
+            "SELECT id, owner_email, team_group_id, thread_data FROM chat_threads ORDER BY id",
+          )
+        ).rows,
+      ).toEqual(retained);
+      expect(
+        (
+          await pglite.query(
+            "SELECT id, owner, path, content FROM resources WHERE owner = ? ORDER BY path",
+            [teamOwner],
+          )
+        ).rows,
+      ).toEqual(resources);
+      expect(
+        (
+          await pglite.query(
+            "SELECT id, owner, path, content FROM resources WHERE owner = ?",
+            [owner],
+          )
+        ).rows,
+      ).toEqual(personal);
+      await expect(
+        as(viewer, () =>
+          authorizedTeamResourceOwner("old-group", orgId, viewer),
+        ),
+      ).rejects.toThrow();
+      await expect(
+        as(viewer, () =>
+          readResource(paths[0], { scope: "team", teamGroupId: "old-group" }),
+        ),
+      ).rejects.toThrow();
+      await expect(
+        as(owner, () =>
+          listResources(undefined, { scope: "team", teamGroupId: "old-group" }),
+        ),
+      ).rejects.toThrow();
+      expect(
+        await as(owner, () =>
+          resolveThreadAccess(owner, "bound-after-conversion", "owner", {
+            orgId,
+          }),
+        ),
+      ).toBeNull();
+      expect(
+        await as(owner, () =>
+          resolveThreadAccess(owner, "bound-after-conversion", "editor", {
+            orgId,
+          }),
+        ),
+      ).toBeNull();
+      expect(
+        await as(owner, () =>
+          resolveThreadAccess(owner, "old-thread", "owner", { orgId }),
+        ),
+      ).toMatchObject({ id: "old-thread", teamGroupId: null });
+      expect(await sharedThread()).toBeNull();
+      expect((await as(owner, () => getThreadByShareToken(token)))?.id).toBe(
+        "old-thread",
+      );
+      expect((await connection()).available).toBe(false);
+      expect(
+        (await pglite.query("SELECT id, principal_id FROM chat_thread_shares"))
+          .rows,
+      ).toEqual([{ id: "old-share", principal_id: "old-group" }]);
+      await expect(
+        as(owner, () =>
+          upsertWorkspaceUserGroup({
+            id: "old-group",
+            name: "Legacy",
+            memberEmails: [owner],
+            isTeam: true,
+          }),
+        ),
+      ).rejects.toThrow(/not found/);
+      const replacement = await as(owner, () =>
+        upsertWorkspaceUserGroup({
+          name: "Legacy",
+          memberEmails: [owner],
+          isTeam: true,
+        }),
+      );
+      expect(replacement.id).not.toBe("old-group");
+      expect(
+        await as(owner, () =>
+          resolveThreadAccess(owner, "bound-after-conversion", "owner", {
+            orgId,
+          }),
+        ),
+      ).toBeNull();
+    } finally {
+      lifecycleDb = undefined;
       vi.clearAllMocks();
       await pglite.close();
     }

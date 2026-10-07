@@ -2,7 +2,7 @@
 
 ## Problem / Goal
 
-Meet R-03 after [acceptance proof](01-acceptance-matrix.md). Read [epic](../epic.md), [requirements](../requirements.md), and [ADR](../../../../design/organization-team-tenancy.md). Document implemented contracts, not roadmap promises.
+Meet R-03 after [acceptance proof](../completed/01-acceptance-matrix.md). Read [epic](../epic.md), [requirements](../requirements.md), and [ADR](../../../../design/organization-team-tenancy.md). Document implemented contracts, not roadmap promises.
 
 ## Solution
 
@@ -29,3 +29,21 @@ Update version-matched public reference docs and release metadata for the actual
 ## Verification
 
 All ten ADR rows from child 01 remain passing. Docs/locales and changesets correspond to actual changed APIs and behavior. Separate local verified status from CI/deployment. If shipping is later requested, load `ship`; use `ship-and-monitor` only for requested or concretely necessary post-merge proof. Never claim beta/production health from local checks alone.
+
+## Execution record
+
+Completed the scoped R-03 documentation and local release-artifact checks. See
+[release readiness](../release-readiness.md) for the changed references, all ten
+locale updates, retained legacy-import migration guide, exact verification
+commands and results, independent baseline-preservation checks, and limitations.
+
+Independent review findings on example membership assumptions, missing group
+lookups, and formatting were repaired and rechecked. The supported docs
+validation, affected builds/typechecks, ten-row matrix, compatibility tests,
+formatting, both i18n guards, and all 85 stacked-base guards passed. Failed
+standalone MDX probes tested a different format and remain explicitly recorded.
+
+The 16 earlier Content DB-suite failures remain unresolved. No browser, live
+PostgreSQL, CI, or deployment result is claimed. Child 1 evidence and changeset
+were preserved. Only this child moves to inner `completed/`. The outer epic stays
+in progress, and no commit, push, PR, merge, publication, or deployment was made.

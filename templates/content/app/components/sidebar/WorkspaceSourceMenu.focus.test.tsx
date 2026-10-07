@@ -62,13 +62,14 @@ describe("WorkspaceSourceMenu focus", () => {
 
     await act(async () => {
       newWorkspace.click();
-      await new Promise((resolve) => requestAnimationFrame(resolve));
     });
-
-    const input = document.querySelector<HTMLInputElement>(
-      'input[aria-label="sidebar.workspaceName"]',
-    );
-    expect(input).not.toBeNull();
-    expect(document.activeElement).toBe(input);
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      const input = document.querySelector<HTMLInputElement>(
+        'input[aria-label="sidebar.workspaceName"]',
+      );
+      expect(input).not.toBeNull();
+      expect(document.activeElement).toBe(input);
+    });
   });
 });

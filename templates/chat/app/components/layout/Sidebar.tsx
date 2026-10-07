@@ -1,5 +1,11 @@
 import { useT } from "@agent-native/core/client/i18n";
 import {
+  ChatHistoryList,
+  type ChatHistoryItem,
+  type ChatHistorySection,
+} from "@agent-native/toolkit/app/chat-history/ChatHistoryList";
+import { TeamShareMenu } from "@agent-native/toolkit/app/chat-history/TeamShareMenu";
+import {
   navigateWithAgentChatViewTransition,
   useAgentChatRunningThreads,
   useChatThreads,
@@ -8,12 +14,6 @@ import {
 import { OrgSwitcher } from "@agent-native/toolkit/app/org";
 import { openCommandMenu } from "@agent-native/toolkit/app/shared";
 import { AgentNativeIcon } from "@agent-native/toolkit/app/shared/AgentNativeIcon";
-import { TeamShareMenu } from "@agent-native/toolkit/chat-history";
-import {
-  ChatHistoryList,
-  type ChatHistoryItem,
-  type ChatHistorySection,
-} from "@agent-native/toolkit/chat-history/ChatHistoryList";
 import {
   IconApps,
   IconClock,

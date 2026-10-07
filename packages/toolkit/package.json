@@ -48,6 +48,20 @@
       "import": "./dist/app/chat/index.js",
       "default": "./dist/app/chat/index.js"
     },
+    "./app/chat-history": {
+      "types": "./dist/app/chat-history/index.d.ts",
+      "browser": "./dist/app/chat-history/index.js",
+      "development": "./dist/app/chat-history/index.js",
+      "import": "./dist/app/chat-history/index.js",
+      "default": "./dist/app/chat-history/index.js"
+    },
+    "./app/chat-history/*": {
+      "types": "./dist/app/chat-history/*.d.ts",
+      "browser": "./dist/app/chat-history/*.js",
+      "development": "./dist/app/chat-history/*.js",
+      "import": "./dist/app/chat-history/*.js",
+      "default": "./dist/app/chat-history/*.js"
+    },
     "./app/org": {
       "types": "./dist/app/org/index.d.ts",
       "browser": "./dist/app/org/index.js",

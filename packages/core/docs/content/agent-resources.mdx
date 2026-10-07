@@ -86,10 +86,10 @@ Same capabilities. Different economics. See [Templates](/docs/cloneable-saas) fo
 
 ## Overview {#overview}
 
-Resources have three runtime scopes:
+Resources have three base runtime scopes:
 
 - **Personal** — scoped to a single user (their email). Good for preferences, notes, and per-user context.
-- **Shared / organization** — visible to all users in the app or organization. Good for app/team instructions, skills, and shared config.
+- **Shared / organization** — visible to all users in the app or organization. Good for app instructions, skills, and shared config.
 - **Workspace** — inherited global defaults managed from Dispatch Resources. Good for company facts, positioning, brand guidelines, global guardrails, workspace-wide skills, and shared MCP servers. Apps read these at runtime; they are not copied into each app.
 
 The in-app Resources tab shows all three scopes. Personal and shared/organization resources are editable there. Workspace-scope resources are read-only in app panels and edited centrally from Dispatch, so every app sees the same canonical files without a sync step.
@@ -104,7 +104,22 @@ The canonical paths that control how the agent uses each resource:
 | Custom agent profiles   | `agents/<slug>.md`                      | Available as reusable local agent profiles      |
 | Shared HTTP MCP servers | `mcp-servers/<slug>.json`               | Loaded into granted apps' MCP tool registry     |
 
-These paths apply across all three scopes — workspace, organization/app, and personal. The later scope wins when the same path exists at multiple levels.
+These paths apply across the three base scopes: workspace, organization/app, and personal. The later scope wins when the same path exists at multiple levels.
+
+### Bound-team context {#team-resources}
+
+V1 adds a distinct `team` scope for instructions, skills, and memory only. It does
+not make arbitrary files, agents, MCP servers, jobs, or app data team-owned.
+Team resources require `scope: "team"` and `teamGroupId`. They apply only to
+conversations bound to that team, not to every conversation of a current member.
+
+Foreground and background runs load inherited workspace/app defaults, then
+organization context, bound-team context, and personal context. Bound-team
+`AGENTS.md`, `instructions/*.md`, and `memory/MEMORY.md` are required context.
+Team skills are indexed for on-demand reading. A personal skill with the same
+name takes precedence. Team memory is separate from shared `LEARNINGS.md` and
+personal `memory/MEMORY.md`. Membership is checked before team context is loaded.
+See [Team context and conversation binding](/docs/organizations-teams-permissions#team-context).
 
 ## Take resources with you {#resource-pack}
 
@@ -219,7 +234,7 @@ agents/<slug>.md                # reusable custom agent profiles
 
 Keep `context/` files factual and easy to skim. Put rules that must apply every turn in `instructions/guardrails.md`. Use `skills/company-voice/SKILL.md` when the agent should deliberately transform or review copy in the company's voice.
 
-To override a global default for one app or team, create a shared/organization resource in that app with the same path. To override it for one person, create a personal resource with the same path. Do not copy the workspace file into every app; the runtime resolves the stack on read:
+To override a global default for one app, create a shared/organization resource in that app with the same path. To override it for one person, create a personal resource with the same path. The runtime resolves the stack on read without copying workspace files into each app:
 
 ```text
 workspace context/brand.md
@@ -266,7 +281,7 @@ At the start of every conversation, the agent automatically reads:
 
 ### AGENTS.md and instructions {#agents-md}
 
-`AGENTS.md` is an instruction resource seeded by default and loaded every turn from workspace, shared/organization, and personal scopes in that order — workspace for company-wide defaults, shared/app for team rules, personal for per-user preferences. Files under `instructions/` are separate guardrail documents that also apply every turn (compliance rules, escalation policy, brand voice) and follow the same precedence. Both normal chat and integration-triggered runs load them before responding.
+`AGENTS.md` is an instruction resource seeded by default. Every turn loads inherited workspace/app defaults, organization instructions, bound-team instructions when applicable, and personal instructions, in that order. Files under `instructions/` follow the same precedence. Foreground and background runs load this context before responding. A team selection does not change an existing conversation's binding.
 
 ```text
 AGENTS.md
@@ -280,12 +295,12 @@ Reusable company context lives under `context/` (personas, positioning, product 
 
 ### Memory {#memory}
 
-Agent resources have two current memory surfaces:
+The base scopes have two memory surfaces:
 
 - `LEARNINGS.md` in **Shared** scope for project-wide conventions, corrections, and durable team knowledge.
 - `memory/MEMORY.md` in **Personal** scope for structured memory about the current user.
 
-The resource system also seeds a personal `LEARNINGS.md` for compatibility with older workspaces, but the chat preload path is shared `LEARNINGS.md` plus personal `memory/MEMORY.md`.
+The resource system also seeds a personal `LEARNINGS.md` for compatibility with older workspaces. Chat preloads shared `LEARNINGS.md` and personal `memory/MEMORY.md`, plus bound-team `memory/MEMORY.md` when applicable.
 
 **What gets saved.** When you correct the agent ("always use X instead of Y"), share a preference ("I prefer concise answers"), or reveal context ("my team calls this 'the dispatch layer'"), the agent captures that learning so it doesn't repeat the mistake or re-ask. Project-wide learnings go in shared `LEARNINGS.md`; user-specific memory goes under `memory/`. The `capture-learnings` skill spells out when and how.
 
@@ -322,7 +337,7 @@ Every one of these surfaces — `AGENTS.md`, skills, memory, custom agents, MCP 
         },
         {
           name: "scope",
-          type: "workspace | shared | personal",
+          type: "workspace | shared | team | personal",
           note: "Which level this row lives at",
         },
         {

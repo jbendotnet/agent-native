@@ -55,6 +55,7 @@ describe("runScript package actions", () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "an-runner-"));
+    fs.writeFileSync(path.join(tmpDir, "package.json"), '{"type":"module"}');
     fs.mkdirSync(path.join(tmpDir, "actions"), { recursive: true });
     fs.writeFileSync(
       path.join(tmpDir, "actions", "_cli-bootstrap.ts"),

@@ -9,7 +9,7 @@ This files the six-epic roadmap for the [accepted ADR](../../design/organization
 ## Assumptions
 
 - Core owns the tenancy contract. Shared Toolkit controls consume it, so this roadmap lives in Core's docs scope rather than creating separate product roadmaps.
-- The ADR controls product decisions; requirements IDs below make the work traceable. Epic 1's completed children record delivered identity behavior. Epic 2 records verified authorization behavior. Epic 3 is complete with verified resource operations and bound prompt context. Epic 4 is complete with verified selection and management UX; Epics 5–6 and full V1 acceptance remain pending.
+- The ADR controls product decisions; requirements IDs below make the work traceable. Epic 1's completed children record delivered identity behavior. Epic 2 records verified authorization behavior. Epic 3 is complete with verified resource operations and bound prompt context. Epic 4 is complete with verified selection and management UX. Epic 5 is complete with verified sharing behavior. Epic 6 is complete: both the local acceptance matrix and documentation/release-readiness handoff have independent proof. The separate Content DB suite retains 16 unresolved failures; release and deployment approval are not implied.
 - No new dependency, general resource ownership model, team/member table, resource move, successor ownership, automatic share, or continuous stream revocation is needed.
 
 ## Done condition
@@ -22,7 +22,7 @@ Use `verifying-changes` and `adding-tests-and-ci` for Core runtime and PostgreSQ
 
 ## Lifecycle notes
 
-- This file remains in `todo/` because execution was requested for individual child plans, not this whole workflow. Epic 1's status records reopening at the user's request on 2026-10-02, although its directory is currently filed in outer `completed/`. Its storage, role-policy, and lifecycle children are implemented and independently verified in inner `completed/`. Epic 2 was completed at the user's request on 2026-10-03 and is filed in outer `completed/`, preserving its three completed children. Epic 3 was completed at the user's request on 2026-10-03 and is filed in outer `completed/`, preserving both independently verified children; its proof gates satisfy the context prerequisite for Epic 4. Epic 4 was completed at the user's request on 2026-10-06 and is filed in outer `completed/`, preserving its three completed children and handover. Its proof gates clear the selection/management prerequisite for Epic 5. Epics 5–6 remain pending. Retained-binding integration proof remains required in Epic 6 before release.
+- This file remains in `todo/` because execution was requested for individual child plans, not this whole workflow. Epic 1's status records reopening at the user's request on 2026-10-02, although its directory is currently filed in outer `completed/`. Its storage, role-policy, and lifecycle children are implemented and independently verified in inner `completed/`. Epic 2 was completed at the user's request on 2026-10-03 and is filed in outer `completed/`, preserving its three completed children. Epic 3 was completed at the user's request on 2026-10-03 and is filed in outer `completed/`, preserving both independently verified children; its proof gates satisfy the context prerequisite for Epic 4. Epic 4 was completed at the user's request on 2026-10-06 and is filed in outer `completed/`, preserving its three completed children and handover. Its proof gates clear the selection/management prerequisite for Epic 5, which is complete. Epic 6 was completed at the user's request on 2026-10-08 and is filed in outer `completed/`, preserving both completed children and their evidence. Its scoped local handoff does not claim unrestricted release approval or deployed health.
 - Before execution, load and follow `workflow`, `execute-plan`, `plans-organisation`, and `subagent-delegation`. Move this workflow to `in-progress/`.
 - The first child execution moves its whole epic to outer `in-progress/` and that child to inner `in-progress/`. Repair relative links after lifecycle moves, including this index. Move verified children to inner `completed/`; do not mark the entire epic completed without explicit user declaration.
 - Each delegation MUST read the current child plan, its parent `epic.md`, `requirements.md`, and the ADR in full. The leader retains sequencing, documentation, state changes, and signoff.
@@ -62,13 +62,22 @@ Execute whole epics in numerical order: identity → authorization → context �
 
 5. <tranche id="explicit-team-work" owner="leader">
 
-   [Epic 5](../../plans/completed/organization-team-tenancy-05-sharing/epic.md) is complete: owner-only viewer grant/revoke, paginated explicit-share discovery, shared Toolkit controls, and read-only linked-run UI. Independent local proof passed 224 Core tests, 45 Toolkit tests, 27 Chat tests, three PostgreSQL contention tests, and authenticated browser/action/SQL checks for private-work exclusion and lifecycle denial. The follow-on [PR #8](https://github.com/jbendotnet/agent-native/pull/8) is stacked on PR #6 and remains unmerged. Hosted and full V1 release acceptance remain Epic 6 gates.
+   [Epic 5](../../plans/completed/organization-team-tenancy-05-sharing/epic.md) is complete: owner-only viewer grant/revoke, paginated explicit-share discovery, shared Toolkit controls, and read-only linked-run UI. Independent local proof passed 224 Core tests, 45 Toolkit tests, 27 Chat tests, three PostgreSQL contention tests, and authenticated browser/action/SQL checks for private-work exclusion and lifecycle denial. The follow-on [PR #9](https://github.com/jbendotnet/agent-native/pull/9) is stacked on PR #6 and remains unmerged. Epic 6 records the combined local handoff separately from hosted and full V1 release acceptance.
 
    </tranche>
 
 6. <tranche id="compatibility-and-release-proof" owner="leader">
 
-   MUST load and follow `execute-plan` for [Epic 6](../../plans/wip/organization-team-tenancy-06-compatibility-release/epic.md). Consolidate actor and revocation evidence, docs/translations, changesets, and relevant checks. Shipping is a separate authorized action through `ship`; this workflow neither requests a merge nor claims deployed health.
+   [Epic 6](../../plans/completed/organization-team-tenancy-06-compatibility-release/epic.md) is complete. It consolidates actor and revocation evidence, docs/translations, changesets, and relevant checks. Shipping is a separate authorized action; this workflow neither requests a merge nor claims deployed health.
+
+   Child 1 is complete with independently passing local evidence for all ten
+   ADR criteria (355 Core and 5 Toolkit matrix tests). [Acceptance evidence](../../plans/completed/organization-team-tenancy-06-compatibility-release/acceptance-evidence.md)
+   records the recovery review, successful complete fast-suite run, typecheck,
+   85 child-base guards, and explicit performance checks. Child 2 is complete;
+   [release readiness](../../plans/completed/organization-team-tenancy-06-compatibility-release/release-readiness.md)
+   records the public docs, all ten locales, package/docs builds, focused tests,
+   and independent checks. Sixteen separate Content DB failures remain unresolved.
+   No unrestricted release approval or deployment is claimed.
 
    </tranche>
 

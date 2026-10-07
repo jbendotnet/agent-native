@@ -36,7 +36,7 @@ describe("exported harness background access", () => {
     ]);
     registerChatThreadsShareable();
     await db.execute({
-      sql: "CREATE TABLE IF NOT EXISTS org_members (org_id TEXT, email TEXT, role TEXT DEFAULT 'member', federation_removal_pending_at BIGINT)",
+      sql: "CREATE TABLE IF NOT EXISTS org_members (id TEXT PRIMARY KEY, org_id TEXT, email TEXT, role TEXT DEFAULT 'member', federation_removal_pending_at BIGINT)",
       args: [],
     });
     await db.execute({
@@ -46,8 +46,8 @@ describe("exported harness background access", () => {
     try {
       for (const email of [owner, viewer]) {
         await db.execute({
-          sql: "INSERT INTO org_members (org_id, email) VALUES (?, ?)",
-          args: [orgId, email],
+          sql: "INSERT INTO org_members (id, org_id, email) VALUES (?, ?, ?)",
+          args: [`member-${orgId}-${email}`, orgId, email],
         });
       }
       await db.execute({

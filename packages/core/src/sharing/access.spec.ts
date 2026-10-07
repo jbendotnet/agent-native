@@ -597,36 +597,6 @@ describe("shareable resource access helpers", () => {
       titleColumn: "title",
       getDb: () => db,
     });
-    await runWithRequestContext({ userEmail: ownerEmail, orgId }, () =>
-      withDbExec(dbExec, async () => {
-        await expect(
-          shareResource.run(
-            {
-              resourceType: `${resourceType}-no-group`,
-              resourceId: "shared-group",
-              principalType: "group",
-              principalId: "gtm-team",
-              role: "viewer",
-              notify: false,
-            },
-            { userEmail: ownerEmail, orgId },
-          ),
-        ).rejects.toThrow(/group/i);
-        await expect(
-          shareResource.run(
-            {
-              resourceType: "unregistered-family",
-              resourceId: "shared-group",
-              principalType: "group",
-              principalId: "gtm-team",
-              role: "viewer",
-              notify: false,
-            },
-            { userEmail: ownerEmail, orgId },
-          ),
-        ).rejects.toThrow();
-      }),
-    );
     const groupBefore = await pglite
       .prepare("SELECT * FROM workspace_user_groups WHERE id = ?")
       .get("gtm-team");
@@ -651,6 +621,43 @@ describe("shareable resource access helpers", () => {
           ),
         ).resolves.toMatchObject({ id: "gtm-team", isTeam: true });
       }),
+    );
+
+    await runWithRequestContext({ userEmail: ownerEmail, orgId }, () =>
+      withDbExec(dbExec, async () => {
+        for (const type of [
+          `${resourceType}-no-group`,
+          "unregistered-family",
+        ]) {
+          await expect(
+            shareResource.run({
+              resourceType: type,
+              resourceId: "shared-group",
+              principalType: "group",
+              principalId: "gtm-team",
+              role: "viewer",
+              notify: false,
+            }),
+          ).rejects.toThrow(
+            type === "unregistered-family"
+              ? /Unknown shareable resource type/
+              : /group/i,
+          );
+        }
+      }),
+    );
+    expect(
+      await db
+        .select()
+        .from(docShares)
+        .where(eq(docShares.resourceId, "shared-group")),
+    ).toEqual([shareBefore]);
+    await runWithRequestContext(viewerContext, () =>
+      withDbExec(dbExec, () =>
+        expect(
+          resolveAccess(`${resourceType}-no-group`, "shared-group"),
+        ).resolves.toBeNull(),
+      ),
     );
 
     await expect(listVisible(viewerContext)).resolves.toContain("shared-group");

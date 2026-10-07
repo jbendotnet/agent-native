@@ -114,7 +114,10 @@ it("keeps real action-query subscribers mounted through a stale refresh, then cl
         </QueryClientProvider>,
       ),
     );
-    await act(async () => new Promise((resolve) => setTimeout(resolve, 75)));
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(menuMounts).toBe(1);
+    });
     expect(container.querySelector("[data-content]")).not.toBeNull();
     expect(mounts).toBe(1);
     expect(unmounts).toBe(0);
@@ -122,13 +125,18 @@ it("keeps real action-query subscribers mounted through a stale refresh, then cl
     expect(menuUnmounts).toBe(0);
     expect(requests).toBeLessThan(6);
 
+    const requestsBeforeRevocation = requests;
     allowed = false;
     await act(async () => {
       await client.invalidateQueries({
         queryKey: ["action", "get-chat-thread-capabilities"],
       });
     });
-    expect(container.querySelector("[data-content]")).toBeNull();
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(requests).toBeGreaterThan(requestsBeforeRevocation);
+      expect(container.querySelector("[data-content]")).toBeNull();
+    });
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(
       "Denied",
     );
