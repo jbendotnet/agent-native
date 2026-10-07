@@ -108,6 +108,45 @@ const context = await browser.newContext({
   viewport: { width: 1280, height: 720 },
   deviceScaleFactor: 2,
 });
+// Capture in every frame before its bridge can stop propagation at documentElement.
+const wheelRecipientProbeScript = `(() => {
+  const buckets = new Map();
+  const recent = [];
+  const record = (kind, event, sourceIsLive = null) => {
+    const second = Math.floor(Date.now() / 1000);
+    const bucket = buckets.get(second) || { wheels: 0, bridges: 0 };
+    if (kind === "wheel") bucket.wheels++;
+    else bucket.bridges++;
+    buckets.set(second, bucket);
+    while (buckets.size > 75) buckets.delete(buckets.keys().next().value);
+    recent.push({ at: Date.now(), kind, trusted: event.isTrusted === true,
+      ctrl: event.ctrlKey === true, x: event.clientX ?? null, y: event.clientY ?? null,
+      target: event.target instanceof Element ? event.target.tagName : null, sourceIsLive });
+    if (recent.length > 6) recent.shift();
+  };
+  window.__wheelRecipientProbe = { snapshot(start) {
+    const exact = { wheels: 0, bridges: 0 };
+    const uncertainBoundary = { wheels: 0, bridges: 0 };
+    for (const [second, value] of buckets) {
+      const destination = second * 1000 >= start ? exact
+        : (second + 1) * 1000 > start ? uncertainBoundary : null;
+      if (!destination) continue;
+      destination.wheels += value.wheels;
+      destination.bridges += value.bridges;
+    }
+    return { ...exact, uncertainBoundary, recent: recent.filter((event) => event.at >= start) };
+  } };
+  window.addEventListener("wheel", (event) => {
+    if (event.ctrlKey || event.metaKey) record("wheel", event);
+  }, { capture: true, passive: true });
+  window.addEventListener("message", (event) => {
+    if (event.data?.type !== "embedded-canvas-wheel") return;
+    const sourceIsLive = [...document.querySelectorAll("iframe[data-design-preview-iframe]")]
+      .some((frame) => frame.contentWindow === event.source);
+    record("bridge", event.data, sourceIsLive);
+  });
+})()`;
+await context.addInitScript(wheelRecipientProbeScript);
 const page = await context.newPage();
 await page.addInitScript("globalThis.__name = (fn) => fn;");
 await page.addInitScript(() => {
@@ -254,6 +293,7 @@ await cdp.send("HeapProfiler.enable");
 
 const metrics: Record<string, number> = {};
 const failedSteps: string[] = [];
+const missingWheelRecipients: object[] = [];
 
 const loadStartedAt = Date.now();
 await page.goto(`${baseUrl}/design/${designId}`, {
@@ -312,6 +352,123 @@ const zoomOf = () =>
     }
     return zoom;
   });
+async function captureMissingWheelRecipients(
+  target: number,
+  x: number,
+  y: number,
+  since: number,
+  dispatched: number,
+) {
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const collect = async () => {
+    const frames = await Promise.all(
+      page.frames().map(async (frame, index) => {
+        const parent = frame.parentFrame();
+        const kind = parent
+          ? await frame
+              .frameElement()
+              .then((element) =>
+                element.evaluate((node) => ({
+                  live:
+                    node instanceof Element &&
+                    node.hasAttribute("data-design-preview-iframe"),
+                  static:
+                    node instanceof Element &&
+                    node.hasAttribute("data-screen-static-preview"),
+                })),
+              )
+              .catch(() => null)
+          : { top: true };
+        const data = await frame
+          .evaluate((start) => {
+            const probe = (
+              window as typeof window & {
+                __wheelRecipientProbe?: {
+                  snapshot: (start: number) => {
+                    wheels: number;
+                    bridges: number;
+                    uncertainBoundary: { wheels: number; bridges: number };
+                    recent: object[];
+                  };
+                };
+              }
+            ).__wheelRecipientProbe;
+            if (!probe) return null;
+            return {
+              ...probe.snapshot(start),
+              visibility: document.visibilityState,
+              viewportScale: visualViewport?.scale ?? null,
+            };
+          }, since)
+          .catch(() => null);
+        return {
+          index,
+          parent: parent ? page.frames().indexOf(parent) : null,
+          kind,
+          data,
+        };
+      }),
+    );
+    const hit = await page.evaluate(
+      ({ x, y }) => {
+        const element = document.elementFromPoint(x, y);
+        const content = element?.closest("[data-screen-content]");
+        const world = document.querySelector<HTMLElement>(
+          "[data-multi-screen-canvas-world]",
+        );
+        return {
+          element: element?.tagName ?? null,
+          canvas: Boolean(
+            element?.closest("[data-multi-screen-canvas-surface]"),
+          ),
+          pointerEvents: content
+            ? getComputedStyle(content).pointerEvents
+            : null,
+          camera: world?.style.transform ?? null,
+          viewportScale: visualViewport?.scale ?? null,
+          visibility: document.visibilityState,
+        };
+      },
+      { x, y },
+    );
+    if (timedOut) return;
+    missingWheelRecipients.push({
+      target,
+      dispatched,
+      hit,
+      frameCount: frames.length,
+      frames: frames.filter(
+        ({ data }) =>
+          data === null ||
+          data.wheels ||
+          data.bridges ||
+          data.uncertainBoundary.wheels ||
+          data.uncertainBoundary.bridges ||
+          data.recent.length,
+      ),
+    });
+    if (values.out)
+      writeFileSync(
+        values.out.replace(/\.json$/, "-recipients.json"),
+        JSON.stringify(missingWheelRecipients, null, 2),
+      );
+    console.log("  wheel recipients:", missingWheelRecipients.at(-1));
+  };
+  try {
+    await Promise.race([
+      collect(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(new Error("wheel recipient snapshot timed out"));
+        }, 3_000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 async function zoomTo(target: number, x: number, y: number): Promise<boolean> {
   let traceInstalled = false;
   let reads = 0;
@@ -459,6 +616,16 @@ async function zoomTo(target: number, x: number, y: number): Promise<boolean> {
     console.log(`  zoom ${target}% ended at ${await zoomOf()}%`);
     return false;
   } finally {
+    if (failed)
+      await captureMissingWheelRecipients(
+        target,
+        x,
+        y,
+        startedAt,
+        dispatched,
+      ).catch((error) =>
+        console.error("  wheel recipient diagnostic unavailable:", error),
+      );
     console.log(`  zoom ${target}% timing:`, {
       elapsedMs: Date.now() - startedAt,
       reads,
