@@ -30,7 +30,11 @@ Update version-matched public reference docs and release metadata for the actual
 
 All ten ADR rows from child 01 remain passing. Docs/locales and changesets correspond to actual changed APIs and behavior. Separate local verified status from CI/deployment. If shipping is later requested, load `ship`; use `ship-and-monitor` only for requested or concretely necessary post-merge proof. Never claim beta/production health from local checks alone.
 
-## Execution record
+## Execution record at child 2 completion
+
+This record predates the user's declaration that the whole epic is complete and
+the authorized commit, push, and stacked PR. See the [epic](../epic.md) for the
+final lifecycle status.
 
 Completed the scoped R-03 documentation and local release-artifact checks. See
 [release readiness](../release-readiness.md) for the changed references, all ten

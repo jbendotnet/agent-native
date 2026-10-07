@@ -2,12 +2,12 @@
 
 ## Disposition
 
-R-03 is complete for the scoped documentation and local release-artifact checks on
-`review/teams-5611-06-compatibility`, with HEAD
+At child 2 completion, R-03 was complete for the scoped documentation and local
+release-artifact checks on `review/teams-5611-06-compatibility`, with HEAD
 `c8a5531000119c468712eded081290c8750c3cf8`. This is not an unrestricted release
-approval. The user declared the outer epic complete on 2026-10-08. Commit, push,
-and a new PR stacked on PR #9 are authorized separately from this local proof.
-No merge, publication, or deployment is claimed.
+approval. The user later declared the outer epic complete on 2026-10-08 and
+authorized a separate commit, push, and PR stacked on PR #9. This local proof
+does not claim a merge, publication, or deployment.
 
 The three public references are `organizations-teams-permissions.mdx`,
 `sharing.mdx`, and `agent-resources.mdx` under `packages/core/docs/content`.
@@ -38,9 +38,11 @@ entrypoint compatibility changes. It was preserved, not replaced. No package
 version was manually changed. The Chat sidebar change is import wiring, and Chat
 disables its app changelog, so no template changelog entry was added.
 
-An independent comparison verified all 31 recorded baseline file hashes and all
-five baseline deletions. Child 1 implementation, tests, completed plan, changeset,
-and [acceptance evidence](acceptance-evidence.md) remain unchanged. In particular:
+At child 2's completion, an independent comparison verified all 31 recorded
+baseline file hashes and all five baseline deletions. Child 1 implementation,
+tests, completed plan, changeset, and acceptance evidence were unchanged at that
+point. The following hashes record that historical verification snapshot, not
+the later completion-metadata edits and formatting used to file the whole epic:
 
 - Acceptance evidence SHA256: `c6018528210188e8f9dafe77c1de6477b837c33a8c944f738d806d2eb03c76b6`.
 - Changeset SHA256: `60ce911ce8a798ed493d2c5081774e9a33bb719573115a5bbdc159ce3bb8e857`.

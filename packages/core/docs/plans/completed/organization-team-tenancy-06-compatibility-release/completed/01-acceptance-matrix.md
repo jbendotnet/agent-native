@@ -33,7 +33,10 @@ Consolidate focused tests into an explicit acceptance matrix rather than introdu
 
 Use focused Core `pnpm --dir packages/core exec vitest --run <affected specs>` and affected Toolkit test commands confirmed from current package scripts. Run `pnpm typecheck`, `pnpm test:fast`, and applicable `pnpm guards` after focused proof. Exit 2/skipped guards are not passes. No source or runtime behavior is considered complete until its relevant matrix row passes.
 
-## Execution record
+## Execution record at child 1 completion
+
+This record predates child 2 and the user's declaration that the whole epic is
+complete. See the [epic](../epic.md) for the final lifecycle status.
 
 See [acceptance evidence](../acceptance-evidence.md) for the ten-row assertion
 matrix, exact commands, independent results, and proof boundaries.
