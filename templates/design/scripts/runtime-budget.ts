@@ -9,6 +9,8 @@ import { parseArgs } from "node:util";
 
 import { chromium, type CDPSession, type Page } from "@playwright/test";
 
+import { canvasWheelPoint } from "./canvas-wheel-point";
+
 type BudgetFile = {
   copies: number;
   iterations: number;
@@ -108,45 +110,6 @@ const context = await browser.newContext({
   viewport: { width: 1280, height: 720 },
   deviceScaleFactor: 2,
 });
-// Capture in every frame before its bridge can stop propagation at documentElement.
-const wheelRecipientProbeScript = `(() => {
-  const buckets = new Map();
-  const recent = [];
-  const record = (kind, event, sourceIsLive = null) => {
-    const second = Math.floor(Date.now() / 1000);
-    const bucket = buckets.get(second) || { wheels: 0, bridges: 0 };
-    if (kind === "wheel") bucket.wheels++;
-    else bucket.bridges++;
-    buckets.set(second, bucket);
-    while (buckets.size > 75) buckets.delete(buckets.keys().next().value);
-    recent.push({ at: Date.now(), kind, trusted: event.isTrusted === true,
-      ctrl: event.ctrlKey === true, x: event.clientX ?? null, y: event.clientY ?? null,
-      target: event.target instanceof Element ? event.target.tagName : null, sourceIsLive });
-    if (recent.length > 6) recent.shift();
-  };
-  window.__wheelRecipientProbe = { snapshot(start) {
-    const exact = { wheels: 0, bridges: 0 };
-    const uncertainBoundary = { wheels: 0, bridges: 0 };
-    for (const [second, value] of buckets) {
-      const destination = second * 1000 >= start ? exact
-        : (second + 1) * 1000 > start ? uncertainBoundary : null;
-      if (!destination) continue;
-      destination.wheels += value.wheels;
-      destination.bridges += value.bridges;
-    }
-    return { ...exact, uncertainBoundary, recent: recent.filter((event) => event.at >= start) };
-  } };
-  window.addEventListener("wheel", (event) => {
-    if (event.ctrlKey || event.metaKey) record("wheel", event);
-  }, { capture: true, passive: true });
-  window.addEventListener("message", (event) => {
-    if (event.data?.type !== "embedded-canvas-wheel") return;
-    const sourceIsLive = [...document.querySelectorAll("iframe[data-design-preview-iframe]")]
-      .some((frame) => frame.contentWindow === event.source);
-    record("bridge", event.data, sourceIsLive);
-  });
-})()`;
-await context.addInitScript(wheelRecipientProbeScript);
 const page = await context.newPage();
 await page.addInitScript("globalThis.__name = (fn) => fn;");
 await page.addInitScript(() => {
@@ -293,7 +256,6 @@ await cdp.send("HeapProfiler.enable");
 
 const metrics: Record<string, number> = {};
 const failedSteps: string[] = [];
-const missingWheelRecipients: object[] = [];
 
 const loadStartedAt = Date.now();
 await page.goto(`${baseUrl}/design/${designId}`, {
@@ -352,325 +314,42 @@ const zoomOf = () =>
     }
     return zoom;
   });
-async function captureMissingWheelRecipients(
-  target: number,
-  x: number,
-  y: number,
-  since: number,
-  dispatched: number,
-) {
-  let timedOut = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const collect = async () => {
-    const frames = await Promise.all(
-      page.frames().map(async (frame, index) => {
-        const parent = frame.parentFrame();
-        const kind = parent
-          ? await frame
-              .frameElement()
-              .then((element) =>
-                element.evaluate((node) => ({
-                  live:
-                    node instanceof Element &&
-                    node.hasAttribute("data-design-preview-iframe"),
-                  static:
-                    node instanceof Element &&
-                    node.hasAttribute("data-screen-static-preview"),
-                })),
-              )
-              .catch(() => null)
-          : { top: true };
-        const data = await frame
-          .evaluate((start) => {
-            const probe = (
-              window as typeof window & {
-                __wheelRecipientProbe?: {
-                  snapshot: (start: number) => {
-                    wheels: number;
-                    bridges: number;
-                    uncertainBoundary: { wheels: number; bridges: number };
-                    recent: object[];
-                  };
-                };
-              }
-            ).__wheelRecipientProbe;
-            if (!probe) return null;
-            return {
-              ...probe.snapshot(start),
-              visibility: document.visibilityState,
-              viewportScale: visualViewport?.scale ?? null,
-            };
-          }, since)
-          .catch(() => null);
-        return {
-          index,
-          parent: parent ? page.frames().indexOf(parent) : null,
-          kind,
-          data,
-        };
-      }),
-    );
-    const hit = await page.evaluate(
-      ({ x, y }) => {
-        const element = document.elementFromPoint(x, y);
-        const content = element?.closest("[data-screen-content]");
-        const world = document.querySelector<HTMLElement>(
-          "[data-multi-screen-canvas-world]",
-        );
-        return {
-          element: element?.tagName ?? null,
-          canvas: Boolean(
-            element?.closest("[data-multi-screen-canvas-surface]"),
-          ),
-          pointerEvents: content
-            ? getComputedStyle(content).pointerEvents
-            : null,
-          camera: world?.style.transform ?? null,
-          viewportScale: visualViewport?.scale ?? null,
-          visibility: document.visibilityState,
-        };
-      },
-      { x, y },
-    );
-    if (timedOut) return;
-    missingWheelRecipients.push({
-      target,
-      dispatched,
-      hit,
-      frameCount: frames.length,
-      frames: frames.filter(
-        ({ data }) =>
-          data === null ||
-          data.wheels ||
-          data.bridges ||
-          data.uncertainBoundary.wheels ||
-          data.uncertainBoundary.bridges ||
-          data.recent.length,
-      ),
-    });
-    if (values.out)
-      writeFileSync(
-        values.out.replace(/\.json$/, "-recipients.json"),
-        JSON.stringify(missingWheelRecipients, null, 2),
-      );
-    console.log("  wheel recipients:", missingWheelRecipients.at(-1));
-  };
-  try {
-    await Promise.race([
-      collect(),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          timedOut = true;
-          reject(new Error("wheel recipient snapshot timed out"));
-        }, 3_000);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-async function zoomTo(target: number, x: number, y: number): Promise<boolean> {
-  let traceInstalled = false;
-  let reads = 0;
-  let readMs = 0;
-  let dispatched = 0;
-  let dispatchMs = 0;
-  let longestDispatchMs = 0;
-  let pauseMs = 0;
-  try {
-    await page.evaluate(() => {
-      const trace = window as unknown as {
-        __runtimeZoomTrace?: {
-          events: object[];
-          count: number;
-          stop: () => void;
-        };
-      };
-      trace.__runtimeZoomTrace?.stop();
-      const events: object[] = [];
-      let count = 0;
-      const camera = () => {
-        const transform = document.querySelector<HTMLElement>(
-          "[data-multi-screen-canvas-world]",
-        )?.style.transform;
-        const scale = /scale\(([0-9.]+)\)/.exec(transform ?? "");
-        return scale ? Number(scale[1]) * 100 : null;
-      };
-      const recent = (row: object) => {
-        count += 1;
-        events.push(row);
-        if (events.length > 20) events.shift();
-      };
-      const onWheel = (event: WheelEvent) => {
-        const element = event.target instanceof Element ? event.target : null;
-        const row: Record<string, unknown> & {
-          prevented?: boolean;
-          after?: number | null;
-        } = {
-          kind: "wheel",
-          trusted: event.isTrusted,
-          ctrl: event.ctrlKey,
-          delta: event.deltaY,
-          mode: event.deltaMode,
-          target: element?.tagName ?? null,
-          screen: element?.hasAttribute("data-screen-card") ?? false,
-          frame: element?.hasAttribute("data-design-preview-iframe") ?? false,
-          canvas: Boolean(
-            element?.closest("[data-multi-screen-canvas-surface]"),
-          ),
-          at: performance.now(),
-          before: camera(),
-        };
-        recent(row);
-        // A capture-listener microtask may run before the canvas's listener.
-        // This task also records wheels whose propagation stops before document.
-        setTimeout(() => {
-          row.prevented = event.defaultPrevented;
-          row.after = camera();
-        }, 0);
-      };
-      const onMessage = (event: MessageEvent) => {
-        if (event.data?.type !== "embedded-canvas-wheel") return;
-        recent({
-          kind: "bridge",
-          at: performance.now(),
-          ctrl:
-            typeof event.data.ctrlKey === "boolean" ? event.data.ctrlKey : null,
-          delta:
-            typeof event.data.deltaY === "number" ? event.data.deltaY : null,
-          mode:
-            typeof event.data.deltaMode === "number"
-              ? event.data.deltaMode
-              : null,
-          before: camera(),
-        });
-      };
-      document.addEventListener("wheel", onWheel, {
-        capture: true,
-        passive: true,
-      });
-      window.addEventListener("message", onMessage);
-      trace.__runtimeZoomTrace = {
-        events,
-        get count() {
-          return count;
-        },
-        stop: () => {
-          document.removeEventListener("wheel", onWheel, true);
-          window.removeEventListener("message", onMessage);
-        },
-      };
-    });
-    traceInstalled = true;
-  } catch (error) {
-    console.error(`  zoom ${target}% diagnostic unavailable:`, error);
-  }
-  let failed = true;
-  const distance = async () => {
-    const started = Date.now();
-    const zoom = await zoomOf();
-    reads += 1;
-    readMs += Date.now() - started;
-    return Math.log(zoom / target);
-  };
+async function zoomTo(target: number): Promise<boolean> {
+  const distance = async () => Math.log((await zoomOf()) / target);
   // A CI runner reads the zoom back several times slower than a laptop.
   const giveUpAt = Date.now() + 60_000;
-  const startedAt = Date.now();
-  try {
+  while (Date.now() < giveUpAt) {
+    const off = await distance();
+    if (Math.abs(off) < 0.06) {
+      await page.waitForTimeout(1500);
+      const actual = await zoomOf();
+      console.log(`  zoom ${target}% ended at ${actual}%`);
+      if (Math.abs(Math.log(actual / target)) < 0.15) {
+        return true;
+      }
+      continue;
+    }
+    // Keep each wheel below the mouse-notch cutoff (40px) so the camera
+    // classifies this entire continuous Ctrl+wheel gesture as a pinch.
+    const { x, y } = await canvasWheelPoint(page);
     await page.mouse.move(x, y);
-    while (Date.now() < giveUpAt) {
-      const off = await distance();
-      if (Math.abs(off) < 0.06) {
-        await page.waitForTimeout(1500);
-        const actual = await zoomOf();
-        console.log(`  zoom ${target}% ended at ${actual}%`);
-        if (Math.abs(Math.log(actual / target)) < 0.15) {
-          failed = false;
-          return true;
-        }
-        continue;
-      }
-      // Keep each wheel below the mouse-notch cutoff (40px) so the camera
-      // classifies this entire continuous Ctrl+wheel gesture as a pinch.
-      const dispatchStarted = Date.now();
-      await cdp.send("Input.dispatchMouseEvent", {
-        type: "mouseWheel",
-        x,
-        y,
-        deltaX: 0,
-        deltaY: Math.sign(off) * Math.min(30, Math.max(2, Math.abs(off) * 40)),
-        modifiers: 2,
-      });
-      const elapsed = Date.now() - dispatchStarted;
-      dispatched += 1;
-      dispatchMs += elapsed;
-      longestDispatchMs = Math.max(longestDispatchMs, elapsed);
-      // Near the target, let the camera apply each step before reading again;
-      // otherwise a slow runner overshoots back and forth around it.
-      const pauseStarted = Date.now();
-      await new Promise((resolve) =>
-        setTimeout(resolve, Math.abs(off) < 0.3 ? 120 : 16),
-      );
-      pauseMs += Date.now() - pauseStarted;
-    }
-    console.log(`  zoom ${target}% ended at ${await zoomOf()}%`);
-    return false;
-  } finally {
-    if (failed)
-      await captureMissingWheelRecipients(
-        target,
-        x,
-        y,
-        startedAt,
-        dispatched,
-      ).catch((error) =>
-        console.error("  wheel recipient diagnostic unavailable:", error),
-      );
-    console.log(`  zoom ${target}% timing:`, {
-      elapsedMs: Date.now() - startedAt,
-      reads,
-      readMs,
-      dispatched,
-      dispatchMs,
-      longestDispatchMs,
-      pauseMs,
+    await canvasWheelPoint(page, { x, y });
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x,
+      y,
+      deltaX: 0,
+      deltaY: Math.sign(off) * Math.min(30, Math.max(2, Math.abs(off) * 40)),
+      modifiers: 2,
     });
-    if (traceInstalled) {
-      try {
-        const diagnostic = await page.evaluate(() => {
-          const trace = window as unknown as {
-            __runtimeZoomTrace?: {
-              events: object[];
-              count: number;
-              stop: () => void;
-            };
-          };
-          const events = trace.__runtimeZoomTrace?.events ?? null;
-          const count = trace.__runtimeZoomTrace?.count ?? null;
-          trace.__runtimeZoomTrace?.stop();
-          delete trace.__runtimeZoomTrace;
-          return { dpr: window.devicePixelRatio, count, events };
-        });
-        if (failed) console.log(`  zoom ${target}% input:`, diagnostic);
-      } catch (error) {
-        console.error(`  zoom ${target}% diagnostic unavailable:`, error);
-        await page
-          .evaluate(() => {
-            const trace = window as unknown as {
-              __runtimeZoomTrace?: { stop: () => void };
-            };
-            trace.__runtimeZoomTrace?.stop();
-            delete trace.__runtimeZoomTrace;
-          })
-          .catch((cleanupError) =>
-            console.error(
-              `  zoom ${target}% diagnostic cleanup unavailable:`,
-              cleanupError,
-            ),
-          );
-      }
-    }
+    // Near the target, let the camera apply each step before reading again;
+    // otherwise a slow runner overshoots back and forth around it.
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.abs(off) < 0.3 ? 120 : 16),
+    );
   }
+  console.log(`  zoom ${target}% ended at ${await zoomOf()}%`);
+  return false;
 }
 
 async function until(check: () => Promise<boolean>, timeoutMs = 30_000) {
@@ -768,12 +447,6 @@ const visits = [
   "Icons 2",
   "Dashboard 4",
 ];
-const zoomPoints = [
-  [640, 360],
-  [500, 300],
-  [800, 420],
-  [600, 500],
-] as const;
 let zoomCycleBoots = 0;
 let zoomCycleRemounts = 0;
 
@@ -784,8 +457,8 @@ async function runSession() {
     const heading = editorFrame("dashboard-2.html")
       .locator("main header h1")
       .first();
-    const box = await settledBox(heading);
-    await zoomTo(60, Math.round(box.x + 4), Math.round(box.y + box.height / 2));
+    await settledBox(heading);
+    await zoomTo(60);
     await page.waitForTimeout(2500);
 
     await step("select", async () => {
@@ -863,12 +536,11 @@ async function runSession() {
       await page.waitForTimeout(1500);
       return duplicated && undone;
     });
-    const [x, y] = zoomPoints[iteration % zoomPoints.length]!;
     await step("zoomCycle", async () => {
       const startedAt = await now();
       let arrivedEverywhere = true;
       for (const zoom of [13, 31, 7, 145, 10]) {
-        arrivedEverywhere = (await zoomTo(zoom, x, y)) && arrivedEverywhere;
+        arrivedEverywhere = (await zoomTo(zoom)) && arrivedEverywhere;
       }
       zoomCycleBoots += await countSince("liveInserts", startedAt);
       zoomCycleRemounts += await countSince("previewRemounts", startedAt);
@@ -907,7 +579,7 @@ async function runSession() {
       return true;
     });
     await page.keyboard.press("Escape");
-    await zoomTo(8, 640, 360);
+    await zoomTo(8);
     heapSeries.push(await heapAfterGcMB(cdp));
   }
 }
