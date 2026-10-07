@@ -134,7 +134,48 @@ test("trusted Ctrl-wheel stays on the canvas as live iframe screens move and zoo
       /No unobstructed canvas surface/,
     );
     await assert.rejects(
-      canvasWheelPoint(page, { x: 900, y: 400 }),
+      canvasWheelPoint(page, { x: 575, y: 360 }),
+      /Wheel point no longer hits the canvas surface/,
+    );
+    await page
+      .locator("[data-multi-screen-canvas-surface]")
+      .evaluate((surface) => {
+        surface.innerHTML =
+          '<div data-screen-shell style="position:absolute;inset:0"><iframe srcdoc="<main>Cover</main>" style="width:100%;height:100%;border:0"></iframe><div data-frame-label style="position:absolute;left:40px;top:5px;z-index:1"><span data-frame-title>Dashboard 2</span></div></div>';
+      });
+    const labelPoint = await canvasWheelPoint(page);
+    assert.equal(
+      await page.evaluate(
+        ({ x, y }) => document.elementFromPoint(x, y)?.tagName,
+        labelPoint,
+      ),
+      "SPAN",
+    );
+    assert.deepEqual(await canvasWheelPoint(page, labelPoint), labelPoint);
+    await page
+      .locator("[data-multi-screen-canvas-surface]")
+      .evaluate((surface) => {
+        surface.innerHTML =
+          '<div data-frame-selection-box style="position:absolute;inset:0"><span data-frame-drag-surface style="position:absolute;inset:0"></span></div>';
+      });
+    const coveredPoint = await canvasWheelPoint(page);
+    assert.deepEqual(coveredPoint, { x: 575, y: 360 });
+    assert.deepEqual(await canvasWheelPoint(page, coveredPoint), coveredPoint);
+    await page
+      .locator("[data-multi-screen-canvas-surface]")
+      .evaluate((surface) => {
+        surface.innerHTML =
+          '<div data-frame-selection-box style="position:absolute;inset:0"><span data-resize-handle="n" style="position:absolute;inset:0"></span></div>';
+      });
+    assert.deepEqual(await canvasWheelPoint(page, coveredPoint), coveredPoint);
+    await page
+      .locator("[data-multi-screen-canvas-surface]")
+      .evaluate((surface) => {
+        surface.innerHTML =
+          '<div data-screen-shell style="position:absolute;inset:0"><span data-unknown-overlay style="position:absolute;inset:0"></span></div>';
+      });
+    await assert.rejects(
+      canvasWheelPoint(page, coveredPoint),
       /Wheel point no longer hits the canvas surface/,
     );
     await page

@@ -7,7 +7,12 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { chromium, type CDPSession, type Page } from "@playwright/test";
+import {
+  chromium,
+  type CDPSession,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 
 import { canvasWheelPoint } from "./canvas-wheel-point";
 
@@ -314,7 +319,7 @@ const zoomOf = () =>
     }
     return zoom;
   });
-async function zoomTo(target: number): Promise<boolean> {
+async function zoomTo(target: number, anchor?: Locator): Promise<boolean> {
   const distance = async () => Math.log((await zoomOf()) / target);
   // A CI runner reads the zoom back several times slower than a laptop.
   const giveUpAt = Date.now() + 60_000;
@@ -331,7 +336,11 @@ async function zoomTo(target: number): Promise<boolean> {
     }
     // Keep each wheel below the mouse-notch cutoff (40px) so the camera
     // classifies this entire continuous Ctrl+wheel gesture as a pinch.
-    const { x, y } = await canvasWheelPoint(page);
+    const box = anchor ? await anchor.boundingBox() : null;
+    if (anchor && !box) throw new Error("Zoom anchor left the canvas");
+    const { x, y } = box
+      ? { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+      : await canvasWheelPoint(page);
     await page.mouse.move(x, y);
     await canvasWheelPoint(page, { x, y });
     await cdp.send("Input.dispatchMouseEvent", {
@@ -458,7 +467,7 @@ async function runSession() {
       .locator("main header h1")
       .first();
     await settledBox(heading);
-    await zoomTo(60);
+    await zoomTo(60, heading);
     await page.waitForTimeout(2500);
 
     await step("select", async () => {

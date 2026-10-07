@@ -17,8 +17,22 @@ export function canvasWheelPoint(
     const onCanvas = (x: number, y: number) => {
       return document.elementFromPoint(x, y) === surface;
     };
+    const onScreen = (x: number, y: number) => {
+      const hit = document.elementFromPoint(x, y);
+      return (
+        hit instanceof HTMLElement &&
+        surface.contains(hit) &&
+        (hit.matches(
+          "[data-frame-selection-box] > [data-frame-drag-surface]",
+        ) ||
+          hit.matches("[data-frame-selection-box] [data-resize-handle]") ||
+          hit.matches(
+            "[data-screen-shell] [data-frame-label] [data-frame-title]",
+          ))
+      );
+    };
     if (point) {
-      if (!onCanvas(point.x, point.y)) {
+      if (!onCanvas(point.x, point.y) && !onScreen(point.x, point.y)) {
         throw new Error("Wheel point no longer hits the canvas surface");
       }
       return point;
@@ -29,6 +43,17 @@ export function canvasWheelPoint(
         const y = Math.round(top + ((row + 0.5) * height) / 9);
         if (onCanvas(x, y)) return { x, y };
       }
+    }
+    const x = Math.round(left + width / 2);
+    const y = Math.round(top + height / 2);
+    if (onScreen(x, y)) return { x, y };
+    for (const title of surface.querySelectorAll<HTMLElement>(
+      "[data-screen-shell] [data-frame-label] [data-frame-title]",
+    )) {
+      const rect = title.getBoundingClientRect();
+      const x = Math.round(rect.left + rect.width / 2);
+      const y = Math.round(rect.top + rect.height / 2);
+      if (onScreen(x, y)) return { x, y };
     }
     throw new Error("No unobstructed canvas surface for wheel input");
   }, point);
