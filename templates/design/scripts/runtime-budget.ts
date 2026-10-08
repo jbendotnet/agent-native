@@ -7,7 +7,14 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { chromium, type CDPSession, type Page } from "@playwright/test";
+import {
+  chromium,
+  type CDPSession,
+  type Locator,
+  type Page,
+} from "@playwright/test";
+
+import { canvasWheelPoint } from "./canvas-wheel-point";
 
 type BudgetFile = {
   copies: number;
@@ -307,7 +314,7 @@ const zoomOf = () =>
     }
     return zoom;
   });
-async function zoomTo(target: number, x: number, y: number): Promise<boolean> {
+async function zoomTo(target: number, anchor?: Locator): Promise<boolean> {
   const distance = async () => Math.log((await zoomOf()) / target);
   // A CI runner reads the zoom back several times slower than a laptop.
   const giveUpAt = Date.now() + 60_000;
@@ -317,15 +324,25 @@ async function zoomTo(target: number, x: number, y: number): Promise<boolean> {
       await page.waitForTimeout(1500);
       const actual = await zoomOf();
       console.log(`  zoom ${target}% ended at ${actual}%`);
-      if (Math.abs(Math.log(actual / target)) < 0.15) return true;
+      if (Math.abs(Math.log(actual / target)) < 0.15) {
+        return true;
+      }
       continue;
     }
     // Keep each wheel below the mouse-notch cutoff (40px) so the camera
     // classifies this entire continuous Ctrl+wheel gesture as a pinch.
+    const box = anchor ? await anchor.boundingBox() : null;
+    if (anchor && !box) throw new Error("Zoom anchor left the canvas");
+    const { x, y } = box
+      ? { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+      : await canvasWheelPoint(page);
+    await page.mouse.move(x, y);
+    // Moving the pointer can expose a hover overlay at the former target.
+    const wheelPoint = await canvasWheelPoint(page, box ? { x, y } : undefined);
     await cdp.send("Input.dispatchMouseEvent", {
       type: "mouseWheel",
-      x,
-      y,
+      x: wheelPoint.x,
+      y: wheelPoint.y,
       deltaX: 0,
       deltaY: Math.sign(off) * Math.min(30, Math.max(2, Math.abs(off) * 40)),
       modifiers: 2,
@@ -358,7 +375,7 @@ async function settledBox(locator: ReturnType<Page["locator"]>) {
     const box = await locator.boundingBox({ timeout: 5_000 }).catch(() => null);
     if (box) return box;
   }
-  throw new Error(`${locator} never appeared`);
+  throw new Error(`${locator.toString()} never appeared`);
 }
 
 const tree = page.getByRole("tree", { name: "Layers" });
@@ -435,12 +452,6 @@ const visits = [
   "Icons 2",
   "Dashboard 4",
 ];
-const zoomPoints = [
-  [640, 360],
-  [500, 300],
-  [800, 420],
-  [600, 500],
-] as const;
 let zoomCycleBoots = 0;
 let zoomCycleRemounts = 0;
 
@@ -451,8 +462,10 @@ async function runSession() {
     const heading = editorFrame("dashboard-2.html")
       .locator("main header h1")
       .first();
-    const box = await settledBox(heading);
-    await zoomTo(60, Math.round(box.x + 4), Math.round(box.y + box.height / 2));
+    await settledBox(heading);
+    if (!(await zoomTo(60, heading))) {
+      throw new Error("Heading-anchored setup zoom did not take effect");
+    }
     await page.waitForTimeout(2500);
 
     await step("select", async () => {
@@ -530,12 +543,11 @@ async function runSession() {
       await page.waitForTimeout(1500);
       return duplicated && undone;
     });
-    const [x, y] = zoomPoints[iteration % zoomPoints.length]!;
     await step("zoomCycle", async () => {
       const startedAt = await now();
       let arrivedEverywhere = true;
       for (const zoom of [13, 31, 7, 145, 10]) {
-        arrivedEverywhere = (await zoomTo(zoom, x, y)) && arrivedEverywhere;
+        arrivedEverywhere = (await zoomTo(zoom)) && arrivedEverywhere;
       }
       zoomCycleBoots += await countSince("liveInserts", startedAt);
       zoomCycleRemounts += await countSince("previewRemounts", startedAt);
@@ -574,7 +586,7 @@ async function runSession() {
       return true;
     });
     await page.keyboard.press("Escape");
-    await zoomTo(8, 640, 360);
+    await zoomTo(8);
     heapSeries.push(await heapAfterGcMB(cdp));
   }
 }
