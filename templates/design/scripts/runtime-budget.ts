@@ -342,11 +342,12 @@ async function zoomTo(target: number, anchor?: Locator): Promise<boolean> {
       ? { x: box.x + box.width / 2, y: box.y + box.height / 2 }
       : await canvasWheelPoint(page);
     await page.mouse.move(x, y);
-    await canvasWheelPoint(page, { x, y });
+    // Moving the pointer can expose a hover overlay at the former target.
+    const wheelPoint = await canvasWheelPoint(page, box ? { x, y } : undefined);
     await cdp.send("Input.dispatchMouseEvent", {
       type: "mouseWheel",
-      x,
-      y,
+      x: wheelPoint.x,
+      y: wheelPoint.y,
       deltaX: 0,
       deltaY: Math.sign(off) * Math.min(30, Math.max(2, Math.abs(off) * 40)),
       modifiers: 2,
@@ -467,7 +468,9 @@ async function runSession() {
       .locator("main header h1")
       .first();
     await settledBox(heading);
-    await zoomTo(60, heading);
+    if (!(await zoomTo(60, heading))) {
+      throw new Error("Heading-anchored setup zoom did not take effect");
+    }
     await page.waitForTimeout(2500);
 
     await step("select", async () => {
