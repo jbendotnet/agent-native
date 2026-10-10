@@ -1633,7 +1633,19 @@ export const switchOrgHandler = defineEventHandler(async (event: H3Event) => {
     });
   }
 
-  await setActiveOrgId(email, orgId, "user switched organization", event);
+  try {
+    await setActiveOrgId(email, orgId, "user switched organization", event);
+  } catch (error) {
+    const { ActiveWorkspaceTeamError } =
+      await import("../workspace-connections/active-team.js");
+    if (error instanceof ActiveWorkspaceTeamError) {
+      throw createError({
+        statusCode: error.statusCode,
+        message: error.message,
+      });
+    }
+    throw error;
+  }
 
   const row = membership.rows[0] as any;
   return {

@@ -14,7 +14,6 @@ import {
   type Page,
 } from "@playwright/test";
 
-import { canvasWheelPoint } from "./canvas-wheel-point";
 import {
   expectedCanvasScaleAtZoomPercent,
   readZoomUntilAvailable,

@@ -845,8 +845,11 @@ export async function createThread(
     (!orgId ||
       !(await getWorkspaceTeamForMember(orgId, teamGroupId, ownerEmail)))
   ) {
-    throw new Error(
-      "Thread creator must be a current member of the bound team and organization.",
+    throw Object.assign(
+      new Error(
+        "Thread creator must be a current member of the bound team and organization.",
+      ),
+      { statusCode: 403 },
     );
   }
 

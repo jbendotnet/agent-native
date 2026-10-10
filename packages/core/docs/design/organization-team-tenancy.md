@@ -169,13 +169,21 @@ Existing resource operations authorize `__team__:<group-id>` owners through curr
 
 An authorized empty team is valid. Failed or incomplete required team lookups, missing selected bodies, and retrieval timeouts fail the turn instead of omitting context. Local mounted tests capture assembled prompts and failed foreground/background turns. Independent verification passed the combined 25-file, 792-test context and authorization matrix on 2026-10-03. Binding remains separate from connection and credential scope. UI selection, team-sharing actions, live PostgreSQL, and release integration are not proved by this context implementation.
 
+### Implemented team selection and management UX
+
+`workspace-connections/active-team.ts` stores the active team preference in user settings, keyed by user and organization, and mirrors the current organization's selection into session application state. Shared selection actions and client hooks accept a current member's team or explicit no-team choice. Switching organizations restores that organization's preference. Selection never grants access.
+
+Shared Toolkit group and member settings expose team designation, lead roles, and permitted membership changes through the existing actions. Team instructions, skills, and memory use the shared resource settings surface and current-member authorization. Rejected context saves report failure and retain unsaved editor text without changing stored content.
+
+New-chat drafts capture their organization and team before server insertion. The creation boundary validates current membership and persists the binding before prompt context is prepared. Denied creation retains the draft and error instead of retrying without a binding. Existing threads display and use their stored binding independently of the new-chat preference.
+
+Independent local proof covers durable SQL preference and session hydration, authenticated management actions and browser saves, first-turn A/B/no-team context, stable bindings, denied creation, mounted refresh, and per-organization switching and reload. This completes Epic 4's prerequisite for sharing work. It does not prove hosted behavior, independent PostgreSQL concurrency, or the retained-binding release integration assigned to Epic 6.
+
 ### Remaining integration surfaces
 
 These existing surfaces still need the remaining V1 behavior:
 
 - Shared principals, list and direct access: `packages/core/src/sharing/access.ts`, `packages/core/src/sharing/actions/share-resource.ts`
-- Session application state and user/organization selection: `packages/core/src/application-state/store.ts` (currently session-keyed; extend persistence without replacing session behavior)
-- User/agent creation and selection: expose validated creation inputs through the shared action/UI surface after team-context loading exists.
 - Chat-specific viewer grants, revocation, and team-shared discovery: extend existing thread/share actions without generic resource-admin authority or separate run shares.
 - Retained-binding integration: prove deletion and membership lifecycle across identity, context, conversations, and linked runs before release.
 

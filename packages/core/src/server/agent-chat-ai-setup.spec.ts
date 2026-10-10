@@ -583,6 +583,33 @@ describe("Agent-Native chat AI setup gate", () => {
     ).toBe(true);
   });
 
+  it("refuses malformed first-insertion and POST creation inputs without coercing no-team", async () => {
+    const { validateChatCreationInput } =
+      await import("./agent-chat-plugin.js");
+    for (const input of [42, false, {}, " "]) {
+      try {
+        validateChatCreationInput("org-a", input, "org-a");
+        throw new Error("Invalid team was accepted");
+      } catch (error) {
+        expect(error).toMatchObject({ statusCode: 400 });
+      }
+    }
+    for (const input of [null, 42, " "]) {
+      try {
+        validateChatCreationInput(input, null, "org-a");
+        throw new Error("Invalid organization was accepted");
+      } catch (error) {
+        expect(error).toMatchObject({ statusCode: 400 });
+      }
+    }
+    expect(() => validateChatCreationInput("org-b", null, "org-a")).toThrow(
+      "Chat draft belongs to another organization",
+    );
+    expect(() =>
+      validateChatCreationInput("org-a", null, "org-a"),
+    ).not.toThrow();
+  });
+
   it("exposes strict chat eligibility on the engine status response", () => {
     expectTypeOf<
       AgentEngineStatusResponse["chatEligible"]

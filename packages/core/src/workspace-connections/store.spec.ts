@@ -10,6 +10,33 @@ import {
 
 import { createTestPglite } from "../a2a/test-pglite.js";
 
+vi.mock("h3", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("h3")>()),
+  getMethod: (event: { _method: string }) => event._method,
+  getHeader: (event: { _headers?: Record<string, string> }, name: string) =>
+    event._headers?.[name.toLowerCase()],
+  getRequestHeader: (
+    event: { _headers?: Record<string, string> },
+    name: string,
+  ) => event._headers?.[name.toLowerCase()],
+  getQuery: () => ({}),
+  getRequestURL: () =>
+    new URL(
+      "http://localhost/_agent-native/actions/bulk-update-workspace-user-groups",
+    ),
+  setResponseStatus: (event: { _status?: number }, status: number) => {
+    event._status = status;
+  },
+  setResponseHeader: () => {},
+}));
+
+vi.mock("../server/framework-request-handler.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../server/framework-request-handler.js")
+  >()),
+  getH3App: (app: unknown) => app,
+}));
+
 vi.mock("../db/client.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../db/client.js")>();
   return {
@@ -1291,6 +1318,9 @@ describe("workspace connection store", () => {
     ).default;
     const leadsAction = (await import("./actions/set-workspace-team-leads.js"))
       .default;
+    const listGroupsAction = (
+      await import("./actions/list-workspace-user-groups.js")
+    ).default;
     await pglite.exec(`CREATE TABLE IF NOT EXISTS org_members (
       id TEXT PRIMARY KEY, org_id TEXT NOT NULL, email TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'member', joined_at BIGINT NOT NULL DEFAULT 0,
@@ -1320,6 +1350,19 @@ describe("workspace connection store", () => {
         { userEmail: `${actor}@example.com`, orgId },
         operation,
       );
+    await expect(
+      as("outsider", () =>
+        listGroupsAction.run(
+          {},
+          { userEmail: "outsider@example.com", orgId: "org-policy" },
+        ),
+      ),
+    ).rejects.toMatchObject({
+      actionContractError: true,
+      errorCode: "action_failed",
+      statusCode: 403,
+      message: "Workspace membership is required.",
+    });
     const team = await as("owner", () =>
       upsertWorkspaceUserGroup({
         name: "Policy team",
@@ -1328,6 +1371,38 @@ describe("workspace connection store", () => {
         leadEmails: ["lead@example.com"],
       }),
     );
+    const ordinaryGroup = await as("owner", () =>
+      upsertWorkspaceUserGroup({
+        name: "Access list",
+        memberEmails: ["lead@example.com"],
+      }),
+    );
+    const listedForLead = await as("lead", () =>
+      listGroupsAction.run(
+        {},
+        { userEmail: "lead@example.com", orgId: "org-policy" },
+      ),
+    );
+    expect(listedForLead.find((group) => group.id === team.id)).toMatchObject({
+      memberEmails: ["lead@example.com", "member@example.com"],
+      leadEmails: ["lead@example.com"],
+    });
+    expect(
+      listedForLead.find((group) => group.id === ordinaryGroup.id),
+    ).toMatchObject({
+      memberEmails: [],
+      leadEmails: [],
+    });
+    const listedForOther = await as("other", () =>
+      listGroupsAction.run(
+        {},
+        { userEmail: "other@example.com", orgId: "org-policy" },
+      ),
+    );
+    expect(listedForOther.find((group) => group.id === team.id)).toMatchObject({
+      memberEmails: [],
+      leadEmails: [],
+    });
     expect(
       await getWorkspaceTeamForMember(
         "org-policy",
@@ -1380,6 +1455,52 @@ describe("workspace connection store", () => {
         }),
       ),
     ).rejects.toThrow(/cannot remove team leads/);
+    const { mountActionRoutes } = await import("../server/action-routes.js");
+    const mounted: Array<{
+      path: string;
+      handler: (event: unknown) => Promise<unknown>;
+    }> = [];
+    mountActionRoutes(
+      {
+        use: (path: string, handler: (event: unknown) => Promise<unknown>) =>
+          mounted.push({ path, handler }),
+      },
+      { "bulk-update-workspace-user-groups": bulk },
+      { getOwnerFromEvent: async () => "lead@example.com" },
+    );
+    const event = {
+      _method: "POST",
+      _headers: {},
+      context: {},
+      req: {
+        url: "http://localhost/_agent-native/actions/bulk-update-workspace-user-groups",
+        json: async () => ({
+          groupId: team.id,
+          operation: "remove",
+          memberEmails: ["lead@example.com"],
+        }),
+      },
+    };
+    const denial = await mounted
+      .find((route) =>
+        route.path.endsWith("bulk-update-workspace-user-groups"),
+      )!
+      .handler(event);
+    expect(event).toMatchObject({ _status: 403 });
+    expect(denial).toMatchObject({
+      error: "Team leads cannot remove team leads.",
+      errorCode: "action_failed",
+    });
+    expect(
+      await getWorkspaceTeamForMember(
+        "org-policy",
+        team.id,
+        "lead@example.com",
+      ),
+    ).toMatchObject({
+      memberEmails: ["lead@example.com", "member@example.com"],
+      leadEmails: ["lead@example.com"],
+    });
     await expect(
       as("lead", () =>
         updateWorkspaceUserGroupMembers({

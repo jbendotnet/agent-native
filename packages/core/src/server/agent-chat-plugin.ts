@@ -1154,6 +1154,38 @@ export function resolveAgentCheckpointPaths(
   return resolved;
 }
 
+export function validateChatCreationInput(
+  creationOrgId: unknown,
+  teamGroupId: unknown,
+  orgId: string | null | undefined,
+): void {
+  if (
+    creationOrgId !== undefined &&
+    (typeof creationOrgId !== "string" || !creationOrgId.trim())
+  ) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: "Invalid chat organization",
+    });
+  }
+  if (
+    teamGroupId !== undefined &&
+    teamGroupId !== null &&
+    (typeof teamGroupId !== "string" || !teamGroupId.trim())
+  ) {
+    throw createError({ statusCode: 400, statusMessage: "Invalid chat team" });
+  }
+  if (
+    creationOrgId !== undefined &&
+    (creationOrgId !== orgId || teamGroupId === undefined)
+  ) {
+    throw createError({
+      statusCode: 403,
+      statusMessage: "Chat draft belongs to another organization",
+    });
+  }
+}
+
 export function createAgentChatPlugin(
   options?: AgentChatPluginOptions,
 ): NitroPluginDef {
@@ -3836,6 +3868,7 @@ export function createAgentChatPlugin(
         runId: string;
         turnId: string;
         threadId: string | undefined;
+        creationOrgId?: string;
         teamGroupId?: string | null;
         message: string;
         agentKitMessageId?: string;
@@ -3858,15 +3891,22 @@ export function createAgentChatPlugin(
         await withThreadDataLock(threadId, async () => {
           let thread = await getThread(threadId);
           if (!thread) {
+            validateChatCreationInput(
+              details.creationOrgId,
+              details.teamGroupId,
+              getRequestOrgId(),
+            );
             try {
               thread = await createThread(ownerEmail, {
                 id: threadId,
+                orgId: getRequestOrgId(),
                 teamGroupId: details.teamGroupId,
                 scope: runScope,
                 source: options?.appId ? { appId: options.appId } : null,
               });
-            } catch {
+            } catch (error) {
               thread = await getThread(threadId);
+              if (!thread) throw error;
             }
           }
           if (!thread) {
@@ -4020,6 +4060,7 @@ export function createAgentChatPlugin(
         runId: string;
         turnId: string;
         threadId: string;
+        creationOrgId?: string;
         teamGroupId?: string | null;
         message: string;
         attachments?: AgentChatAttachment[];
@@ -4674,6 +4715,45 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
         apiKey: options?.apiKey,
         ...resolveInteractiveAgentRunOptions(options),
         finalResponseGuard: options?.finalResponseGuard,
+        prepareThreadBinding: async (details) => {
+          await withThreadDataLock(details.threadId, async () => {
+            if (!(await getThread(details.threadId))) {
+              validateChatCreationInput(
+                details.creationOrgId,
+                details.teamGroupId,
+                getRequestOrgId(),
+              );
+              try {
+                await createThread(details.ownerEmail, {
+                  id: details.threadId,
+                  orgId: getRequestOrgId(),
+                  teamGroupId: details.teamGroupId,
+                  scope: getRequestRunContext()?.chatScope ?? null,
+                  source: options?.appId ? { appId: options.appId } : null,
+                });
+              } catch (error) {
+                if (!(await getThread(details.threadId))) throw error;
+              }
+            }
+            const access = await resolveThreadAccess(
+              details.ownerEmail,
+              details.threadId,
+              "editor",
+              { orgId: getRequestOrgId() },
+            );
+            if (!access) {
+              throw createError({
+                statusCode: 404,
+                statusMessage: "Thread not found",
+              });
+            }
+            const runCtx = ensureRequestRunContext();
+            if (runCtx) {
+              runCtx.threadId = details.threadId;
+              runCtx.boundTeamGroupId = access.teamGroupId;
+            }
+          });
+        },
         prepareRequest: async (details) => {
           if (details.threadId && details.ownerEmail) {
             const existingThread = await getThread(details.threadId);
@@ -7702,13 +7782,18 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
               }
             }
             try {
+              validateChatCreationInput(
+                body?.creationOrgId,
+                body?.teamGroupId,
+                orgId,
+              );
               const thread = await createThread(owner, {
                 id: body?.id,
+                orgId,
                 teamGroupId: body?.teamGroupId,
                 title: body?.title ?? "",
                 scope: bodyIncludesScope ? bodyScope : requestedScope,
                 source: options?.appId ? { appId: options.appId } : null,
-                orgId: await getOrgIdFromEvent(event),
               });
               return thread;
             } catch (err) {

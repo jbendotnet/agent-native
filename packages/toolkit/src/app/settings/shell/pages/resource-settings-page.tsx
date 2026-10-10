@@ -1,3 +1,4 @@
+import { useActionQuery } from "@agent-native/core/client/hooks";
 import { useT } from "@agent-native/core/client/i18n";
 import { useOrg } from "@agent-native/core/client/org";
 import type { ResourceView } from "@agent-native/core/client/resources/resource-views";
@@ -6,6 +7,8 @@ import {
   type ResourceMeta,
 } from "@agent-native/core/client/resources/use-resources";
 import { useUploadResource } from "@agent-native/core/client/uploads/use-upload-resource";
+import { actionErrorMessage } from "@agent-native/core/client/use-action";
+import type { WorkspaceUserGroup } from "@agent-native/core/workspace-connections/groups";
 import { Alert, AlertDescription } from "@agent-native/toolkit/ui/alert";
 import { Button } from "@agent-native/toolkit/ui/button";
 import {
@@ -23,6 +26,13 @@ import {
 } from "@agent-native/toolkit/ui/dropdown-menu";
 import { Input } from "@agent-native/toolkit/ui/input";
 import { Label } from "@agent-native/toolkit/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@agent-native/toolkit/ui/select";
 import { Spinner } from "@agent-native/toolkit/ui/spinner";
 import { Textarea } from "@agent-native/toolkit/ui/textarea";
 import {
@@ -32,6 +42,7 @@ import {
   IconMessage,
   IconPlus,
   IconUpload,
+  IconUsersGroup,
 } from "@tabler/icons-react";
 import {
   useCallback,
@@ -52,16 +63,20 @@ import {
   normalizeResourceFileName,
   requestSkillFromAgent,
   ResourcesPanel,
+  slugifyName,
+  MEMORY_RESOURCE_SEED,
 } from "../../../resources/index.js";
 
 /** Filled by the panel with a function that opens a resource in its editor. */
-export type OpenResourceRef = { current: ((id: string) => void) | null };
+export type OpenResourceRef = {
+  current: ((id: string, teamGroupId?: string) => void) | null;
+};
 
 /** Personal/organization target of an add action. */
 export type EditableResourceScope = "personal" | "shared";
 
 export function useOpenResourceRef() {
-  const ref = useRef<((id: string) => void) | null>(null);
+  const ref = useRef<((id: string, teamGroupId?: string) => void) | null>(null);
   const open = useCallback((resource: Pick<ResourceMeta, "id">) => {
     ref.current?.(resource.id);
   }, []);
@@ -92,16 +107,242 @@ export function ResourceSettingsPage({
   openResourceRef: OpenResourceRef;
   onEditingChange?: (editing: boolean) => void;
 }) {
+  const t = useT();
+  const { data: org } = useOrg();
+  const supportsTeamContext =
+    view === "instructions" || view === "skills" || view === "memory";
+  const groupsQuery = useActionQuery<WorkspaceUserGroup[]>(
+    "list-workspace-user-groups",
+    {},
+    { enabled: supportsTeamContext && !!org?.orgId },
+  );
+  const [teamGroupId, setTeamGroupId] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const handleEditingChange = useCallback(
+    (value: boolean) => {
+      setEditing(value);
+      onEditingChange?.(value);
+    },
+    [onEditingChange],
+  );
+  const teams = (
+    supportsTeamContext && !groupsQuery.isError ? (groupsQuery.data ?? []) : []
+  ).filter(
+    (group) =>
+      group.isTeam &&
+      group.memberEmails.includes(org?.email.trim().toLowerCase() ?? ""),
+  );
+  const team = teams.find((group) => group.id === teamGroupId);
+  const teamGroup: ResourceSettingsGroupConfig | null = team
+    ? {
+        id: "team",
+        view,
+        sources: ["team"],
+        teamGroupId: team.id,
+        title: team.name,
+        emptyIcon: IconUsersGroup,
+        emptyTitle: t("agentChat.settingsResources.teamEmpty"),
+        emptyAction: (
+          <TeamResourceAdd
+            view={view}
+            teamGroupId={team.id}
+            onCreated={(resource) =>
+              openResourceRef.current?.(resource.id, team.id)
+            }
+          />
+        ),
+        action:
+          view === "skills" ? (
+            <TeamResourceAdd
+              view={view}
+              teamGroupId={team.id}
+              onCreated={(resource) =>
+                openResourceRef.current?.(resource.id, team.id)
+              }
+            />
+          ) : undefined,
+      }
+    : null;
   return (
-    <ResourcesPanel
-      showMcpServers={false}
-      resourceFilter={view}
-      resourceTreeVariant="collection"
-      scope="personal"
-      settingsGroups={groups}
-      openResourceRef={openResourceRef}
-      onEditingChange={onEditingChange}
-    />
+    <div className="flex h-full flex-col gap-4">
+      {groupsQuery.isError && supportsTeamContext ? (
+        <Alert variant="destructive">
+          <IconAlertCircle aria-hidden="true" />
+          <AlertDescription className="flex items-center justify-between gap-2">
+            {groupsQuery.error?.message ??
+              t("agentChat.settingsResources.loadFailed")}
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => void groupsQuery.refetch()}
+            >
+              {t("agentChat.common.retry")}
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      {teams.length && !editing ? (
+        <Select
+          value={team?.id ?? "organization"}
+          onValueChange={(value) =>
+            setTeamGroupId(value === "organization" ? null : value)
+          }
+        >
+          <SelectTrigger
+            aria-label={t("agentChat.settingsResources.teamScope")}
+            className="w-full max-w-56"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="organization">
+              {t("agentChat.settingsResources.organization")}
+            </SelectItem>
+            {teams.map((item) => (
+              <SelectItem key={item.id} value={item.id}>
+                {item.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ) : null}
+      <ResourcesPanel
+        key={team?.id ?? "organization"}
+        showMcpServers={false}
+        resourceFilter={view}
+        resourceTreeVariant="collection"
+        scope="personal"
+        settingsGroups={teamGroup ? [...groups, teamGroup] : groups}
+        teamGroupId={team?.id}
+        openResourceRef={openResourceRef}
+        onEditingChange={handleEditingChange}
+      />
+    </div>
+  );
+}
+
+function TeamResourceAdd({
+  view,
+  teamGroupId,
+  onCreated,
+}: {
+  view: ResourceView;
+  teamGroupId: string;
+  onCreated: (resource: ResourceMeta) => void;
+}) {
+  const t = useT();
+  const create = useCreateResource();
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const add = async () => {
+    if (create.isPending) return;
+    const slug = slugifyName(name);
+    const path =
+      view === "instructions"
+        ? "AGENTS.md"
+        : view === "memory"
+          ? "memory/MEMORY.md"
+          : `skills/${slug}/SKILL.md`;
+    const content =
+      view === "skills"
+        ? `---\nname: ${JSON.stringify(slug)}\ndescription: ${JSON.stringify(description.trim())}\n---\n\n# ${name.trim()}\n`
+        : view === "instructions"
+          ? "# Agent Instructions\n\n"
+          : MEMORY_RESOURCE_SEED.content;
+    try {
+      const resource = await create.mutateAsync({
+        path,
+        content,
+        mimeType: "text/markdown",
+        teamGroupId,
+      });
+      setOpen(false);
+      setName("");
+      setDescription("");
+      onCreated(resource);
+    } catch (error) {
+      toast.error(
+        actionErrorMessage(error) ??
+          t("agentChat.settingsResources.saveFailed", { name: path }),
+      );
+    }
+  };
+  if (view !== "skills")
+    return (
+      <EmptyActionButton
+        label={
+          view === "instructions"
+            ? t("agentChat.settingsResources.instructions.add")
+            : t("agentChat.settingsResources.memory.add")
+        }
+        pending={create.isPending}
+        onClick={() => void add()}
+      />
+    );
+  return (
+    <>
+      <EmptyActionButton
+        label={t("agentChat.settingsResources.skills.add")}
+        onClick={() => setOpen(true)}
+      />
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {t("agentChat.settingsResources.skills.add")}
+            </DialogTitle>
+          </DialogHeader>
+          <form
+            className="grid gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (name.trim() && description.trim()) void add();
+            }}
+          >
+            <div className="grid gap-2">
+              <Label htmlFor={`team-skill-name-${teamGroupId}`}>
+                {t("agentChat.settingsResources.teamSkillName")}
+              </Label>
+              <Input
+                id={`team-skill-name-${teamGroupId}`}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor={`team-skill-description-${teamGroupId}`}>
+                {t("agentChat.settingsResources.teamSkillDescription")}
+              </Label>
+              <Input
+                id={`team-skill-description-${teamGroupId}`}
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+              />
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setOpen(false)}
+              >
+                {t("agentChat.settingsResources.cancel")}
+              </Button>
+              <Button
+                type="submit"
+                disabled={
+                  !name.trim() || !description.trim() || create.isPending
+                }
+              >
+                {create.isPending ? <Spinner /> : null}
+                {t("agentChat.settingsResources.create")}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

@@ -1100,6 +1100,11 @@ const messages: ToolkitAgentChatTranslation = {
   "composer.menu.uploadFileDescription":
     "Imágenes, PDFs, texto/código, JSON, CSV",
   "composer.messageAgent": "Escribe al agente...",
+  "team.nextChat": "Nuevos chats",
+  "team.thisChat": "Este chat",
+  "team.noTeam": "Sin equipo",
+  "team.unavailable":
+    "La selección de equipo no está disponible. Inténtalo de nuevo antes de enviar.",
   "composer.model": "Modelo",
   "composer.needsApiKey": "requiere una clave de API",
   "composer.pageTitle": "Título de la página",
@@ -2770,6 +2775,16 @@ const messages: ToolkitAgentChatTranslation = {
   "settingsShell.searchPlaceholder": "Buscar en la configuración",
   "settingsShell.unread": "Nuevo",
   "settingsResources.personal": "Personal",
+  "settingsResources.team": "Equipo",
+  "settingsResources.teamScope": "Contexto del equipo",
+  "settingsResources.teamEmpty": "Aún no hay contexto del equipo",
+  "settingsResources.teamSkillName": "Nombre de la habilidad",
+  "settingsResources.teamSkillDescription":
+    "¿Cuándo debe usar esta habilidad el agente?",
+  "settingsResources.designateTeam": "Convertir este grupo en equipo",
+  "settingsResources.manageLeads": "Gestionar responsables",
+  "settingsResources.leadFor": "Responsable: {{email}}",
+  "settingsResources.groupActions": "Acciones para {{name}}",
   "settingsResources.organization": "Organización",
   "settingsResources.fromDispatch": "Desde Dispatch",
   "settingsResources.readOnly": "Solo lectura",

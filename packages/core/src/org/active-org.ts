@@ -32,6 +32,11 @@ export async function setActiveOrgId(
   await warnOnCrossOrgRepoint(email, orgId, reason);
   await putUserSetting(email, "active-org-id", { orgId });
   if (event) {
+    const { restoreActiveWorkspaceTeam } =
+      await import("../workspace-connections/active-team.js");
+    await restoreActiveWorkspaceTeam(email, orgId);
+  }
+  if (event) {
     const { markActiveOrgSelectionChanged } = await import("./context.js");
     markActiveOrgSelectionChanged(event);
   }

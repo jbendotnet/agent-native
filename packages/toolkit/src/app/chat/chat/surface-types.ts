@@ -155,6 +155,8 @@ export interface AssistantChatAdapterContext {
   streamingUrl?: string;
   tabId?: string;
   threadId?: string;
+  /** Captured once for an unsaved conversation; never inferred from the current preference. */
+  creationTeam?: { orgId: string; teamGroupId: string | null } | null;
   modelRef: { current: string | undefined };
   engineRef: { current: string | undefined };
   effortRef: { current: ReasoningEffort | undefined };
@@ -177,6 +179,7 @@ export interface AssistantChatProps {
   browserTabId?: string;
   /** Thread ID for SQL-backed persistence. When set, messages are loaded from and saved to the server. */
   threadId?: string;
+  creationTeam?: { orgId: string; teamGroupId: string | null } | null;
   /** Resource scope to include with chat requests for server-side context. */
   contextScope?: ChatThreadScope | null;
   /** Optional host-owned resource history used for chat-side reverts. */

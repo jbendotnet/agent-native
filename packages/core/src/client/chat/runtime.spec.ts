@@ -652,6 +652,24 @@ describe("createAgentNativeChatRuntime", () => {
     vi.useRealTimers();
   });
 
+  it("sends a captured creation organization even for an explicit no-team draft", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(sseResponse([{ type: "done" }]));
+    const runtime = createAgentNativeChatRuntime({
+      fetch: fetchMock as typeof fetch,
+      creationTeam: { orgId: "org-a", teamGroupId: null },
+    });
+    const turn = await (
+      await runtime.createSession()
+    ).startTurn({ prompt: "hello" });
+    await drain(turn.events);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      creationOrgId: "org-a",
+      teamGroupId: null,
+    });
+  });
+
   it("sends a continued turn's durable attachments when the turn is no longer in memory", async () => {
     const fetchMock = vi
       .fn()

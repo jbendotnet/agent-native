@@ -247,18 +247,56 @@ describe("chat thread store", () => {
         orgId: "org-1",
         teamGroupId: "ordinary-group",
       }),
-    ).rejects.toThrow("current member");
+    ).rejects.toMatchObject({
+      message:
+        "Thread creator must be a current member of the bound team and organization.",
+      statusCode: 403,
+    });
+    await expect(
+      createThread("user@example.com", {
+        id: "missing-org",
+        orgId: null,
+        teamGroupId: "team-1",
+      }),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    for (const teamGroupId of ["forged-team", "deleted-team"]) {
+      await expect(
+        createThread("user@example.com", {
+          id: teamGroupId,
+          orgId: "org-1",
+          teamGroupId,
+        }),
+      ).rejects.toMatchObject({ statusCode: 403 });
+    }
     expect(
       executeMock.mock.calls.some(([query]) =>
         String(query?.sql ?? query).includes("INSERT INTO chat_threads"),
       ),
     ).toBe(false);
 
+    getWorkspaceTeamForMemberMock.mockRejectedValueOnce(
+      new Error("team lookup unavailable"),
+    );
+    await expect(
+      createThread("user@example.com", {
+        orgId: "org-1",
+        teamGroupId: "team-1",
+      }),
+    ).rejects.toThrow("team lookup unavailable");
+
+    executeMock.mockImplementation(async () => ({ rows: [], rowsAffected: 1 }));
+    const unbound = await createThread("user@example.com", {
+      id: "unbound",
+      orgId: "org-1",
+      teamGroupId: null,
+    });
+    expect(unbound.teamGroupId).toBeNull();
+    expect(getWorkspaceTeamForMemberMock).toHaveBeenCalledTimes(4);
+
     getWorkspaceTeamForMemberMock.mockResolvedValue({
       id: "team-1",
       isTeam: true,
     });
-    executeMock.mockImplementation(async () => ({ rows: [], rowsAffected: 1 }));
     const created = await createThread("user@example.com", {
       id: "bound-1",
       orgId: "org-1",
@@ -270,11 +308,14 @@ describe("chat thread store", () => {
       "team-1",
       "user@example.com",
     );
-    expect(
-      executeMock.mock.calls.find(([query]) =>
-        String(query?.sql ?? query).includes("INSERT INTO chat_threads"),
-      )?.[0].args,
-    ).toContain("team-1");
+    const inserts = executeMock.mock.calls.filter(([query]) =>
+      String(query?.sql ?? query).includes("INSERT INTO chat_threads"),
+    );
+    expect(inserts).toHaveLength(2);
+    expect(inserts[0]?.[0].args[0]).toBe("unbound");
+    expect(inserts[0]?.[0].args.at(-1)).toBeNull();
+    expect(inserts[1]?.[0].args[0]).toBe("bound-1");
+    expect(inserts[1]?.[0].args.at(-1)).toBe("team-1");
   });
 
   it("applies current team and org membership to list, search and bulk SQL without hydrating list transcripts", async () => {
