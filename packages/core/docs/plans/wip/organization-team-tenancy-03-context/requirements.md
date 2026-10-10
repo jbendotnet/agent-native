@@ -1,0 +1,16 @@
+# Epic 3 requirements
+
+Source: [accepted ADR](../../../design/organization-team-tenancy.md).
+
+| ID   | Requirement                                                                                                                                                                                                                                               | Acceptance evidence                                                                                                                               |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C-01 | Store existing instructions/skills/memory paths under `__team__:<group-id>`. Derive the owner server-side from team ID. Validate marked group, matching current org, and current org/team membership on list/read/write/delete, including by resource ID. | Members edit; nonmembers/admin nonmembers/departed actors and deleted teams denied on all paths. Rows survive team deletion but are inaccessible. |
+| C-02 | Instructions order is workspace/app defaults → org → bound team → personal. Every turn uses the stored binding, not current preference. Unbound threads load no team context.                                                                             | Two teams, changed preference, repeated turns, and conflicting instruction fixtures.                                                              |
+| C-03 | Exact-name skill winner order is personal → bound team → org → defaults. Org/team/personal memory remain separate and source-labeled.                                                                                                                     | Duplicate exact names and labeled retrieval; multiple memberships do not merge all teams.                                                         |
+| C-04 | Missing/inaccessible team and failed/incomplete required team lookup are distinguishable from an authorized team with no resources. They must fail the operation/turn rather than return empty successful context.                                        | Inject lookup/list/body failures; assert no successful turn, fallback team, or empty-success result.                                              |
+
+Authorization is independent of instruction precedence. Selecting a team never grants a connection or credential. Existing app/actor/org/group connection allow-list checks remain in force.
+
+All Epic 2 children and proof gates pass before this epic starts. Use its stored binding and current-access checks without reopening unfinished authorization work. Complete C-01–C-04 through resource operations and internal normal/background turn fixtures before Epic 4 starts; selection UI and Epic 5 share actions are not prerequisites.
+
+Non-goals: general team ownership for app data, copied resources, new resource tables, automatic memory conflict resolution, organization default editing by team members.

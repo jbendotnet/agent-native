@@ -494,6 +494,11 @@ describe("shareable resource access helpers", () => {
 
   it("includes group-only shares in filtered listings while checking current membership", async () => {
     await insertDoc({ id: "shared-group", ownerEmail: outsiderEmail });
+    await insertDoc({
+      id: "unrelated-org",
+      ownerEmail: outsiderEmail,
+      visibility: "org",
+    });
     await pglite
       .prepare(
         `INSERT INTO organizations (
@@ -508,20 +513,228 @@ describe("shareable resource access helpers", () => {
          VALUES (?, ?, ?, ?)`,
       )
       .run("gtm-team", orgId, "GTM team", JSON.stringify([viewerEmail]));
+    await addOrgMember(orgId, viewerEmail);
+    await addOrgMember(orgId, ownerEmail);
+    await addOrgMember(orgId, outsiderEmail);
+    await addOrgMember(orgId, "bystander@example.com");
+    await pglite
+      .prepare(
+        "UPDATE org_members SET role = 'owner' WHERE org_id = ? AND email = ?",
+      )
+      .run(orgId, ownerEmail);
+
+    const viewerContext = { userEmail: viewerEmail, orgId };
+    const dbExec: DbExec = {
+      execute: async (statement) => {
+        const sql = typeof statement === "string" ? statement : statement.sql;
+        const args =
+          typeof statement === "string" ? [] : (statement.args ?? []);
+        let index = 0;
+        const result = await pglite.query(
+          sql.replace(/\?/g, () => `$${++index}`),
+          args,
+        );
+        return {
+          rows: result.rows,
+          rowsAffected: result.affectedRows ?? result.rowCount ?? 0,
+        };
+      },
+      transaction: (fn) =>
+        pglite.db.transaction((tx) =>
+          fn({
+            execute: async (statement) => {
+              const sql =
+                typeof statement === "string" ? statement : statement.sql;
+              const args =
+                typeof statement === "string" ? [] : (statement.args ?? []);
+              let index = 0;
+              const result = await tx.query(
+                sql.replace(/\?/g, () => `$${++index}`),
+                args,
+              );
+              return {
+                rows: result.rows,
+                rowsAffected: result.affectedRows ?? result.rowCount ?? 0,
+              };
+            },
+          }),
+        ),
+    };
+    await expect(listVisible(viewerContext)).resolves.not.toContain(
+      "shared-group",
+    );
+    await runWithRequestContext(viewerContext, () =>
+      withDbExec(dbExec, async () => {
+        await expect(
+          resolveAccess(resourceType, "shared-group"),
+        ).resolves.toBeNull();
+      }),
+    );
+    await runWithRequestContext({ userEmail: outsiderEmail, orgId }, () =>
+      withDbExec(dbExec, () =>
+        shareResource.run(
+          {
+            resourceType,
+            resourceId: "shared-group",
+            principalType: "group",
+            principalId: "gtm-team",
+            role: "viewer",
+            notify: false,
+          },
+          { userEmail: outsiderEmail, orgId },
+        ),
+      ),
+    );
     await db.insert(docShares).values({
-      id: "share-group",
-      resourceId: "shared-group",
+      id: "share-org-resource-group",
+      resourceId: "unrelated-org",
       principalType: "group",
       principalId: "gtm-team",
       role: "viewer",
       createdBy: ownerEmail,
       createdAt: "2026-04-30T00:00:00.000Z",
     });
-    await addOrgMember(orgId, viewerEmail);
-
     await expect(
-      listVisible({ userEmail: viewerEmail, orgId }),
-    ).resolves.toContain("shared-group");
+      listVisible({ userEmail: "bystander@example.com", orgId }),
+    ).resolves.toContain("unrelated-org");
+    await expect(
+      listVisible({ userEmail: "bystander@example.com", orgId }),
+    ).resolves.not.toContain("shared-group");
+    registerShareableResource({
+      type: `${resourceType}-no-group`,
+      resourceTable: docs,
+      sharesTable: docShares,
+      displayName: "No group QA Doc",
+      titleColumn: "title",
+      getDb: () => db,
+    });
+    await runWithRequestContext({ userEmail: ownerEmail, orgId }, () =>
+      withDbExec(dbExec, async () => {
+        await expect(
+          shareResource.run(
+            {
+              resourceType: `${resourceType}-no-group`,
+              resourceId: "shared-group",
+              principalType: "group",
+              principalId: "gtm-team",
+              role: "viewer",
+              notify: false,
+            },
+            { userEmail: ownerEmail, orgId },
+          ),
+        ).rejects.toThrow(/group/i);
+        await expect(
+          shareResource.run(
+            {
+              resourceType: "unregistered-family",
+              resourceId: "shared-group",
+              principalType: "group",
+              principalId: "gtm-team",
+              role: "viewer",
+              notify: false,
+            },
+            { userEmail: ownerEmail, orgId },
+          ),
+        ).rejects.toThrow();
+      }),
+    );
+    const groupBefore = await pglite
+      .prepare("SELECT * FROM workspace_user_groups WHERE id = ?")
+      .get("gtm-team");
+    const [shareBefore] = await db
+      .select()
+      .from(docShares)
+      .where(eq(docShares.resourceId, "shared-group"));
+    await runWithRequestContext({ userEmail: ownerEmail, orgId }, () =>
+      withDbExec(dbExec, async () => {
+        const upsertAction = (
+          await import("../workspace-connections/actions/upsert-workspace-user-group.js")
+        ).default;
+        await expect(
+          upsertAction.run(
+            {
+              id: "gtm-team",
+              name: "GTM team",
+              memberEmails: [viewerEmail],
+              isTeam: true,
+            },
+            { userEmail: ownerEmail, orgId },
+          ),
+        ).resolves.toMatchObject({ id: "gtm-team", isTeam: true });
+      }),
+    );
+
+    await expect(listVisible(viewerContext)).resolves.toContain("shared-group");
+    await expect(
+      listVisible({ userEmail: "bystander@example.com", orgId }),
+    ).resolves.toContain("unrelated-org");
+    await runWithRequestContext(viewerContext, () =>
+      withDbExec(dbExec, async () => {
+        await expect(
+          resolveAccess(resourceType, "shared-group"),
+        ).resolves.toMatchObject({ role: "viewer" });
+      }),
+    );
+    expect(
+      await pglite
+        .prepare(
+          "SELECT id, member_emails_json FROM workspace_user_groups WHERE id = ?",
+        )
+        .get("gtm-team"),
+    ).toMatchObject({
+      id: groupBefore?.id,
+      member_emails_json: groupBefore?.member_emails_json,
+    });
+    expect(
+      await db
+        .select()
+        .from(docShares)
+        .where(eq(docShares.resourceId, "shared-group")),
+    ).toEqual([shareBefore]);
+
+    await runWithRequestContext({ userEmail: ownerEmail, orgId }, () =>
+      withDbExec(dbExec, async () => {
+        const deleteAction = (
+          await import("../workspace-connections/actions/delete-workspace-user-group.js")
+        ).default;
+        await expect(
+          deleteAction.run(
+            { id: "gtm-team" },
+            { userEmail: ownerEmail, orgId },
+          ),
+        ).resolves.toEqual({ id: "gtm-team", deleted: true });
+      }),
+    );
+    await expect(listVisible(viewerContext)).resolves.not.toContain(
+      "shared-group",
+    );
+    await expect(listVisible(viewerContext)).resolves.toContain(
+      "unrelated-org",
+    );
+    expect(
+      await pglite
+        .prepare("SELECT id FROM org_members WHERE org_id = ? AND email = ?")
+        .get(orgId, viewerEmail),
+    ).toBeTruthy();
+    await runWithRequestContext(viewerContext, () =>
+      withDbExec(dbExec, async () => {
+        await expect(
+          resolveAccess(resourceType, "shared-group"),
+        ).resolves.toBeNull();
+        await expect(
+          resolveAccess(resourceType, "unrelated-org"),
+        ).resolves.toMatchObject({ role: "viewer" });
+      }),
+    );
+    expect(
+      await db
+        .select()
+        .from(docShares)
+        .where(eq(docShares.resourceId, "shared-group")),
+    ).toEqual([shareBefore]);
+    expect(
+      await db.select().from(docs).where(eq(docs.id, "shared-group")),
+    ).toMatchObject([{ id: "shared-group" }]);
 
     await pglite
       .prepare("DELETE FROM org_members WHERE org_id = ? AND email = ?")
