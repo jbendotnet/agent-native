@@ -10,7 +10,7 @@ The completed six-PR tenancy stack implements the original connection-scoped con
 
 ## Scope / Boundaries
 
-Implement the framework-wide [lease contract](https://github.com/jbendotnet/agent-native/blob/ea1df2b21d94f49441649d9c520b155a72feb2f8/packages/core/docs/design/durable-agent-runs.md#bounded-viewer-authorization-leases) and its [tenancy amendment](https://github.com/jbendotnet/agent-native/blob/ea1df2b21d94f49441649d9c520b155a72feb2f8/packages/core/docs/design/organization-team-tenancy.md#proposed-stream-policy-amendment-2026-10-10). Cover all authorized run subscriptions, including linked, non-team, standalone, and supported public policies. Preserve their access rights while changing stream enforcement.
+Implement the framework-wide [lease contract](../../../design/durable-agent-runs.md#bounded-viewer-authorization-leases) and its [tenancy amendment](../../../design/organization-team-tenancy.md#proposed-stream-policy-amendment-2026-10-10). Cover all authorized run subscriptions, including linked, non-team, standalone, and supported public policies. Preserve their access rights while changing stream enforcement.
 
 The proposed design sections live in [design PR #5777](https://github.com/BuilderIO/agent-native/pull/5777), not on the Epic 6 base. The links pin the reviewed design revision. Design approval and integration remain dependencies of implementation, not claims of this planning PR.
 
