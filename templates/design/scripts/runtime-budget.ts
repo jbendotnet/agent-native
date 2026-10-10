@@ -333,7 +333,13 @@ const zoomOf = () =>
       document.querySelector<HTMLElement>("[data-multi-screen-canvas-world]")
         ?.style.transform ?? "";
     const match = /scale\(([0-9.]+)\)/.exec(transform);
-    return match ? Number(match[1]) * 100 : null;
+    const zoom = match ? Number(match[1]) * 100 : NaN;
+    if (!Number.isFinite(zoom) || zoom <= 0) {
+      throw new Error(
+        `Cannot read canvas zoom from ${JSON.stringify(transform)}`,
+      );
+    }
+    return zoom;
   });
 const zoomPercentFromUrl = () =>
   page.evaluate(() => {

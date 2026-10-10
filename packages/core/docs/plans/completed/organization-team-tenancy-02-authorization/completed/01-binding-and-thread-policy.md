@@ -28,3 +28,9 @@ Persist a validated nullable team ID only at actual server creation, and add the
 ## Verification
 
 Run Core `src/chat-threads/store.spec.ts`, `store.access-projection.spec.ts`, and affected plugin lifecycle/thread-history specs through Vitest. Verify projected lists do not hydrate transcripts. Test forced client IDs, cross-org teams, ordinary groups, null legacy rows, and immutable updates. A removed owner cannot read or continue, while a still-authorized shared member can read but never act as successor.
+
+## Execution record
+
+Completed on 2026-10-03. Creation validates the marked team, organization, and creator membership before persisting the nullable binding. Full/summary projections include it, without a backfill or deletion-blocking foreign key. Direct and projected SQL access apply fresh membership before owner/share policy. Bound viewers cannot continue or manage, and bound execution fails explicitly until Epic 3 implements context loading.
+
+Independent verification included the thread store, projected-access, plugin lifecycle/history/setup, and release-migration tests in the combined [16-file, 209-test matrix](../epic.md#completion-evidence). Core TypeScript and the additive-migration guard passed. Coverage includes invalid creation inputs, legacy null bindings, immutable updates, private invisibility, current owner/viewer membership, removal/rejoin, and deleted-team denial. Proof is test-backed, not live PostgreSQL or deployed verification. Release integration remains in Epic 6.

@@ -125,7 +125,7 @@ flowchart TD
 
 Add a chat-thread-specific policy at the action boundary for team grants and revocations. Do not enable the generic group-share action unchanged: it accepts `commenter`, `editor`, and `admin` as well as `viewer`, and lets resource admins manage shares. Chat team grants must reject every role except `viewer`. Both grant and revocation require recorded-owner authority, not merely resource-admin access. Organization and resource admins get no exception.
 
-At grant time, validate the marked team, its match to the conversation's organization, and the owner's current organization and team membership. On every direct read and list, check the viewer's current organization and team membership. Offer all current team members, including leads, one list of explicitly shared conversations and their linked runs. This list discovers authorized shares; it does not grant access. A private conversation does not appear merely because it is bound to the team. Generic group principals alone cannot provide this list: chat group grants are not currently enabled, and chat list filtering does not yet admit group shares.
+At grant time, validate the marked team, its match to the conversation's organization, and the owner's current organization and team membership. On every direct read and list, check the viewer's current organization and team membership. Offer all current team members, including leads, one list of explicitly shared conversations and their linked runs. This list discovers authorized shares; it does not grant access. A private conversation does not appear merely because it is bound to the team. Chat list filtering admits existing viewer group shares, but chat-specific grant actions and team-shared discovery are not yet implemented.
 
 Linked runs inherit their conversation's read access; V1 does not share runs separately. On each new read, list, stream connection (including reconnect and replay), or background response request, resolve the linked conversation and apply its current read rules: organization and team membership where applicable, plus owner or share access. Deny the request if the conversation is missing or inaccessible; cached results and background paths cannot bypass this check. V1 adopts the existing connection-scoped run-stream authorization used for other access rules: membership removal, team deletion, or share revocation denies subsequent requests and reconnects but does not terminate an already-open stream. That stream may continue delivering events until it disconnects. Keep the general run transport rules in `durable-agent-runs.md`, but define caller access to runs here through the linked conversation.
 
@@ -151,6 +151,18 @@ Never reuse a deleted team's ID or infer a replacement from its name. Group crea
 
 Conversion preserves existing grants and connection permissions. Deletion removes connection allow-list references transactionally and deletes the group without deleting resource or grant rows. Supported group-share and connection-access lifecycle checks pass. Retained team-context and bound-conversation integration proof remains required in Epic 6; these identity changes do not implement those features or satisfy full V1 acceptance. The mutation tests use a shared PGlite client and do not prove lock blocking between independent PostgreSQL connections. Hosted request initialization does not run the migration.
 
+### Implemented conversation and linked-run authorization
+
+`chat-threads/schema-migrations.ts` and `schema.ts` add nullable `team_group_id` and a lookup index without a foreign key or backfill. Creation validates the marked team, current organization, and creator membership. Full and summary projections preserve the binding, and later updates do not change it.
+
+`chat-threads/store.ts` applies current organization and bound-team membership before owner/share authority in both direct access and SQL list/search/bulk predicates. Existing viewer group shares grant reads only. Bound continuation and management require the recorded owner after the membership gate. Private binding grants no access, and deleted teams deny subsequent requests while their IDs remain on stored conversations.
+
+Public-token issuance and indexed/legacy redemption reject a persisted binding, including tokens issued before binding and bindings to deleted teams. Public transcript handlers deny before serializing messages or enriching linked runs. Unbound conversations retain public-link behavior when shared with a team.
+
+`agent/run-ownership.ts`, mounted chat run routes, team-task services, harness controllers, and durable-worker reentry resolve fresh linked-conversation access before protected reads or controls. Missing conversations deny access. Projected task candidates apply organization and conversation access before the limit; lists fail explicitly above 200 authorized candidates rather than silently truncating. Stream authorization remains connection-scoped: an open stream may finish, but new connections and replay requests recheck access.
+
+Bound prompt execution fails explicitly until required team-context loading exists. Authorization is implemented, not successful team-context assembly. Focused tests cover store projections, mounted routes, cached background reads, worker reentry, and stream reconnect/replay. This is not live-PostgreSQL or deployed proof, and Epic 6 remains the retained-binding release integration gate.
+
 ### Remaining integration surfaces
 
 These existing surfaces still need the remaining V1 behavior:
@@ -158,8 +170,9 @@ These existing surfaces still need the remaining V1 behavior:
 - Shared principals, list and direct access: `packages/core/src/sharing/access.ts`, `packages/core/src/sharing/actions/share-resource.ts`
 - Agent resources and prompt assembly: `packages/core/src/resources/store.ts`, `packages/core/src/server/agent-chat/prompt-resources.ts`
 - Session application state and user/organization selection: `packages/core/src/application-state/store.ts` (currently session-keyed; extend persistence without replacing session behavior)
-- Conversation persistence and access: `packages/core/src/chat-threads/store.ts`, `packages/core/src/server/agent-chat-plugin.ts`
-- Run access through conversations and stream connections: `packages/core/src/agent/run-ownership.ts`, `packages/core/src/server/agent-chat-plugin.ts` (event streams check access when opened, not while delivering events)
+- User/agent creation and selection: expose validated creation inputs through the shared action/UI surface after team-context loading exists.
+- Chat-specific viewer grants, revocation, and team-shared discovery: extend existing thread/share actions without generic resource-admin authority or separate run shares.
+- Retained-binding integration: prove deletion and membership lifecycle across identity, context, conversations, and linked runs before release.
 
 ## Implementation and proof boundary
 

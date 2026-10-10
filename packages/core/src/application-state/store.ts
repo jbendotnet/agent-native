@@ -281,12 +281,16 @@ export async function appStateCompareAndSetMany(
 export async function appStateList(
   sessionId: string,
   keyPrefix: string,
+  limit?: number,
 ): Promise<Array<{ key: string; value: Record<string, unknown> }>> {
   await ensureTable();
   const client = getDbExec();
   const { rows } = await client.execute({
-    sql: `SELECT key, value FROM application_state WHERE session_id = ? AND key LIKE ? ESCAPE '!'`,
-    args: [sessionId, escapeLike(keyPrefix) + "%"],
+    sql: `SELECT key, value FROM application_state WHERE session_id = ? AND key LIKE ? ESCAPE '!'${limit === undefined ? "" : " ORDER BY key LIMIT ?"}`,
+    args:
+      limit === undefined
+        ? [sessionId, escapeLike(keyPrefix) + "%"]
+        : [sessionId, escapeLike(keyPrefix) + "%", limit],
   });
   return rows.map((row) => ({
     key: row.key as string,
@@ -297,6 +301,8 @@ export async function appStateList(
 export async function appStateListByKeyPrefix(
   keyPrefix: string,
   limit = 100,
+  exact = false,
+  scope?: { userEmail: string; orgId: string | null },
 ): Promise<
   Array<{ sessionId: string; key: string; value: Record<string, unknown> }>
 > {
@@ -304,8 +310,24 @@ export async function appStateListByKeyPrefix(
   const client = getDbExec();
   const boundedLimit = Math.max(1, Math.min(Math.floor(limit), 2_048));
   const { rows } = await client.execute({
-    sql: `SELECT session_id, key, value FROM application_state WHERE key LIKE ? ESCAPE '!' ORDER BY updated_at ASC LIMIT ?`,
-    args: [escapeLike(keyPrefix) + "%", boundedLimit],
+    sql: scope
+      ? `SELECT a.session_id, a.key, a.value FROM application_state a
+         JOIN chat_threads ON chat_threads.id = a.value::jsonb ->> 'threadId'
+          WHERE a.key ${exact ? "= ?" : "LIKE ? ESCAPE '!'"}
+           AND chat_threads.org_id IS NOT DISTINCT FROM ?
+           AND ${chatThreadAccessSql(scope.userEmail, scope.orgId).sql}
+         ORDER BY a.updated_at ASC LIMIT ?`
+      : exact
+        ? `SELECT session_id, key, value FROM application_state WHERE key = ? ORDER BY updated_at ASC LIMIT ?`
+        : `SELECT session_id, key, value FROM application_state WHERE key LIKE ? ESCAPE '!' ORDER BY updated_at ASC LIMIT ?`,
+    args: scope
+      ? [
+          exact ? keyPrefix : escapeLike(keyPrefix) + "%",
+          scope.orgId,
+          ...chatThreadAccessSql(scope.userEmail, scope.orgId).args,
+          boundedLimit,
+        ]
+      : [exact ? keyPrefix : escapeLike(keyPrefix) + "%", boundedLimit],
   });
   return rows.map((row) => ({
     sessionId: row.session_id as string,
@@ -340,3 +362,4 @@ export async function appStateDeleteByPrefix(
 
   return result.rowsAffected;
 }
+import { chatThreadAccessSql } from "../chat-threads/store.js";

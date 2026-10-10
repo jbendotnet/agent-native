@@ -110,6 +110,7 @@ import type { ActiveRun } from "../agent/run-manager.js";
 import {
   callerHasRunAccess,
   callerHasThreadAccess,
+  resolveRunThreadId,
 } from "../agent/run-ownership.js";
 import { readBackgroundRunClaim } from "../agent/run-store.js";
 import {
@@ -1151,6 +1152,17 @@ export function resolveAgentCheckpointPaths(
     resolved.set(file, contentSha256);
   }
   return resolved;
+}
+
+export function assertBoundThreadPromptContext(
+  teamGroupId: string | null,
+): void {
+  if (teamGroupId) {
+    throw createError({
+      statusCode: 403,
+      statusMessage: "Team-bound chat execution requires team context support",
+    });
+  }
 }
 
 export function createAgentChatPlugin(
@@ -3835,6 +3847,7 @@ export function createAgentChatPlugin(
         runId: string;
         turnId: string;
         threadId: string | undefined;
+        teamGroupId?: string | null;
         message: string;
         agentKitMessageId?: string;
         attachments?: AgentChatAttachment[];
@@ -3859,6 +3872,7 @@ export function createAgentChatPlugin(
             try {
               thread = await createThread(ownerEmail, {
                 id: threadId,
+                teamGroupId: details.teamGroupId,
                 scope: runScope,
                 source: options?.appId ? { appId: options.appId } : null,
               });
@@ -3878,11 +3892,6 @@ export function createAgentChatPlugin(
               statusMessage: "Thread not found",
             });
           }
-          if (options?.appId) {
-            await setThreadSourceIfMissing(threadId, ownerEmail, {
-              appId: options.appId,
-            });
-          }
           const access = await resolveThreadAccess(
             ownerEmail,
             threadId,
@@ -3893,6 +3902,13 @@ export function createAgentChatPlugin(
             throw createError({
               statusCode: 404,
               statusMessage: "Thread not found",
+            });
+          }
+          if (!details.failure)
+            assertBoundThreadPromptContext(access.teamGroupId);
+          if (options?.appId) {
+            await setThreadSourceIfMissing(threadId, ownerEmail, {
+              appId: options.appId,
             });
           }
 
@@ -4012,6 +4028,7 @@ export function createAgentChatPlugin(
         runId: string;
         turnId: string;
         threadId: string;
+        teamGroupId?: string | null;
         message: string;
         attachments?: AgentChatAttachment[];
         queuedMessageId?: string;
@@ -4643,17 +4660,6 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
           if (details.threadId && details.ownerEmail) {
             const existingThread = await getThread(details.threadId);
             if (existingThread) {
-              if (
-                threadScopeMismatch(
-                  existingThread.scope,
-                  getRequestRunContext()?.chatScope,
-                )
-              ) {
-                throw createError({
-                  statusCode: 404,
-                  statusMessage: "Thread not found",
-                });
-              }
               const access = await resolveThreadAccess(
                 details.ownerEmail,
                 details.threadId,
@@ -4661,6 +4667,18 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
                 { orgId: await getOrgIdFromEvent(details.event) },
               );
               if (!access) {
+                throw createError({
+                  statusCode: 404,
+                  statusMessage: "Thread not found",
+                });
+              }
+              assertBoundThreadPromptContext(access.teamGroupId);
+              if (
+                threadScopeMismatch(
+                  existingThread.scope,
+                  getRequestRunContext()?.chatScope,
+                )
+              ) {
                 throw createError({
                   statusCode: 404,
                   statusMessage: "Thread not found",
@@ -5044,17 +5062,6 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
             if (details.threadId && details.ownerEmail) {
               const existingThread = await getThread(details.threadId);
               if (existingThread) {
-                if (
-                  threadScopeMismatch(
-                    existingThread.scope,
-                    getRequestRunContext()?.chatScope,
-                  )
-                ) {
-                  throw createError({
-                    statusCode: 404,
-                    statusMessage: "Thread not found",
-                  });
-                }
                 const access = await resolveThreadAccess(
                   details.ownerEmail,
                   details.threadId,
@@ -5062,6 +5069,18 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
                   { orgId: await getOrgIdFromEvent(details.event) },
                 );
                 if (!access) {
+                  throw createError({
+                    statusCode: 404,
+                    statusMessage: "Thread not found",
+                  });
+                }
+                assertBoundThreadPromptContext(access.teamGroupId);
+                if (
+                  threadScopeMismatch(
+                    existingThread.scope,
+                    getRequestRunContext()?.chatScope,
+                  )
+                ) {
                   throw createError({
                     statusCode: 404,
                     statusMessage: "Thread not found",
@@ -6523,12 +6542,13 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
               getAgentTeamBackgroundRun,
               listAgentTeamBackgroundTranscriptEvents,
             } = await import("./agent-teams.js");
-            const run = await runWithRequestContext({ userEmail: owner }, () =>
-              getAgentTeamBackgroundRun(runId),
+            const run = await runWithRequestContext(
+              { userEmail: owner, orgId },
+              () => getAgentTeamBackgroundRun(runId),
             );
             if (run) {
               const events = await runWithRequestContext(
-                { userEmail: owner },
+                { userEmail: owner, orgId },
                 () => listAgentTeamBackgroundTranscriptEvents(runId),
               );
               return { status: "ok", runId, events };
@@ -7491,6 +7511,10 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
                 setResponseStatus(event, 404);
                 return { error: "Thread not found" };
               }
+              if (thread.teamGroupId !== null && method !== "DELETE") {
+                setResponseStatus(event, 404);
+                return { error: "Thread not found" };
+              }
               if (method === "GET") {
                 const state = await getThreadShareState(threadId);
                 if (!state) {
@@ -7523,7 +7547,12 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
             }
 
             if (method === "DELETE") {
-              const thread = await getThread(threadId);
+              const thread = await resolveThreadAccess(
+                owner,
+                threadId,
+                "owner",
+                { orgId },
+              );
               if (
                 !thread ||
                 thread.ownerEmail !== owner ||
@@ -7637,7 +7666,17 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
               const existing = await getThread(body.id);
               if (existing) {
                 if (existing.ownerEmail === owner) {
-                  const resolved = await resolveExistingOwnedThread(existing);
+                  const authorized = await resolveThreadAccess(
+                    owner,
+                    existing.id,
+                    "owner",
+                    { orgId },
+                  );
+                  if (!authorized) {
+                    setResponseStatus(event, 404);
+                    return { error: "Thread not found" };
+                  }
+                  const resolved = await resolveExistingOwnedThread(authorized);
                   return resolved ?? { error: "Thread not found" };
                 }
                 setResponseStatus(event, 409);
@@ -7647,6 +7686,7 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
             try {
               const thread = await createThread(owner, {
                 id: body?.id,
+                teamGroupId: body?.teamGroupId,
                 title: body?.title ?? "",
                 scope: bodyIncludesScope ? bodyScope : requestedScope,
                 source: options?.appId ? { appId: options.appId } : null,
@@ -7660,7 +7700,17 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
               if (body?.id) {
                 const existing = await getThread(body.id);
                 if (existing && existing.ownerEmail === owner) {
-                  const resolved = await resolveExistingOwnedThread(existing);
+                  const authorized = await resolveThreadAccess(
+                    owner,
+                    existing.id,
+                    "owner",
+                    { orgId },
+                  );
+                  if (!authorized) {
+                    setResponseStatus(event, 404);
+                    return { error: "Thread not found" };
+                  }
+                  const resolved = await resolveExistingOwnedThread(authorized);
                   return resolved ?? { error: "Thread not found" };
                 }
               }
@@ -7937,6 +7987,25 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
           }
 
           try {
+            // The verified initiator, not the cookieless worker request, owns
+            // this continuation. Recheck its current access before diagnostics
+            // or persisted dispatch payloads are read.
+            await seedBackgroundAgentRunOwnerContext(event, prepared.runId);
+            const workerOwner = await getOwnerFromEvent(event);
+            const workerOrgId = await getOrgIdFromEvent(event);
+            const linkedThreadId = await resolveRunThreadId(prepared.runId);
+            if (
+              !linkedThreadId ||
+              !(await callerHasThreadAccess(
+                workerOwner,
+                linkedThreadId,
+                "owner",
+                { orgId: workerOrgId },
+              ))
+            ) {
+              setResponseStatus(event, 404);
+              return { error: "Run not found" };
+            }
             // DIAGNOSTIC: load the run-store diagnostic recorder only after the
             // authenticated marker has been mirrored into globalThis. run-store
             // can initialize the DB pool; the pool must see the same background
@@ -8038,12 +8107,25 @@ Non-code requests are still fine on this surface: read data, navigate the UI, su
                 persistedClientPlatform;
             }
 
-            // This self-dispatch is cookieless (HMAC-only). Restore the verified
-            // per-turn initiator captured before dispatch; the shared thread
-            // owner is not necessarily the member who submitted this turn.
-            await seedBackgroundAgentRunOwnerContext(event, prepared.runId);
+            if (workerBody.threadId !== linkedThreadId) {
+              setResponseStatus(event, 404);
+              return { error: "Run not found" };
+            }
             return await invokeAgentChatHandler(event);
           } catch (err: any) {
+            if (
+              Number.isInteger(err?.statusCode) &&
+              err.statusCode >= 400 &&
+              err.statusCode < 500 &&
+              typeof err.statusMessage === "string"
+            ) {
+              await finalizeClaimedAgentChatProcessRunFailure(
+                prepared.runId,
+                err,
+              );
+              setResponseStatus(event, err.statusCode);
+              return { error: err.statusMessage };
+            }
             console.error("[agent-chat] _process-run failed:", err);
             captureError(err, {
               route: AGENT_CHAT_PROCESS_RUN_PATH,

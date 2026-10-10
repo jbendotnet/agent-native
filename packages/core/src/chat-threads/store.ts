@@ -32,6 +32,7 @@ import {
 import { resolveAccess, type AccessContext } from "../sharing/access.js";
 import { registerShareableResource } from "../sharing/registry.js";
 import { roleSatisfies, type ShareRole } from "../sharing/schema.js";
+import { getWorkspaceTeamForMember } from "../workspace-connections/groups.js";
 import { emitChatThreadChange } from "./emitter.js";
 import {
   chatThreads,
@@ -104,6 +105,7 @@ async function ensureTable(): Promise<void> {
           source_app_id TEXT,
           source_url TEXT,
           org_id TEXT,
+          team_group_id TEXT,
           visibility TEXT NOT NULL DEFAULT 'private'
         )
       `;
@@ -135,6 +137,7 @@ async function ensureTable(): Promise<void> {
           ["source_app_id", "TEXT"],
           ["source_url", "TEXT"],
           ["org_id", "TEXT"],
+          ["team_group_id", "TEXT"],
           ["visibility", "TEXT NOT NULL DEFAULT 'private'"],
         ] as const) {
           await ensureColumnExists(
@@ -191,6 +194,10 @@ async function ensureTable(): Promise<void> {
         await ensureIndexExists(
           "chat_threads_source_updated_idx",
           `CREATE INDEX IF NOT EXISTS chat_threads_source_updated_idx ON chat_threads (owner_email, source_app_id, updated_at)`,
+        );
+        await ensureIndexExists(
+          "chat_threads_team_group_idx",
+          `CREATE INDEX IF NOT EXISTS chat_threads_team_group_idx ON chat_threads (team_group_id)`,
         );
         // Public share-link resolution looks threads up by token hash;
         // without this index it degrades to a LIKE scan over every blob.
@@ -314,6 +321,7 @@ export interface ChatThread {
   archivedAt: number | null;
   source: ChatThreadSource | null;
   orgId: string | null;
+  teamGroupId: string | null;
   visibility: "private" | "org" | "public";
 }
 
@@ -329,6 +337,7 @@ export interface ChatThreadSummary {
   archivedAt: number | null;
   source: ChatThreadSource | null;
   orgId: string | null;
+  teamGroupId: string | null;
   visibility: "private" | "org" | "public";
 }
 
@@ -782,6 +791,7 @@ function rowToThread(r: Record<string, unknown>): ChatThread {
     archivedAt: readNullableNumber(r.archived_at),
     source: readSource(r),
     orgId: (r.org_id as string | null | undefined) ?? null,
+    teamGroupId: (r.team_group_id as string | null | undefined) ?? null,
     visibility: readVisibility(r.visibility),
   };
 }
@@ -804,6 +814,7 @@ function rowToSummary(r: Record<string, unknown>): ChatThreadSummary | null {
     archivedAt: readNullableNumber(r.archived_at),
     source: readSource(r),
     orgId: (r.org_id as string | null | undefined) ?? null,
+    teamGroupId: (r.team_group_id as string | null | undefined) ?? null,
     visibility: readVisibility(r.visibility),
   };
 }
@@ -817,6 +828,7 @@ export async function createThread(
     source?: ChatThreadSource | null;
     /** Explicit owner organization for durable/background callers. */
     orgId?: string | null;
+    teamGroupId?: string | null;
   },
 ): Promise<ChatThread> {
   await ensureTable();
@@ -827,9 +839,19 @@ export async function createThread(
   const scope = opts?.scope ?? null;
   const source = opts?.source ?? null;
   const orgId = opts?.orgId ?? getRequestOrgId() ?? null;
+  const teamGroupId = opts?.teamGroupId ?? null;
+  if (
+    teamGroupId &&
+    (!orgId ||
+      !(await getWorkspaceTeamForMember(orgId, teamGroupId, ownerEmail)))
+  ) {
+    throw new Error(
+      "Thread creator must be a current member of the bound team and organization.",
+    );
+  }
 
   await client.execute({
-    sql: `INSERT INTO chat_threads (id, owner_email, title, preview, thread_data, message_count, created_at, updated_at, scope_type, scope_id, scope_label, source_platform, source_app_id, source_url, org_id, visibility) VALUES (?, ?, ?, '', '{}', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private')`,
+    sql: `INSERT INTO chat_threads (id, owner_email, title, preview, thread_data, message_count, created_at, updated_at, scope_type, scope_id, scope_label, source_platform, source_app_id, source_url, org_id, team_group_id, visibility) VALUES (?, ?, ?, '', '{}', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private')`,
     args: [
       id,
       ownerEmail,
@@ -843,6 +865,7 @@ export async function createThread(
       source?.appId ?? null,
       source?.url ?? null,
       orgId,
+      teamGroupId,
     ],
   });
 
@@ -860,18 +883,19 @@ export async function createThread(
     archivedAt: null,
     source,
     orgId,
+    teamGroupId,
     visibility: "private",
   };
 }
 
-const THREAD_COLUMNS = `id, owner_email, title, preview, thread_data, message_count, created_at, updated_at, scope_type, scope_id, scope_label, pinned_at, archived_at, source_platform, source_app_id, source_url, org_id, visibility`;
+const THREAD_COLUMNS = `id, owner_email, title, preview, thread_data, message_count, created_at, updated_at, scope_type, scope_id, scope_label, pinned_at, archived_at, source_platform, source_app_id, source_url, org_id, team_group_id, visibility`;
 // The list/summary path deliberately omits `thread_data`: it is the full
 // message-history JSON blob and selecting it for every row turns "open the
 // sidebar" into "download every conversation". The summary derives nothing
 // from the blob anymore — preview and message_count are dedicated columns
 // (message_count is maintained on write). The detail path (`THREAD_COLUMNS` /
 // `getThread`) still returns the full blob.
-const SUMMARY_COLUMNS = `id, title, preview, message_count, created_at, updated_at, scope_type, scope_id, scope_label, pinned_at, archived_at, source_platform, source_app_id, source_url, org_id, visibility`;
+const SUMMARY_COLUMNS = `id, title, preview, message_count, created_at, updated_at, scope_type, scope_id, scope_label, pinned_at, archived_at, source_platform, source_app_id, source_url, org_id, team_group_id, visibility`;
 
 export function registerChatThreadsShareable(): void {
   registerShareableResource({
@@ -905,6 +929,31 @@ export async function hasThreadAccess(
   ctx: Omit<AccessContext, "userEmail"> = {},
 ): Promise<boolean> {
   if (!userEmail || !threadId) return false;
+  await ensureTable();
+  const { rows } = await getDbExec().execute({
+    sql: `SELECT org_id, team_group_id, owner_email FROM chat_threads WHERE id = ?`,
+    args: [threadId],
+  });
+  const bound = rows[0];
+  if (!bound) return false;
+  if (
+    bound.team_group_id &&
+    (!bound.org_id ||
+      (ctx.orgId ?? getRequestOrgId()) !== bound.org_id ||
+      !(await getWorkspaceTeamForMember(
+        String(bound.org_id),
+        String(bound.team_group_id),
+        userEmail,
+      )))
+  )
+    return false;
+  if (
+    bound.team_group_id &&
+    minRole !== "viewer" &&
+    String(bound.owner_email).trim().toLowerCase() !==
+      userEmail.trim().toLowerCase()
+  )
+    return false;
   // `skipResourceBody` keeps the access load a projected row. Without it the
   // load is an unprojected `select()` that pulls `thread_data`.
   const access = await resolveAccess(
@@ -913,7 +962,13 @@ export async function hasThreadAccess(
     { userEmail, orgId: ctx.orgId },
     { skipResourceBody: true },
   );
-  return !!access && roleSatisfies(access.role, minRole);
+  if (access && roleSatisfies(access.role, minRole)) return true;
+  if (!bound.team_group_id || minRole !== "viewer") return false;
+  const { rows: groupShares } = await getDbExec().execute({
+    sql: `SELECT 1 FROM chat_thread_shares s JOIN workspace_user_groups g ON g.id = s.principal_id AND g.org_id = ? WHERE s.resource_id = ? AND s.principal_type = 'group' AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(g.member_emails_json::jsonb) AS member(email) WHERE LOWER(member.email) = ?) LIMIT 1`,
+    args: [bound.org_id, threadId, userEmail.trim().toLowerCase()],
+  });
+  return groupShares.length > 0;
 }
 
 export async function resolveThreadAccess(
@@ -949,6 +1004,22 @@ export async function resolveThreadsAccess(
     threads.set(thread.id, thread);
   }
   return threads;
+}
+
+export async function accessibleThreadIds(
+  userEmail: string | null | undefined,
+  threadIds: readonly string[],
+  orgId?: string | null,
+): Promise<Set<string>> {
+  const ids = [...new Set(threadIds.filter(Boolean))];
+  if (!userEmail || !ids.length) return new Set();
+  await ensureTable();
+  const access = chatThreadAccessSql(userEmail, orgId);
+  const { rows } = await getDbExec().execute({
+    sql: `SELECT id FROM chat_threads WHERE id IN (${ids.map(() => "?").join(", ")}) AND ${access.sql}`,
+    args: [...ids, ...access.args],
+  });
+  return new Set(rows.map((row) => String(row.id)));
 }
 
 export async function getThread(id: string): Promise<ChatThread | null> {
@@ -998,6 +1069,7 @@ export async function forkThread(
     id?: string;
     source?: ForkThreadSourceSnapshot | null;
     sourceAccessGranted?: boolean;
+    teamGroupId?: string | null;
   },
 ): Promise<ChatThread | null> {
   const snapshot = normalizeForkSourceSnapshot(opts?.source);
@@ -1069,8 +1141,18 @@ export async function forkThread(
   const title = source.title ? `${source.title} (fork)` : "";
   const client = getDbExec();
   const orgId = getRequestOrgId() ?? null;
+  const teamGroupId = opts?.teamGroupId ?? null;
+  if (
+    teamGroupId &&
+    (!orgId ||
+      !(await getWorkspaceTeamForMember(orgId, teamGroupId, ownerEmail)))
+  ) {
+    throw new Error(
+      "Thread creator must be a current member of the bound team and organization.",
+    );
+  }
   await client.execute({
-    sql: `INSERT INTO chat_threads (id, owner_email, title, preview, thread_data, message_count, created_at, updated_at, scope_type, scope_id, scope_label, source_platform, source_app_id, source_url, org_id, visibility) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private')`,
+    sql: `INSERT INTO chat_threads (id, owner_email, title, preview, thread_data, message_count, created_at, updated_at, scope_type, scope_id, scope_label, source_platform, source_app_id, source_url, org_id, team_group_id, visibility) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private')`,
     args: [
       id,
       ownerEmail,
@@ -1087,6 +1169,7 @@ export async function forkThread(
       null,
       null,
       orgId,
+      teamGroupId,
     ],
   });
   return {
@@ -1103,6 +1186,7 @@ export async function forkThread(
     archivedAt: null,
     source: null,
     orgId,
+    teamGroupId,
     visibility: "private",
   };
 }
@@ -1138,7 +1222,7 @@ export interface ListThreadsOptions {
   sourceAppId?: string | null;
 }
 
-function chatThreadAccessSql(
+export function chatThreadAccessSql(
   userEmail: string,
   orgId: string | null | undefined,
 ): { sql: string; args: (string | number)[] } {
@@ -1155,8 +1239,16 @@ function chatThreadAccessSql(
       `EXISTS (SELECT 1 FROM chat_thread_shares WHERE chat_thread_shares.resource_id = chat_threads.id AND chat_thread_shares.principal_type = 'org' AND chat_thread_shares.principal_id = ?)`,
     );
     args.push(orgId);
+    clauses.push(
+      `EXISTS (SELECT 1 FROM chat_thread_shares s JOIN workspace_user_groups g ON g.id = s.principal_id AND g.org_id = chat_threads.org_id JOIN org_members m ON m.org_id = g.org_id AND LOWER(m.email) = ? AND m.federation_removal_pending_at IS NULL WHERE s.resource_id = chat_threads.id AND s.principal_type = 'group' AND chat_threads.org_id = ? AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(g.member_emails_json::jsonb) AS member(email) WHERE LOWER(member.email) = ?))`,
+    );
+    args.push(normalizedEmail, orgId, normalizedEmail);
   }
-  return { sql: `(${clauses.join(" OR ")})`, args };
+  const boundMembership = `EXISTS (SELECT 1 FROM org_members m JOIN workspace_user_groups team ON team.org_id = m.org_id AND team.id = chat_threads.team_group_id AND team.is_team = true WHERE m.org_id = chat_threads.org_id AND LOWER(m.email) = ? AND m.federation_removal_pending_at IS NULL AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(team.member_emails_json::jsonb) AS member(email) WHERE LOWER(member.email) = ?))`;
+  return {
+    sql: `((${clauses.join(" OR ")}) AND (team_group_id IS NULL OR (org_id = ? AND ${boundMembership})))`,
+    args: [...args, orgId ?? "", normalizedEmail, normalizedEmail],
+  };
 }
 
 export async function listThreads(
@@ -1950,6 +2042,7 @@ export async function createThreadShareLink(
     if (options.ownerEmail && thread.ownerEmail !== options.ownerEmail) {
       return null;
     }
+    if (thread.teamGroupId !== null) return null;
 
     const now = Date.now();
     const token = generateShareToken();
@@ -2046,6 +2139,7 @@ export async function getThreadByShareToken(
 
   const validate = (row: Record<string, unknown>): ChatThread | null => {
     const thread = rowToThread(row);
+    if (thread.teamGroupId !== null) return null;
     // thread_data remains the source of truth: verify the stored share
     // matches and is not revoked even when the indexed column matched.
     const stored = readStoredThreadShare(thread.threadData);

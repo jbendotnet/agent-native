@@ -465,10 +465,22 @@ vi.mock("../application-state/script-helpers.js", () => ({
       .filter(([k]) => k.startsWith(prefix))
       .map(([k, v]) => ({ key: k, value: structuredClone(v) }));
   }),
+  listAppStateAcrossSessions: vi.fn(
+    async (prefix: string, limit: number, exact = false) => {
+      requireMockRequestContext();
+      return [...appState.entries()]
+        .filter(([k]) => (exact ? k === prefix : k.startsWith(prefix)))
+        .slice(0, limit)
+        .map(([key, value]) => ({ key, value }));
+    },
+  ),
 }));
 
 const threadData = new Map<string, string>();
 vi.mock("../chat-threads/store.js", () => ({
+  resolveThreadAccess: vi.fn(async (email: string, id: string) =>
+    email === "owner@example.com" && id ? { id, ownerEmail: email } : null,
+  ),
   createThread: vi.fn(async (_owner: string, opts: any) => ({
     id: "thread-1",
     title: opts?.title ?? "",

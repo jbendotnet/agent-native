@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const executeMock = vi.hoisted(() => vi.fn());
 const resolveAccessMock = vi.hoisted(() => vi.fn());
+const getWorkspaceTeamForMemberMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../db/client.js", () => ({
   getDbExec: () => ({ execute: executeMock }),
@@ -15,6 +16,9 @@ vi.mock("../db/ddl-guard.js", () => ({
 
 vi.mock("../sharing/access.js", () => ({
   resolveAccess: resolveAccessMock,
+}));
+vi.mock("../workspace-connections/groups.js", () => ({
+  getWorkspaceTeamForMember: getWorkspaceTeamForMemberMock,
 }));
 
 vi.mock("./emitter.js", () => ({ emitChatThreadChange: vi.fn() }));
@@ -35,6 +39,7 @@ const THREAD_ROW = {
   created_at: 1,
   updated_at: 1,
   org_id: null,
+  team_group_id: null,
   visibility: "private" as const,
 };
 
@@ -42,6 +47,7 @@ describe("resolveThreadAccess loads the ACL without the conversation blob", () =
   beforeEach(() => {
     executeMock.mockReset();
     resolveAccessMock.mockReset();
+    getWorkspaceTeamForMemberMock.mockReset();
     executeMock.mockResolvedValue({ rows: [], rowsAffected: 0 });
   });
 
@@ -88,7 +94,7 @@ describe("resolveThreadAccess loads the ACL without the conversation blob", () =
     ).resolves.toBeNull();
   });
 
-  it("returns null without touching the DB when access is refused", async () => {
+  it("returns null without loading the transcript when access is refused", async () => {
     resolveAccessMock.mockResolvedValue(null);
 
     await expect(resolveThreadAccess("nobody@example.com", "t1")).resolves.toBe(
@@ -98,7 +104,89 @@ describe("resolveThreadAccess loads the ACL without the conversation blob", () =
       const sql = typeof query === "string" ? query : query?.sql;
       return typeof sql === "string" && /FROM chat_threads WHERE id/.test(sql);
     });
-    expect(threadReads).toHaveLength(0);
+    expect(threadReads).toHaveLength(1);
+    expect(threadReads[0]?.[0].sql).not.toContain("thread_data");
+  });
+
+  it("checks current bound membership before generic owner or admin access", async () => {
+    executeMock.mockImplementation(async (query: { sql: string }) => ({
+      rows: query.sql.includes("FROM chat_threads WHERE id = ?")
+        ? [{ ...THREAD_ROW, org_id: "org-1", team_group_id: "team-1" }]
+        : [],
+      rowsAffected: 0,
+    }));
+    resolveAccessMock.mockResolvedValue({
+      role: "owner",
+      resource: { id: "t1" },
+    });
+    await expect(
+      resolveThreadAccess("owner@example.com", "t1", "viewer", {
+        orgId: "org-1",
+      }),
+    ).resolves.toBeNull();
+    expect(getWorkspaceTeamForMemberMock).toHaveBeenCalledWith(
+      "org-1",
+      "team-1",
+      "owner@example.com",
+    );
+    expect(resolveAccessMock).not.toHaveBeenCalled();
+
+    getWorkspaceTeamForMemberMock.mockResolvedValue({ id: "team-1" });
+    await expect(
+      resolveThreadAccess("owner@example.com", "t1", "owner", {
+        orgId: "org-2",
+      }),
+    ).resolves.toBeNull();
+    expect(resolveAccessMock).not.toHaveBeenCalled();
+
+    const restored = await resolveThreadAccess(
+      "owner@example.com",
+      "t1",
+      "owner",
+      { orgId: "org-1" },
+    );
+    expect(restored?.teamGroupId).toBe("team-1");
+  });
+
+  it("allows a shared team member to read but never continue or manage", async () => {
+    executeMock.mockImplementation(async (query: { sql: string }) => ({
+      rows: query.sql.includes("FROM chat_threads WHERE id = ?")
+        ? [{ ...THREAD_ROW, org_id: "org-1", team_group_id: "team-1" }]
+        : query.sql.includes("FROM chat_thread_shares")
+          ? [{ 1: 1 }]
+          : [],
+      rowsAffected: 0,
+    }));
+    getWorkspaceTeamForMemberMock.mockResolvedValue({ id: "team-1" });
+    resolveAccessMock.mockResolvedValue({
+      role: "admin",
+      resource: { id: "t1" },
+    });
+    await expect(
+      resolveThreadAccess("viewer@example.com", "t1", "editor", {
+        orgId: "org-1",
+      }),
+    ).resolves.toBeNull();
+    expect(resolveAccessMock).not.toHaveBeenCalled();
+    resolveAccessMock.mockResolvedValue(null);
+    expect(
+      (
+        await resolveThreadAccess("viewer@example.com", "t1", "viewer", {
+          orgId: "org-1",
+        })
+      )?.id,
+    ).toBe("t1");
+    executeMock.mockImplementation(async (query: { sql: string }) => ({
+      rows: query.sql.includes("FROM chat_threads WHERE id = ?")
+        ? [{ ...THREAD_ROW, org_id: "org-1", team_group_id: "team-1" }]
+        : [],
+      rowsAffected: 0,
+    }));
+    await expect(
+      resolveThreadAccess("private@example.com", "t1", "viewer", {
+        orgId: "org-1",
+      }),
+    ).resolves.toBeNull();
   });
 });
 
@@ -122,7 +210,7 @@ describe("yes/no thread access never reads the conversation body", () => {
     });
   });
 
-  it("hasThreadAccess answers from the ACL alone, with no SQL", async () => {
+  it("hasThreadAccess checks the thread binding without selecting its body", async () => {
     resolveAccessMock.mockResolvedValue({
       role: "owner",
       resource: OWNER_RESOURCE,
@@ -131,7 +219,10 @@ describe("yes/no thread access never reads the conversation body", () => {
     await expect(hasThreadAccess("owner@example.com", "t1")).resolves.toBe(
       true,
     );
-    expect(executeMock).not.toHaveBeenCalled();
+    expect(executeMock).toHaveBeenCalledWith({
+      sql: "SELECT org_id, team_group_id, owner_email FROM chat_threads WHERE id = ?",
+      args: ["t1"],
+    });
   });
 
   it("callerHasThreadAccess (run polling) never selects thread_data", async () => {

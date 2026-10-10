@@ -4,8 +4,48 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import * as runStore from "../agent/run-store.js";
+import {
+  createThread,
+  registerChatThreadsShareable,
+} from "../chat-threads/store.js";
+import { getDbExec } from "../db/client.js";
+import { runWithRequestContext } from "./request-context.js";
+
 const appState = vi.hoisted(() => new Map<string, Record<string, unknown>>());
 const tmpRoots: string[] = [];
+
+const withTaskThread = <T>(
+  threadId: string,
+  test: () => Promise<T>,
+  orgId?: string,
+) =>
+  runWithRequestContext({ userEmail: "alice@example.com", orgId }, async () => {
+    registerChatThreadsShareable();
+    await getDbExec().execute({
+      sql: "CREATE TABLE IF NOT EXISTS org_members (org_id TEXT, email TEXT, role TEXT DEFAULT 'member', federation_removal_pending_at BIGINT)",
+      args: [],
+    });
+    await getDbExec().execute({
+      sql: "CREATE TABLE IF NOT EXISTS workspace_user_groups (id TEXT, org_id TEXT, is_team BOOLEAN, member_emails_json TEXT)",
+      args: [],
+    });
+    if (orgId) {
+      await getDbExec().execute({
+        sql: "INSERT INTO org_members (org_id, email) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM org_members WHERE org_id = ? AND email = ?)",
+        args: [orgId, "alice@example.com", orgId, "alice@example.com"],
+      });
+    }
+    await createThread("alice@example.com", { id: threadId });
+    try {
+      return await test();
+    } finally {
+      await getDbExec().execute({
+        sql: "DELETE FROM chat_threads WHERE id = ?",
+        args: [threadId],
+      });
+    }
+  });
 
 vi.mock("../application-state/script-helpers.js", () => ({
   readAppState: vi.fn(async (key: string) => {
@@ -54,6 +94,13 @@ vi.mock("../application-state/script-helpers.js", () => ({
       .filter(([key]) => key.startsWith(prefix))
       .map(([key, value]) => ({ key, value: structuredClone(value) })),
   ),
+  listAppStateAcrossSessions: vi.fn(
+    async (prefix: string, limit: number, exact = false) =>
+      [...appState.entries()]
+        .filter(([key]) => (exact ? key === prefix : key.startsWith(prefix)))
+        .slice(0, limit)
+        .map(([key, value]) => ({ key, value })),
+  ),
 }));
 
 describe("agent teams message queue", () => {
@@ -69,137 +116,421 @@ describe("agent teams message queue", () => {
     }
   });
 
-  it("appends task messages instead of overwriting and reports queue depth", async () => {
-    const { sendToTask } = await import("./agent-teams.js");
-    appState.set("agent-task:task-1", {
-      taskId: "task-1",
-      threadId: "thread-1",
-      description: "do work",
-      status: "running",
-      preview: "",
-      summary: "",
-      currentStep: "",
-      createdAt: Date.now(),
-    });
+  it(
+    "appends task messages instead of overwriting and reports queue depth",
+    () =>
+      withTaskThread("thread-1", async () => {
+        const { sendToTask } = await import("./agent-teams.js");
+        appState.set("agent-task:task-1", {
+          taskId: "task-1",
+          threadId: "thread-1",
+          ownerEmail: "alice@example.com",
+          description: "do work",
+          status: "running",
+          preview: "",
+          summary: "",
+          currentStep: "",
+          createdAt: Date.now(),
+        });
 
-    const first = await sendToTask("task-1", "first update");
-    const second = await sendToTask("task-1", "second update");
+        const first = await sendToTask("task-1", "first update");
+        const second = await sendToTask("task-1", "second update");
 
-    expect(first).toMatchObject({ ok: true, queuedCount: 1 });
-    expect(second).toMatchObject({ ok: true, queuedCount: 2 });
-    expect(first.messageId).toMatch(/^msg-/);
-    expect(second.messageId).toMatch(/^msg-/);
-    expect(first.messageId).not.toBe(second.messageId);
-    expect(
-      [...appState.keys()].filter((key) =>
-        key.startsWith("task-message:task-1:"),
-      ),
-    ).toHaveLength(2);
-  }, 30_000);
-
-  it("scopes task reads and controls by owner and organization", async () => {
-    const { getTask, listTasks, sendToTask } = await import("./agent-teams.js");
-    appState.set("agent-task:private", {
-      taskId: "private",
-      threadId: "thread-private",
-      ownerEmail: "alice@example.com",
-      orgId: "org-a",
-      description: "private work",
-      status: "running",
-      preview: "",
-      summary: "",
-      currentStep: "",
-      createdAt: Date.now(),
-    });
-
-    await expect(
-      getTask("private", {
-        ownerEmail: "alice@example.com",
-        orgId: "org-a",
+        expect(first).toMatchObject({ ok: true, queuedCount: 1 });
+        expect(second).toMatchObject({ ok: true, queuedCount: 2 });
+        expect(first.messageId).toMatch(/^msg-/);
+        expect(second.messageId).toMatch(/^msg-/);
+        expect(first.messageId).not.toBe(second.messageId);
+        expect(
+          [...appState.keys()].filter((key) =>
+            key.startsWith("task-message:task-1:"),
+          ),
+        ).toHaveLength(2);
       }),
-    ).resolves.toMatchObject({ taskId: "private" });
-    await expect(
-      getTask("private", {
-        ownerEmail: "mallory@example.com",
-        orgId: "org-a",
-      }),
-    ).resolves.toBeUndefined();
-    await expect(
-      listTasks({ ownerEmail: "alice@example.com", orgId: "org-a" }),
-    ).resolves.toHaveLength(1);
-    await expect(
-      sendToTask("private", "read this", {
-        ownerEmail: "mallory@example.com",
-        orgId: "org-a",
-      }),
-    ).resolves.toEqual({ ok: false, error: "Task not found" });
-  });
+    30_000,
+  );
 
-  it("drains queued messages into the next tool result once", async () => {
-    const { sendToTask, _agentTeamsQueueForTests } =
-      await import("./agent-teams.js");
-    appState.set("agent-task:task-1", {
-      taskId: "task-1",
-      threadId: "thread-1",
-      description: "do work",
-      status: "running",
-      preview: "",
-      summary: "",
-      currentStep: "",
-      createdAt: Date.now(),
-    });
-    await sendToTask("task-1", "change direction");
+  it("scopes task reads and controls by owner and organization", () =>
+    withTaskThread(
+      "thread-private",
+      async () => {
+        const { getTask, listTasks, sendToTask } =
+          await import("./agent-teams.js");
+        appState.set("agent-task:private", {
+          taskId: "private",
+          threadId: "thread-private",
+          ownerEmail: "alice@example.com",
+          orgId: "org-a",
+          description: "private work",
+          status: "running",
+          preview: "",
+          summary: "",
+          currentStep: "",
+          createdAt: Date.now(),
+        });
 
-    const actions = _agentTeamsQueueForTests.createMessageAwareActions(
-      "task-1",
-      {
-        "do-work": {
-          tool: { description: "Do work", parameters: { type: "object" } },
-          run: async () => "tool result",
-        },
+        await expect(
+          getTask("private", {
+            ownerEmail: "alice@example.com",
+            orgId: "org-a",
+          }),
+        ).resolves.toMatchObject({ taskId: "private" });
+        await expect(
+          getTask("private", {
+            ownerEmail: "mallory@example.com",
+            orgId: "org-a",
+          }),
+        ).resolves.toBeUndefined();
+        await expect(
+          listTasks({ ownerEmail: "alice@example.com", orgId: "org-a" }),
+        ).resolves.toHaveLength(1);
+        await expect(
+          sendToTask("private", "read this", {
+            ownerEmail: "mallory@example.com",
+            orgId: "org-a",
+          }),
+        ).resolves.toEqual({ ok: false, error: "Task not found" });
       },
-    );
+      "org-a",
+    ));
 
-    await expect(actions["do-work"].run({})).resolves.toContain(
-      "change direction",
-    );
-    await expect(actions["do-work"].run({})).resolves.toBe("tool result");
-  }, 30_000);
+  it("denies exported task and controller reads and controls when the linked conversation is missing", () =>
+    withTaskThread("thread-removed", async () => {
+      const {
+        getTask,
+        listTasks,
+        listAgentTeamBackgroundRuns,
+        getAgentTeamBackgroundRun,
+        listAgentTeamBackgroundTranscriptEvents,
+        sendToTask,
+        stopAgentTeamBackgroundRun,
+        createAgentTeamBackgroundAgentController,
+      } = await import("./agent-teams.js");
+      appState.set("agent-task:removed", {
+        taskId: "removed",
+        threadId: "thread-removed",
+        ownerEmail: "alice@example.com",
+        description: "private work",
+        status: "running",
+        preview: "cached preview",
+        summary: "cached result",
+        currentStep: "",
+        createdAt: Date.now(),
+      });
+      await getDbExec().execute({
+        sql: "DELETE FROM chat_threads WHERE id = ?",
+        args: ["thread-removed"],
+      });
+      expect(await getTask("removed")).toBeUndefined();
+      expect(await listTasks()).toEqual([]);
+      expect(await listAgentTeamBackgroundRuns()).toEqual([]);
+      expect(await getAgentTeamBackgroundRun("run-task-removed")).toBeNull();
+      expect(
+        await listAgentTeamBackgroundTranscriptEvents("run-task-removed"),
+      ).toEqual([]);
+      expect(await sendToTask("removed", "follow up")).toMatchObject({
+        ok: false,
+      });
+      expect(
+        await stopAgentTeamBackgroundRun("run-task-removed"),
+      ).toMatchObject({ ok: false });
+      const controller = createAgentTeamBackgroundAgentController();
+      expect(await controller.list()).toEqual([]);
+      expect(await controller.get("run-task-removed")).toBeNull();
+      expect(await controller.transcript("run-task-removed")).toEqual([]);
+      expect(
+        await controller.sendFollowUp({
+          runId: "run-task-removed",
+          prompt: "follow up",
+        }),
+      ).toMatchObject({ ok: false });
+      expect(
+        await controller.control({
+          runId: "run-task-removed",
+          command: "stop",
+        }),
+      ).toMatchObject({ ok: false });
+    }));
 
-  it("uses the final response guard to deliver queued messages before completion", async () => {
-    const { sendToTask, _agentTeamsQueueForTests } =
-      await import("./agent-teams.js");
-    appState.set("agent-task:task-1", {
-      taskId: "task-1",
-      threadId: "thread-1",
-      description: "do work",
-      status: "running",
-      preview: "",
-      summary: "",
-      currentStep: "",
-      createdAt: Date.now(),
-    });
-    await sendToTask("task-1", "one last constraint");
-
-    const guard =
-      _agentTeamsQueueForTests.createTaskMessageFinalGuard("task-1");
-    const result = await guard({
-      messages: [],
-      assistantContent: [],
-      text: "done",
-      toolCalls: [],
-      toolResults: [],
-      retryCount: 0,
-    });
-
-    expect(result).toMatchObject({
-      retryMessage: expect.stringContaining("one last constraint"),
-      expandToolSurface: true,
-    });
+  it("fails loudly instead of returning a truncated background task list", async () => {
+    const { listTasks } = await import("./agent-teams.js");
+    for (let i = 0; i < 201; i += 1) {
+      appState.set(`agent-task:limit-${i}`, {
+        taskId: `limit-${i}`,
+        threadId: `thread-${i}`,
+      });
+    }
     await expect(
-      _agentTeamsQueueForTests.drainQueuedTaskMessages("task-1"),
-    ).resolves.toEqual([]);
+      listTasks({ ownerEmail: "alice@example.com" }),
+    ).rejects.toThrow("200-item limit");
   });
+
+  it("rechecks team task service and controller reads while keeping viewer controls owner-only", async () => {
+    const db = getDbExec();
+    const orgId = `task-org-${crypto.randomUUID()}`;
+    const teamId = `task-team-${crypto.randomUUID()}`;
+    const threadId = `task-thread-${crypto.randomUUID()}`;
+    const taskId = `task-${crypto.randomUUID()}`;
+    const runId = `run-task-${taskId}`;
+    const owner = "alice@example.com";
+    const viewer = "viewer@example.com";
+    const scope = (email: string) => ({ ownerEmail: email, orgId });
+    const as = <T>(email: string, fn: () => Promise<T>) =>
+      runWithRequestContext({ userEmail: email, orgId }, fn);
+    const events = vi.spyOn(runStore, "getRunEventsSince").mockResolvedValue([
+      {
+        seq: 1,
+        eventData: JSON.stringify({
+          type: "text",
+          text: "private task transcript",
+        }),
+      },
+    ]);
+    const {
+      getTask,
+      getTaskByThread,
+      listTasks,
+      sendToTask,
+      listAgentTeamBackgroundRuns,
+      getAgentTeamBackgroundRun,
+      listAgentTeamBackgroundTranscriptEvents,
+      stopAgentTeamBackgroundRun,
+      createAgentTeamBackgroundAgentController,
+    } = await import("./agent-teams.js");
+    registerChatThreadsShareable();
+    await db.execute({
+      sql: "CREATE TABLE IF NOT EXISTS org_members (org_id TEXT, email TEXT, role TEXT DEFAULT 'member', federation_removal_pending_at BIGINT)",
+      args: [],
+    });
+    await db.execute({
+      sql: "CREATE TABLE IF NOT EXISTS workspace_user_groups (id TEXT, org_id TEXT, is_team BOOLEAN, member_emails_json TEXT)",
+      args: [],
+    });
+    try {
+      for (const email of [owner, viewer]) {
+        await db.execute({
+          sql: "INSERT INTO org_members (org_id, email) VALUES (?, ?)",
+          args: [orgId, email],
+        });
+      }
+      await db.execute({
+        sql: "INSERT INTO workspace_user_groups (id, org_id, is_team, member_emails_json) VALUES (?, ?, true, ?)",
+        args: [teamId, orgId, JSON.stringify([owner, viewer])],
+      });
+      await as(owner, () =>
+        createThread(owner, { id: threadId, teamGroupId: teamId }),
+      );
+      appState.set(`agent-task:${taskId}`, {
+        taskId,
+        threadId,
+        ownerEmail: owner,
+        orgId,
+        description: "shared task",
+        status: "running",
+        preview: "cached preview",
+        summary: "cached result",
+        currentStep: "",
+        createdAt: Date.now(),
+      });
+      appState.set(`agent-task-thread:${threadId}`, { taskId });
+      await db.execute({
+        sql: "INSERT INTO chat_thread_shares (id, resource_id, principal_type, principal_id, role, created_by) VALUES (?, ?, 'group', ?, 'viewer', ?)",
+        args: [`share-${taskId}`, threadId, teamId, owner],
+      });
+      const read = async (email: string, allowed: boolean) =>
+        as(email, async () => {
+          const controller = createAgentTeamBackgroundAgentController();
+          expect(Boolean(await getTask(taskId, scope(email)))).toBe(allowed);
+          expect(Boolean(await getTaskByThread(threadId, scope(email)))).toBe(
+            allowed,
+          );
+          expect(await listTasks(scope(email))).toHaveLength(allowed ? 1 : 0);
+          expect(await listAgentTeamBackgroundRuns(scope(email))).toHaveLength(
+            allowed ? 1 : 0,
+          );
+          expect(
+            Boolean(await getAgentTeamBackgroundRun(runId, scope(email))),
+          ).toBe(allowed);
+          expect(
+            await listAgentTeamBackgroundTranscriptEvents(runId, scope(email)),
+          ).toHaveLength(allowed ? 2 : 0);
+          expect(await controller.list()).toHaveLength(allowed ? 1 : 0);
+          expect(Boolean(await controller.get(runId))).toBe(allowed);
+          expect(await controller.transcript(runId)).toHaveLength(
+            allowed ? 2 : 0,
+          );
+        });
+      await read(owner, true);
+      await read(viewer, true);
+      appState.set("agent-task:viewer-no-reconcile", {
+        taskId: "viewer-no-reconcile",
+        threadId,
+        ownerEmail: owner,
+        orgId,
+        description: "stale owner task",
+        status: "running",
+        runId: "orphaned-run",
+        startedAt: Date.now() - 120_000,
+        createdAt: Date.now() - 120_000,
+      });
+      await as(viewer, () => getTask("viewer-no-reconcile", scope(viewer)));
+      expect(appState.get("agent-task:viewer-no-reconcile")?.status).toBe(
+        "running",
+      );
+      appState.delete("agent-task:viewer-no-reconcile");
+      await as(viewer, async () => {
+        expect(await sendToTask(taskId, "no", scope(viewer))).toMatchObject({
+          ok: false,
+        });
+        expect(
+          await stopAgentTeamBackgroundRun(runId, "user", scope(viewer)),
+        ).toMatchObject({ ok: false });
+        const controller = createAgentTeamBackgroundAgentController();
+        expect(
+          await controller.sendFollowUp({ runId, prompt: "no" }),
+        ).toMatchObject({ ok: false });
+        expect(
+          await controller.control({ runId, command: "stop" }),
+        ).toMatchObject({ ok: false });
+      });
+      await as(owner, async () => {
+        expect(
+          await sendToTask(taskId, "owner update", scope(owner)),
+        ).toMatchObject({ ok: true });
+      });
+      await db.execute({
+        sql: "DELETE FROM chat_thread_shares WHERE resource_id = ?",
+        args: [threadId],
+      });
+      events.mockClear();
+      await read(viewer, false);
+      expect(events).not.toHaveBeenCalled();
+      await db.execute({
+        sql: "INSERT INTO chat_thread_shares (id, resource_id, principal_type, principal_id, role, created_by) VALUES (?, ?, 'group', ?, 'viewer', ?)",
+        args: [`restored-${taskId}`, threadId, teamId, owner],
+      });
+      await db.execute({
+        sql: "UPDATE workspace_user_groups SET member_emails_json = ? WHERE id = ?",
+        args: [JSON.stringify([owner]), teamId],
+      });
+      await read(viewer, false);
+      await db.execute({
+        sql: "DELETE FROM org_members WHERE org_id = ? AND email = ?",
+        args: [orgId, owner],
+      });
+      await read(owner, false);
+      await as(owner, async () => {
+        expect(await sendToTask(taskId, "no", scope(owner))).toMatchObject({
+          ok: false,
+        });
+        expect(
+          await stopAgentTeamBackgroundRun(runId, "user", scope(owner)),
+        ).toMatchObject({ ok: false });
+      });
+      await db.execute({
+        sql: "DELETE FROM workspace_user_groups WHERE id = ?",
+        args: [teamId],
+      });
+      await read(viewer, false);
+      await db.execute({
+        sql: "DELETE FROM chat_threads WHERE id = ?",
+        args: [threadId],
+      });
+      await read(owner, false);
+    } finally {
+      vi.restoreAllMocks();
+      await db.execute({
+        sql: "DELETE FROM chat_thread_shares WHERE resource_id = ?",
+        args: [threadId],
+      });
+      await db.execute({
+        sql: "DELETE FROM chat_threads WHERE id = ?",
+        args: [threadId],
+      });
+      await db.execute({
+        sql: "DELETE FROM workspace_user_groups WHERE id = ?",
+        args: [teamId],
+      });
+      await db.execute({
+        sql: "DELETE FROM org_members WHERE org_id = ?",
+        args: [orgId],
+      });
+    }
+  });
+
+  it(
+    "drains queued messages into the next tool result once",
+    () =>
+      withTaskThread("thread-1", async () => {
+        const { sendToTask, _agentTeamsQueueForTests } =
+          await import("./agent-teams.js");
+        appState.set("agent-task:task-1", {
+          taskId: "task-1",
+          threadId: "thread-1",
+          ownerEmail: "alice@example.com",
+          description: "do work",
+          status: "running",
+          preview: "",
+          summary: "",
+          currentStep: "",
+          createdAt: Date.now(),
+        });
+        await sendToTask("task-1", "change direction");
+
+        const actions = _agentTeamsQueueForTests.createMessageAwareActions(
+          "task-1",
+          {
+            "do-work": {
+              tool: { description: "Do work", parameters: { type: "object" } },
+              run: async () => "tool result",
+            },
+          },
+        );
+
+        await expect(actions["do-work"].run({})).resolves.toContain(
+          "change direction",
+        );
+        await expect(actions["do-work"].run({})).resolves.toBe("tool result");
+      }),
+    30_000,
+  );
+
+  it("uses the final response guard to deliver queued messages before completion", () =>
+    withTaskThread("thread-1", async () => {
+      const { sendToTask, _agentTeamsQueueForTests } =
+        await import("./agent-teams.js");
+      appState.set("agent-task:task-1", {
+        taskId: "task-1",
+        threadId: "thread-1",
+        ownerEmail: "alice@example.com",
+        description: "do work",
+        status: "running",
+        preview: "",
+        summary: "",
+        currentStep: "",
+        createdAt: Date.now(),
+      });
+      await sendToTask("task-1", "one last constraint");
+
+      const guard =
+        _agentTeamsQueueForTests.createTaskMessageFinalGuard("task-1");
+      const result = await guard({
+        messages: [],
+        assistantContent: [],
+        text: "done",
+        toolCalls: [],
+        toolResults: [],
+        retryCount: 0,
+      });
+
+      expect(result).toMatchObject({
+        retryMessage: expect.stringContaining("one last constraint"),
+        expandToolSurface: true,
+      });
+      await expect(
+        _agentTeamsQueueForTests.drainQueuedTaskMessages("task-1"),
+      ).resolves.toEqual([]);
+    }));
 
   it("maps aborted and errored child runs to non-success task outcomes", async () => {
     const { _agentTeamsQueueForTests } = await import("./agent-teams.js");
@@ -277,62 +608,64 @@ describe("agent teams message queue", () => {
     expect(result.taskStatus).toBe("completed");
   });
 
-  it("maps tasks into the shared background run vocabulary", async () => {
-    const {
-      getAgentTeamBackgroundRun,
-      listAgentTeamBackgroundRuns,
-      toAgentTaskBackgroundRun,
-    } = await import("./agent-teams.js");
-    const task = {
-      taskId: "task-1",
-      threadId: "thread-1",
-      description: "Review the launch plan",
-      status: "running" as const,
-      preview: "Checking milestones",
-      summary: "",
-      currentStep: "Reading docs",
-      createdAt: Date.parse("2026-05-16T10:00:00.000Z"),
-    };
-    appState.set("agent-task:task-1", task);
-
-    expect(toAgentTaskBackgroundRun(task)).toMatchObject({
-      schemaVersion: 1,
-      id: "run-task-task-1",
-      kind: "agent-team",
-      source: "hosted-agent-team",
-      sourceLabel: "Agent Teams",
-      sourceRecord: {
-        type: "agent-team-task",
-        id: "task-1",
-        threadId: "thread-1",
-      },
-      title: "Review the launch plan",
-      subtitle: "Reading docs",
-      status: "running",
-      phase: "Reading docs",
-      createdAt: "2026-05-16T10:00:00.000Z",
-      updatedAt: "2026-05-16T10:00:00.000Z",
-      goalId: "agent-team",
-      needsInput: false,
-      needsApproval: false,
-      surfaceUrl: "agent-native://threads/thread-1",
-      metadata: {
+  it("maps tasks into the shared background run vocabulary", () =>
+    withTaskThread("thread-1", async () => {
+      const {
+        getAgentTeamBackgroundRun,
+        listAgentTeamBackgroundRuns,
+        toAgentTaskBackgroundRun,
+      } = await import("./agent-teams.js");
+      const task = {
         taskId: "task-1",
         threadId: "thread-1",
-        latestText: "Checking milestones",
-      },
-    });
-    await expect(listAgentTeamBackgroundRuns()).resolves.toMatchObject([
-      { id: "run-task-task-1", kind: "agent-team" },
-    ]);
-    await expect(
-      getAgentTeamBackgroundRun("run-task-task-1"),
-    ).resolves.toMatchObject({
-      id: "run-task-task-1",
-      sourceRecord: { id: "task-1" },
-    });
-    await expect(getAgentTeamBackgroundRun("missing")).resolves.toBeNull();
-  });
+        ownerEmail: "alice@example.com",
+        description: "Review the launch plan",
+        status: "running" as const,
+        preview: "Checking milestones",
+        summary: "",
+        currentStep: "Reading docs",
+        createdAt: Date.parse("2026-05-16T10:00:00.000Z"),
+      };
+      appState.set("agent-task:task-1", task);
+
+      expect(toAgentTaskBackgroundRun(task)).toMatchObject({
+        schemaVersion: 1,
+        id: "run-task-task-1",
+        kind: "agent-team",
+        source: "hosted-agent-team",
+        sourceLabel: "Agent Teams",
+        sourceRecord: {
+          type: "agent-team-task",
+          id: "task-1",
+          threadId: "thread-1",
+        },
+        title: "Review the launch plan",
+        subtitle: "Reading docs",
+        status: "running",
+        phase: "Reading docs",
+        createdAt: "2026-05-16T10:00:00.000Z",
+        updatedAt: "2026-05-16T10:00:00.000Z",
+        goalId: "agent-team",
+        needsInput: false,
+        needsApproval: false,
+        surfaceUrl: "agent-native://threads/thread-1",
+        metadata: {
+          taskId: "task-1",
+          threadId: "thread-1",
+          latestText: "Checking milestones",
+        },
+      });
+      await expect(listAgentTeamBackgroundRuns()).resolves.toMatchObject([
+        { id: "run-task-task-1", kind: "agent-team" },
+      ]);
+      await expect(
+        getAgentTeamBackgroundRun("run-task-task-1"),
+      ).resolves.toMatchObject({
+        id: "run-task-task-1",
+        sourceRecord: { id: "task-1" },
+      });
+      await expect(getAgentTeamBackgroundRun("missing")).resolves.toBeNull();
+    }));
 
   it("maps task run events into shared background transcript events", async () => {
     const { toAgentTaskBackgroundTranscriptEvent } =
@@ -404,138 +737,146 @@ describe("agent teams message queue", () => {
     });
   });
 
-  it("sends background-run follow-ups through the existing task queue", async () => {
-    const { sendToAgentTeamBackgroundRun } = await import("./agent-teams.js");
-    appState.set("agent-task:task-1", {
-      taskId: "task-1",
-      threadId: "thread-1",
-      description: "do work",
-      status: "running",
-      preview: "",
-      summary: "",
-      currentStep: "",
-      createdAt: Date.now(),
-    });
+  it("sends background-run follow-ups through the existing task queue", () =>
+    withTaskThread("thread-1", async () => {
+      const { sendToAgentTeamBackgroundRun } = await import("./agent-teams.js");
+      appState.set("agent-task:task-1", {
+        taskId: "task-1",
+        threadId: "thread-1",
+        ownerEmail: "alice@example.com",
+        description: "do work",
+        status: "running",
+        preview: "",
+        summary: "",
+        currentStep: "",
+        createdAt: Date.now(),
+      });
 
-    const result = await sendToAgentTeamBackgroundRun(
-      "run-task-task-1",
-      "use the newer brief",
-    );
+      const result = await sendToAgentTeamBackgroundRun(
+        "run-task-task-1",
+        "use the newer brief",
+      );
 
-    expect(result).toMatchObject({ ok: true, queuedCount: 1 });
-    expect(
-      [...appState.values()].some(
-        (value) => value.message === "use the newer brief",
-      ),
-    ).toBe(true);
-  });
+      expect(result).toMatchObject({ ok: true, queuedCount: 1 });
+      expect(
+        [...appState.values()].some(
+          (value) => value.message === "use the newer brief",
+        ),
+      ).toBe(true);
+    }));
 
-  it("exposes Agent Teams through the shared background controller interface", async () => {
-    const { createAgentTeamBackgroundAgentController } =
-      await import("./agent-teams.js");
-    appState.set("agent-task:task-1", {
-      taskId: "task-1",
-      threadId: "thread-1",
-      description: "review docs",
-      status: "running",
-      preview: "reading",
-      summary: "",
-      currentStep: "Scanning",
-      createdAt: Date.parse("2026-05-16T10:00:00.000Z"),
-    });
+  it("exposes Agent Teams through the shared background controller interface", () =>
+    withTaskThread("thread-1", async () => {
+      const { createAgentTeamBackgroundAgentController } =
+        await import("./agent-teams.js");
+      appState.set("agent-task:task-1", {
+        taskId: "task-1",
+        threadId: "thread-1",
+        ownerEmail: "alice@example.com",
+        description: "review docs",
+        status: "running",
+        preview: "reading",
+        summary: "",
+        currentStep: "Scanning",
+        createdAt: Date.parse("2026-05-16T10:00:00.000Z"),
+      });
 
-    const controller = createAgentTeamBackgroundAgentController();
+      const controller = createAgentTeamBackgroundAgentController();
 
-    await expect(
-      Promise.resolve(controller.list({ goalId: "agent-team" })),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        id: "run-task-task-1",
-        kind: "agent-team",
-        source: "hosted-agent-team",
-      }),
-    ]);
-    await expect(
-      controller.sendFollowUp({
-        runId: "run-task-task-1",
-        prompt: "use the updated brief",
-      }),
-    ).resolves.toMatchObject({
-      ok: true,
-      queued: true,
-      run: { id: "run-task-task-1" },
-    });
-    await expect(
-      controller.control({ runId: "run-task-task-1", command: "stop" }),
-    ).resolves.toMatchObject({
-      ok: true,
-      run: { status: "errored", phase: "Task stopped." },
-    });
-  });
-
-  it("preserves source labels when local Code and Agent Teams runs are mixed", async () => {
-    const {
-      createCodeAgentRunRecord,
-      createCompositeBackgroundAgentController,
-      createLocalCodeBackgroundAgentController,
-    } = await import("../code-agents/index.js");
-    const { createAgentTeamBackgroundAgentController } =
-      await import("./agent-teams.js");
-    useTempCodeAgentsHome();
-    const localRun = createCodeAgentRunRecord({
-      goalId: "task",
-      title: "Fix auth tests",
-      status: "paused",
-      phase: "review",
-      cwd: "/repo",
-    });
-    appState.set("agent-task:task-1", {
-      taskId: "task-1",
-      threadId: "thread-1",
-      description: "Review the launch plan",
-      status: "running",
-      preview: "Checking milestones",
-      summary: "",
-      currentStep: "Reading docs",
-      createdAt: Date.parse("2026-05-16T10:00:00.000Z"),
-    });
-
-    const controller = createCompositeBackgroundAgentController([
-      createLocalCodeBackgroundAgentController(),
-      createAgentTeamBackgroundAgentController(),
-    ]);
-
-    await expect(Promise.resolve(controller.list())).resolves.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: localRun.id,
-          kind: "code",
-          source: "local-code",
-          sourceLabel: "Local Code",
-        }),
+      await expect(
+        Promise.resolve(controller.list({ goalId: "agent-team" })),
+      ).resolves.toEqual([
         expect.objectContaining({
           id: "run-task-task-1",
           kind: "agent-team",
           source: "hosted-agent-team",
+        }),
+      ]);
+      await expect(
+        controller.sendFollowUp({
+          runId: "run-task-task-1",
+          prompt: "use the updated brief",
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        queued: true,
+        run: { id: "run-task-task-1" },
+      });
+      await expect(
+        controller.control({ runId: "run-task-task-1", command: "stop" }),
+      ).resolves.toMatchObject({
+        ok: true,
+        run: { status: "errored", phase: "Task stopped." },
+      });
+    }));
+
+  it("preserves source labels when local Code and Agent Teams runs are mixed", () =>
+    withTaskThread("thread-1", async () => {
+      const {
+        createCodeAgentRunRecord,
+        createCompositeBackgroundAgentController,
+        createLocalCodeBackgroundAgentController,
+      } = await import("../code-agents/index.js");
+      const { createAgentTeamBackgroundAgentController } =
+        await import("./agent-teams.js");
+      useTempCodeAgentsHome();
+      const localRun = createCodeAgentRunRecord({
+        goalId: "task",
+        title: "Fix auth tests",
+        status: "paused",
+        phase: "review",
+        cwd: "/repo",
+      });
+      appState.set("agent-task:task-1", {
+        taskId: "task-1",
+        threadId: "thread-1",
+        ownerEmail: "alice@example.com",
+        description: "Review the launch plan",
+        status: "running",
+        preview: "Checking milestones",
+        summary: "",
+        currentStep: "Reading docs",
+        createdAt: Date.parse("2026-05-16T10:00:00.000Z"),
+      });
+
+      const controller = createCompositeBackgroundAgentController([
+        createLocalCodeBackgroundAgentController(),
+        createAgentTeamBackgroundAgentController(),
+      ]);
+
+      await expect(Promise.resolve(controller.list())).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: localRun.id,
+            kind: "code",
+            source: "local-code",
+            sourceLabel: "Local Code",
+          }),
+          expect.objectContaining({
+            id: "run-task-task-1",
+            kind: "agent-team",
+            source: "hosted-agent-team",
+            sourceLabel: "Agent Teams",
+          }),
+        ]),
+      );
+      await expect(
+        Promise.resolve(controller.get(localRun.id)),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          id: localRun.id,
+          sourceLabel: "Local Code",
+        }),
+      );
+      await expect(
+        Promise.resolve(controller.get("run-task-task-1")),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          id: "run-task-task-1",
           sourceLabel: "Agent Teams",
         }),
-      ]),
-    );
-    await expect(Promise.resolve(controller.get(localRun.id))).resolves.toEqual(
-      expect.objectContaining({
-        id: localRun.id,
-        sourceLabel: "Local Code",
-      }),
-    );
-    await expect(
-      Promise.resolve(controller.get("run-task-task-1")),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        id: "run-task-task-1",
-        sourceLabel: "Agent Teams",
-      }),
-    );
-  });
+      );
+    }));
 
   it("appends a parent-completion injection when parentThreadId is set", async () => {
     const {

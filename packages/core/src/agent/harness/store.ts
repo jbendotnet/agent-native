@@ -338,14 +338,18 @@ export async function listAgentHarnessSessions(
     ownerEmail?: string | null;
     orgId?: string | null;
     limit?: number;
+    summaryOnly?: boolean;
   } = {},
 ): Promise<StoredAgentHarnessSession[]> {
   await ensureAgentHarnessSessionTables();
   const limit = Math.max(1, Math.min(200, options.limit ?? 50));
+  const columns = options.summaryOnly
+    ? "id, harness_name, thread_id, run_id, provider_session_id, status, workspace_ref, pending_approval, owner_email, org_id, generation, created_at, updated_at, stopped_at"
+    : "*";
   const client = getDbExec();
   if (options.ownerEmail) {
     const { rows } = await client.execute({
-      sql: `SELECT * FROM agent_harness_sessions
+      sql: `SELECT ${columns} FROM agent_harness_sessions
             WHERE owner_email = ?
             ORDER BY updated_at DESC LIMIT ?`,
       args: [options.ownerEmail, limit],
@@ -360,7 +364,7 @@ export async function listAgentHarnessSessions(
   }
   if (options.threadId && options.status) {
     const { rows } = await client.execute({
-      sql: `SELECT * FROM agent_harness_sessions
+      sql: `SELECT ${columns} FROM agent_harness_sessions
             WHERE thread_id = ? AND status = ?
             ORDER BY updated_at DESC LIMIT ?`,
       args: [options.threadId, options.status, limit],
@@ -369,7 +373,7 @@ export async function listAgentHarnessSessions(
   }
   if (options.threadId) {
     const { rows } = await client.execute({
-      sql: `SELECT * FROM agent_harness_sessions
+      sql: `SELECT ${columns} FROM agent_harness_sessions
             WHERE thread_id = ?
             ORDER BY updated_at DESC LIMIT ?`,
       args: [options.threadId, limit],
@@ -378,7 +382,7 @@ export async function listAgentHarnessSessions(
   }
   if (options.status) {
     const { rows } = await client.execute({
-      sql: `SELECT * FROM agent_harness_sessions
+      sql: `SELECT ${columns} FROM agent_harness_sessions
             WHERE status = ?
             ORDER BY updated_at DESC LIMIT ?`,
       args: [options.status, limit],
@@ -386,7 +390,7 @@ export async function listAgentHarnessSessions(
     return rows.map(rowToHarnessSession).filter(isStoredSession);
   }
   const { rows } = await client.execute({
-    sql: `SELECT * FROM agent_harness_sessions
+    sql: `SELECT ${columns} FROM agent_harness_sessions
           ORDER BY updated_at DESC LIMIT ?`,
     args: [limit],
   });

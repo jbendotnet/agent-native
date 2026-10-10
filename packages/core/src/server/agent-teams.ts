@@ -27,6 +27,7 @@ import {
   subscribeToRun,
   type ActiveRun,
 } from "../agent/run-manager.js";
+import { callerHasThreadAccess } from "../agent/run-ownership.js";
 import { getRunEventsSince } from "../agent/run-store.js";
 import { resolveMaxSubagentDelegationDepth } from "../agent/runtime-context.js";
 import {
@@ -44,10 +45,12 @@ import {
   readAppState,
   writeAppState,
   listAppState,
+  listAppStateAcrossSessions,
   deleteAppState,
 } from "../application-state/script-helpers.js";
 import { redactArgsToValue, redactTextToSummary } from "../audit/redact.js";
 import { createThread } from "../chat-threads/store.js";
+import { accessibleThreadIds } from "../chat-threads/store.js";
 import type {
   BackgroundAgentRun,
   BackgroundAgentRunStatus,
@@ -238,7 +241,10 @@ export function createAgentTeamBackgroundAgentController(): BackgroundAgentContr
   return {
     async list(options?: ListBackgroundAgentRunsOptions) {
       if (options?.goalId && options.goalId !== "agent-team") return [];
-      return listAgentTeamBackgroundRuns();
+      return listAgentTeamBackgroundRuns({
+        ownerEmail: options?.ownerEmail ?? getRequestUserEmail() ?? null,
+        orgId: options?.orgId ?? getRequestOrgId(),
+      });
     },
     get: getAgentTeamBackgroundRun,
     transcript: listAgentTeamBackgroundTranscriptEvents,
@@ -630,12 +636,26 @@ async function saveLegacyTaskTerminalIfCurrent(
 }
 
 async function loadTask(taskId: string): Promise<AgentTask | null> {
-  const data = await readAppState(`${TASK_PREFIX}${taskId}`);
+  const key = `${TASK_PREFIX}${taskId}`;
+  const data = await readAppState(key);
+  if (!data) {
+    const matches = await listAppStateAcrossSessions(key, 2, true);
+    if (matches.length > 1)
+      throw new Error("Ambiguous task id across sessions");
+    return matches[0] ? (matches[0].value as unknown as AgentTask) : null;
+  }
   return data ? (data as unknown as AgentTask) : null;
 }
 
 async function loadTaskByThread(threadId: string): Promise<AgentTask | null> {
-  const ref = await readAppState(`${THREAD_PREFIX}${threadId}`);
+  const key = `${THREAD_PREFIX}${threadId}`;
+  let ref = await readAppState(key);
+  if (!ref) {
+    const matches = await listAppStateAcrossSessions(key, 2, true);
+    if (matches.length > 1)
+      throw new Error("Ambiguous task thread across sessions");
+    ref = matches[0]?.value ?? null;
+  }
   if (!ref || !ref.taskId) return null;
   return loadTask(ref.taskId as string);
 }
@@ -2831,10 +2851,22 @@ export async function getTask(
   scope?: AgentTeamOwnerScope,
 ): Promise<AgentTask | undefined> {
   const task = await loadTask(taskId);
-  if (!task || !taskMatchesOwnerScope(task, resolveOwnerScope(scope))) {
+  if (!task || !taskMatchesReadScope(task, resolveOwnerScope(scope))) {
     return undefined;
   }
-  return await reconcileTaskForRead(task);
+  const caller = resolveOwnerScope(scope);
+  if (
+    !(await callerHasThreadAccess(
+      caller.ownerEmail ?? "",
+      task.threadId,
+      "viewer",
+      { orgId: caller.orgId ?? undefined },
+    ))
+  )
+    return undefined;
+  return caller.ownerEmail === task.ownerEmail
+    ? await reconcileTaskForRead(task)
+    : task;
 }
 
 export async function getTaskByThread(
@@ -2842,21 +2874,52 @@ export async function getTaskByThread(
   scope?: AgentTeamOwnerScope,
 ): Promise<AgentTask | undefined> {
   const task = await loadTaskByThread(threadId);
-  if (!task || !taskMatchesOwnerScope(task, resolveOwnerScope(scope))) {
+  if (!task || !taskMatchesReadScope(task, resolveOwnerScope(scope))) {
     return undefined;
   }
-  return await reconcileTaskForRead(task);
+  const caller = resolveOwnerScope(scope);
+  if (
+    !(await callerHasThreadAccess(
+      caller.ownerEmail ?? "",
+      task.threadId,
+      "viewer",
+      { orgId: caller.orgId ?? undefined },
+    ))
+  )
+    return undefined;
+  return caller.ownerEmail === task.ownerEmail
+    ? await reconcileTaskForRead(task)
+    : task;
 }
 
 export async function listTasks(
   scope?: AgentTeamOwnerScope,
 ): Promise<AgentTask[]> {
   const ownerScope = resolveOwnerScope(scope);
-  const entries = await listAppState(TASK_PREFIX);
+  const entries = await listAppStateAcrossSessions(TASK_PREFIX, 201, false, {
+    userEmail: ownerScope.ownerEmail ?? "",
+    orgId: ownerScope.orgId,
+  });
+  if (entries.length > 200) {
+    throw new Error("Task list exceeds the 200-item limit.");
+  }
   const tasks = entries
     .map((e) => e.value as unknown as AgentTask)
-    .filter((task) => taskMatchesOwnerScope(task, ownerScope));
-  const reconciled = await Promise.all(tasks.map(reconcileTaskForRead));
+    .filter((task) => taskMatchesReadScope(task, ownerScope));
+  const permitted = await accessibleThreadIds(
+    ownerScope.ownerEmail,
+    tasks.map((task) => task.threadId),
+    ownerScope.orgId,
+  );
+  const reconciled = await Promise.all(
+    tasks
+      .filter((task) => permitted.has(task.threadId))
+      .map((task) =>
+        task.ownerEmail === ownerScope.ownerEmail
+          ? reconcileTaskForRead(task)
+          : Promise.resolve(task),
+      ),
+  );
   return reconciled.sort(
     (a, b) =>
       (b.updatedAt ?? b.completedAt ?? b.createdAt) -
@@ -3010,6 +3073,16 @@ export async function sendToTask(
   if (!task || !taskMatchesOwnerScope(task, resolveOwnerScope(scope))) {
     return { ok: false, error: "Task not found" };
   }
+  const caller = resolveOwnerScope(scope);
+  if (
+    !(await callerHasThreadAccess(
+      caller.ownerEmail ?? "",
+      task.threadId,
+      "owner",
+      { orgId: caller.orgId ?? undefined },
+    ))
+  )
+    return { ok: false, error: "Task not found" };
   if (task.status !== "running")
     return { ok: false, error: "Task is not running" };
   if (message.trim().length === 0)
@@ -3112,6 +3185,15 @@ export async function stopAgentTeamBackgroundRun(
     if (!task || !taskMatchesOwnerScope(task, ownerScope)) {
       return { ok: false, error: "Task not found" };
     }
+    if (
+      !(await callerHasThreadAccess(
+        ownerScope.ownerEmail ?? "",
+        task.threadId,
+        "owner",
+        { orgId: ownerScope.orgId ?? undefined },
+      ))
+    )
+      return { ok: false, error: "Task not found" };
     if (task.status !== "running") {
       return { ok: false, error: "Task is not running" };
     }
@@ -3162,7 +3244,6 @@ export async function stopAgentTeamBackgroundRun(
       stoppedTask = task;
     }
   }
-
   if (!stoppedTask) {
     return { ok: false, error: "Task is not running" };
   }
@@ -3189,14 +3270,11 @@ export async function stopAgentTeamBackgroundRun(
   return { ok: true };
 }
 
-function resolveOwnerScope(
-  scope?: AgentTeamOwnerScope,
-): AgentTeamOwnerScope | undefined {
+function resolveOwnerScope(scope?: AgentTeamOwnerScope): AgentTeamOwnerScope {
   if (scope) return scope;
   const ownerEmail = getRequestUserEmail();
-  if (ownerEmail === undefined) return undefined;
   return {
-    ownerEmail,
+    ownerEmail: ownerEmail ?? null,
     orgId:
       typeof getRequestOrgId === "function" ? getRequestOrgId() : undefined,
   };
@@ -3211,6 +3289,13 @@ function taskMatchesOwnerScope(
     (task.ownerEmail ?? null) === scope.ownerEmail &&
     (scope.orgId === undefined || (task.orgId ?? null) === scope.orgId)
   );
+}
+
+function taskMatchesReadScope(
+  task: AgentTask,
+  scope: AgentTeamOwnerScope,
+): boolean {
+  return scope.orgId === undefined || (task.orgId ?? null) === scope.orgId;
 }
 
 export async function markTaskErrored(
