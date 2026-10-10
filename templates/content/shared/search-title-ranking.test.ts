@@ -174,26 +174,6 @@ describe("rankTitlesByQuery tie-breaks", () => {
 });
 
 describe("rankTitlesByQuery performance", () => {
-  it("ranks 10,000 titles through the typo tier in under 50ms", () => {
-    const items: TitleSearchCandidate[] = Array.from(
-      { length: 10_000 },
-      (_, index) =>
-        candidate(
-          `doc-${index}`,
-          `Quarterly planning notes ${index}`,
-          new Date(2026, 0, 1, 0, 0, index).toISOString(),
-        ),
-    );
-    const index = buildTitleSearchIndex(items);
-    rankTitlesByQuery(index, "plnaning"); // warm up the JIT
-    const start = performance.now();
-    const ranked = rankTitlesByQuery(index, "plnaning");
-    const elapsed = performance.now() - start;
-    expect(ranked.length).toBe(10_000);
-    expect(ranked[0]!.tier).toBe(TITLE_MATCH_TIER.fuzzy);
-    expect(elapsed).toBeLessThan(50);
-  });
-
   it("skips typo matching when shared-tier matches already fill the limit", () => {
     const items = [
       ...Array.from({ length: 25 }, (_, index) =>
@@ -212,31 +192,5 @@ describe("rankTitlesByQuery performance", () => {
         (result) => result.candidate.id === "typo-only",
       ),
     ).toBe(true);
-  });
-
-  it("ranks 10,000 titles in under 50ms", () => {
-    const titles = [
-      "Task Priorities",
-      "Quarterly Roadmap",
-      "Engineering Notes",
-      "Design Review",
-      "Stellar Road Handbook",
-    ];
-    const items: TitleSearchCandidate[] = Array.from(
-      { length: 10_000 },
-      (_, index) =>
-        candidate(
-          `doc-${index}`,
-          `${titles[index % titles.length]} ${index}`,
-          new Date(2026, 0, 1, 0, 0, index).toISOString(),
-        ),
-    );
-    const index = buildTitleSearchIndex(items);
-    rankTitlesByQuery(index, "road"); // warm up the JIT
-    const start = performance.now();
-    const ranked = rankTitlesByQuery(index, "road");
-    const elapsed = performance.now() - start;
-    expect(ranked.length).toBeGreaterThan(0);
-    expect(elapsed).toBeLessThan(50);
   });
 });

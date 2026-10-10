@@ -107,6 +107,7 @@ describe("server/auth", () => {
     vi.doUnmock("../org/context.js");
     vi.doUnmock("../org/auth-policy.js");
     vi.doUnmock("../org/workspace-app-access.js");
+    vi.doUnmock("../application-state/store.js");
     vi.doUnmock("./embed-session.js");
     vi.doUnmock("./email.js");
     vi.doUnmock("./sentry.js");
@@ -6704,6 +6705,20 @@ describe("server/auth", () => {
       defineAppConfig({
         testIdentity: { emails: ["@qa.acme.co", "release-bot@acme.co"] },
       });
+      const sessionState = new Map<string, unknown>();
+      vi.doMock("../application-state/store.js", async (importOriginal) => ({
+        ...(await importOriginal<
+          typeof import("../application-state/store.js")
+        >()),
+        appStateGet: vi.fn(async (email: string, key: string) =>
+          sessionState.get(`${email}:${key}`),
+        ),
+        appStatePut: vi.fn(
+          async (email: string, key: string, value: unknown) => {
+            sessionState.set(`${email}:${key}`, value);
+          },
+        ),
+      }));
       let email = "lead@qa.acme.co";
       const { autoMountAuth } = await import("./auth.js");
       const app = createMockApp();

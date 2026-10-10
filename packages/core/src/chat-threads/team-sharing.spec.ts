@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createTestPglite } from "../a2a/test-pglite.js";
 import { callerHasThreadAccess } from "../agent/run-ownership.js";
+import { AGENT_AUDIT_LOG_CREATE_SQL } from "../audit/store.js";
 import { withDbExec, type DbExec } from "../db/client.js";
 import { runWithRequestContext } from "../server/request-context.js";
 import setResourceVisibility from "../sharing/actions/set-resource-visibility.js";
 import shareResource from "../sharing/actions/share-resource.js";
 import unshareResource from "../sharing/actions/unshare-resource.js";
+import deleteGroup from "../workspace-connections/actions/delete-workspace-user-group.js";
 import { upsertWorkspaceUserGroup } from "../workspace-connections/groups.js";
 import listTeamShared from "./actions/list-team-shared-chat-threads.js";
 import shareTeam from "./actions/share-chat-thread-with-team.js";
@@ -91,6 +93,7 @@ describe("chat team sharing", () => {
       INSERT INTO org_members (id, org_id, email, role, joined_at) VALUES ('m-owner', '${orgId}', '${owner}', 'member', 1), ('m-viewer', '${orgId}', '${viewer}', 'member', 1), ('m-outsider', '${orgId}', '${outsider}', 'admin', 1);
       INSERT INTO workspace_user_groups (id, org_id, name, member_emails_json, is_team) VALUES ('team-1', '${orgId}', 'Team 1', '["${owner}","${viewer}"]', true), ('team-2', '${orgId}', 'Team 2', '["${owner}","${viewer}"]', true), ('ordinary', '${orgId}', 'Ordinary', '["${owner}","${viewer}"]', false), ('other-org', 'other-org', 'Other', '["${owner}"]', true);
     `);
+    await pg.exec(AGENT_AUDIT_LOG_CREATE_SQL);
     await as(owner, async () => {
       registerChatThreadsShareable();
       await createThread(owner, { id: "unbound", orgId });
@@ -581,5 +584,85 @@ describe("chat team sharing", () => {
     ]);
     await pg.query("DELETE FROM workspace_user_groups WHERE id = 'team-1'");
     await expect(list()).rejects.toThrow();
+  });
+
+  it("retains bound data after team deletion while unbound owner access survives a stale grant", async () => {
+    await grant("bound");
+    await grant("unbound");
+    await pg.query("UPDATE org_members SET role = 'owner' WHERE email = ?", [
+      owner,
+    ]);
+    const before = (
+      await pg.query(
+        "SELECT id, owner_email, team_group_id, thread_data FROM chat_threads WHERE id IN ('bound', 'unbound') ORDER BY id",
+      )
+    ).rows;
+    expect(before).toMatchObject([
+      { id: "bound", team_group_id: "team-1" },
+      { id: "unbound", team_group_id: null },
+    ]);
+
+    expect(
+      await as(owner, () =>
+        deleteGroup.run({ id: "team-1" }, { userEmail: owner, orgId }),
+      ),
+    ).toEqual({ id: "team-1", deleted: true });
+    expect(
+      (
+        await pg.query(
+          "SELECT id, owner_email, team_group_id, thread_data FROM chat_threads WHERE id IN ('bound', 'unbound') ORDER BY id",
+        )
+      ).rows,
+    ).toEqual(before);
+    expect(
+      await as(owner, () =>
+        resolveThreadAccess(owner, "bound", "viewer", { orgId }),
+      ),
+    ).toBeNull();
+    expect(
+      await as(viewer, () =>
+        resolveThreadAccess(viewer, "bound", "viewer", { orgId }),
+      ),
+    ).toBeNull();
+    expect(
+      await as(owner, () =>
+        resolveThreadAccess(owner, "unbound", "owner", { orgId }),
+      ),
+    ).toMatchObject({ id: "unbound", teamGroupId: null });
+    expect(
+      await as(viewer, () =>
+        resolveThreadAccess(viewer, "unbound", "viewer", { orgId }),
+      ),
+    ).toBeNull();
+    expect(
+      (
+        await pg.query(
+          "SELECT principal_id FROM chat_thread_shares WHERE resource_id = 'bound'",
+        )
+      ).rows,
+    ).toEqual([{ principal_id: "team-1" }]);
+    await expect(
+      as(owner, () =>
+        upsertWorkspaceUserGroup({
+          id: "team-1",
+          name: "Team 1",
+          memberEmails: [owner],
+          isTeam: true,
+        }),
+      ),
+    ).rejects.toThrow(/not found/);
+    const replacement = await as(owner, () =>
+      upsertWorkspaceUserGroup({
+        name: "Team 1",
+        memberEmails: [owner],
+        isTeam: true,
+      }),
+    );
+    expect(replacement.id).not.toBe("team-1");
+    expect(
+      await as(owner, () =>
+        resolveThreadAccess(owner, "bound", "viewer", { orgId }),
+      ),
+    ).toBeNull();
   });
 });

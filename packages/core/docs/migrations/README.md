@@ -42,6 +42,11 @@ more direct message.
 
 ## Installed copy
 
+### Specific guides
+
+- [Team chat-history capability wiring](team-chat-history.md) covers the
+  app-aware Toolkit wrapper and retained presentation imports.
+
 The published package includes this file at
 `node_modules/@agent-native/core/docs/migrations/README.md`. Add specific guides
 beside it and link them from the package docs index so agents can find the

@@ -90,6 +90,45 @@ Lorsque vous partagez avec un utilisateur ou une organisation spécifique, vous 
 
 Certaines ressources prennent en charge le partage avec des groupes. Le groupe doit appartenir à l’organisation de la ressource, et chaque membre actuel reçoit le rôle choisi pour cette ressource. Voir [Organisations, équipes et autorisations → Groupes d’utilisateurs](/docs/organizations-teams-permissions#user-groups) pour connaître le périmètre des groupes et ses limites.
 
+### Conversations d’équipe {#team-conversations}
+
+Les conversations restent personnelles et privées par défaut. Le rattachement à une équipe ne donne aucun accès et ne rend pas la conversation visible dans la liste partagée. Seul son propriétaire enregistré, toujours membre de l’organisation et de l’équipe, peut la partager ou retirer le partage. Une conversation rattachée ne peut être partagée qu’avec cette équipe. Une seule autorisation d’équipe est admise, en lecture seule. Les lecteurs ne peuvent ni continuer, ni modifier, ni supprimer, ni gérer la conversation, même s’ils sont administrateurs ou responsables. Les rôles génériques d’éditeur et d’administrateur de ressource ne s’appliquent pas ici.
+
+| Action                          | Entrée                                             | Résultat                                                                             |
+| ------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `share-chat-thread-with-team`   | `threadId`, `teamGroupId`                          | `{ threadId, teamGroupId, shared: true }`                                            |
+| `unshare-chat-thread-from-team` | `threadId`, `teamGroupId`                          | `{ threadId, teamGroupId, shared: false }`                                           |
+| `list-team-shared-chat-threads` | `teamGroupId`, `limit?: 1..100`, `offset?: number` | `{ threads, nextOffset }`, du plus récent au plus ancien                             |
+| `get-chat-thread-capabilities`  | `threadId`                                         | `{ threadId, canRead: true, canContinue, canManage }`, après vérification de l’accès |
+
+La liste utilise par défaut `limit: 25` et `offset: 0`. Le décalage doit être positif ou nul. Les exemples utilisent les identifiants d’une conversation existante et de son équipe autorisée.
+
+```ts
+import { callAction } from "@agent-native/core/client/hooks";
+
+await callAction("share-chat-thread-with-team", { threadId, teamGroupId });
+```
+
+La pagination continue uniquement si `nextOffset` n’est pas `null`.
+
+```ts
+const page = await callAction("list-team-shared-chat-threads", {
+  teamGroupId,
+  limit: 25,
+});
+if (page.nextOffset !== null) {
+  await callAction("list-team-shared-chat-threads", {
+    teamGroupId,
+    limit: 25,
+    offset: page.nextOffset,
+  });
+}
+```
+
+Quitter l’équipe ou l’organisation révoque l’accès lors des requêtes suivantes. Si le propriétaire part, les lecteurs autorisés peuvent encore lire, mais pas continuer la conversation. Supprimer l’équipe conserve les conversations rattachées, le contexte, les ressources personnelles et les lignes de partage, tout en bloquant l’accès ultérieur. Une nouvelle équipe du même nom reçoit un nouvel identifiant et n’hérite pas de ces données.
+
+Les liens publics ne peuvent être ni émis ni utilisés pour les conversations rattachées, y compris avec d’anciens jetons. Chaque lecture d’exécution, relecture, reconnexion ou nouvelle connexion de flux vérifie à nouveau l’accès. Un flux déjà ouvert peut se terminer. Voir [Contexte d’équipe](/docs/organizations-teams-permissions#team-context).
+
 ## Ce qui est couvert {#covered}
 
 Chaque modèle qui stocke le travail créé par l'utilisateur utilise ce modèle. Concrètement :

@@ -49,6 +49,55 @@ Forms は、ロール未割り当ての既存メンバーの編集アクセス�
 
 組織には、現在のメンバーで構成する再利用可能なユーザーグループを作成できます。オーナーと管理者がメンバーを管理し、1 人のユーザーが複数のグループに所属できます。アプリは、グループ共有に対応したリソースの共有や、ワークスペース接続へのアクセス制限にグループを使えます。
 
-グループはアクセスリストであり、子チームではありません。独自の組織ロールやアプリロール、別のデータ境界、チーム固有の設定、指示、コンテキスト、スキル、メモリ、作業ビューはありません。グループにリソースを共有すると、そのリソースの共有ロールが現在の全メンバーに適用されます。アクセスには引き続き、そのリソースの組織への所属が必要です。
+通常のグループはアクセスリストです。`isTeam: true` を明示した場合のみチームに変換されます。ID、メンバー、リソースと接続の権限は保持されます。更新時に `isTeam` を省略すると既存の種類が保持されます。組織の所有者と管理者はチームの作成、変換、名前変更、削除、リーダーの指定を行えます。リーダーが変更できるのは自分のチームの一般メンバーだけです。組織ロールや非公開の会話へのアクセスは付与されません。
+
+### チームコンテキストと会話の紐付け {#team-context}
+
+選択はユーザーと組織ごとに保存されます。`get-active-workspace-team` は選択を復元して検証します。`set-active-workspace-team` は現在のチーム、または個人作業を表す `null` を選択します。影響するのは新しい会話だけです。既存の紐付けは変更できず、古い未紐付けの会話はそのままです。選択してもアクセス権や共有は付与されません。
+
+V1 が対応するのはチームの指示、スキル、メモリだけで、任意のアプリデータのチーム所有ではありません。リソースは `scope: "team"` と `teamGroupId` を使います。前景と背景の実行は、組織の後、個人の前に紐付け先チームのコンテキストを読み込みます。チームを削除しても紐付いた会話、コンテキスト、個人リソース、共有行は保持されますが、そのチーム経由のアクセスは終了します。同名の新しいチームには新しい ID が付与されます。
+
+### チームアクション {#team-actions}
+
+| アクション                          | 入力                                                      | 戻り値                                                                                                            |
+| ----------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `upsert-workspace-user-group`       | `{ id?, name, memberEmails?: [], isTeam?, leadEmails? }`  | `id`、`orgId`、`name`、`memberEmails`、`isTeam`、`leadEmails` とメタデータを含むグループ。メンバーの既定値は `[]` |
+| `set-workspace-team-leads`          | `{ teamGroupId, leadEmails }`                             | 更新したグループ。リーダー一覧全体を置き換える                                                                    |
+| `bulk-update-workspace-user-groups` | `{ groupId, memberEmails, operation: "add" \| "remove" }` | 更新したグループ。メールアドレスは 1～100 件                                                                      |
+| `list-workspace-user-groups`        | `{}`                                                      | グループ。メンバーとリーダーの一覧は所有者、管理者、そのチームのメンバーにのみ表示                                |
+| `delete-workspace-user-group`       | `{ id }`                                                  | `{ id, deleted: true }`。存在しない場合は失敗                                                                     |
+| `set-active-workspace-team`         | `{ teamGroupId: string \| null }`                         | 所属の検証後に `{ orgId, teamGroupId }`                                                                           |
+| `get-active-workspace-team`         | `{}`                                                      | `{ orgId, teamGroupId }` とアプリ状態への選択の復元                                                               |
+
+所有者または管理者はチームを作成できます。選択するには自分もメンバーである必要があります：
+
+```ts
+import { callAction } from "@agent-native/core/client/hooks";
+
+await callAction("upsert-workspace-user-group", {
+  name: "Support",
+  isTeam: true,
+  memberEmails: ["lead@example.com", "member@example.com"],
+  leadEmails: ["lead@example.com"],
+});
+```
+
+既存グループを変換する際はメンバーを明示的に保持します。その後、個人作業に戻せます：
+
+```ts
+const groups = await callAction("list-workspace-user-groups", {});
+const group = groups.find((group) => group.name === "Support");
+if (!group) throw new Error("Support グループが見つかりません");
+
+await callAction("upsert-workspace-user-group", {
+  id: group.id,
+  name: group.name,
+  memberEmails: group.memberEmails,
+  isTeam: true,
+});
+await callAction("set-active-workspace-team", { teamGroupId: null });
+```
+
+会話は個人所有のままで、既定では非公開です。閲覧専用共有は[チームの会話](/docs/sharing#team-conversations)を参照してください。
 
 詳しくは[共有とプライバシー → グループ共有](/docs/sharing#group-grants)と[ワークスペース接続](/docs/workspace-connections)を参照してください。

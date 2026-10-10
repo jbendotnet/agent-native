@@ -86,10 +86,10 @@ Mêmes capacités. Une économie différente. Consultez [Applications](/docs/clo
 
 ## Vue d'ensemble {#overview}
 
-Les ressources ont trois étendues d'exécution :
+Les ressources ont trois étendues de base à l'exécution :
 
 - **Personnel** : limité à un seul utilisateur (son adresse e-mail). Idéal pour les préférences, les notes et le contexte par utilisateur.
-- **Partagé/organisation** : visible par tous les utilisateurs de l'application ou de l'organisation. Idéal pour les instructions d'application/d'équipe, skills et la configuration partagée.
+- **Partagé/organisation** : visible par tous les utilisateurs de l'application ou de l'organisation. Idéal pour les instructions de l'application, skills et la configuration partagée.
 - **Workspace** : héritage des valeurs par défaut globales gérées à partir des ressources de répartition. Idéal pour les informations sur l'entreprise, le positionnement, les directives de marque, les garde-fous mondiaux, le skills à l'échelle de l'espace de travail et les serveurs MCP partagés. Les applications les lisent au moment de l'exécution ; ils ne sont pas copiés dans chaque application.
 
 L'onglet Ressources intégré à l'application affiche les trois étendues. Les ressources personnelles et partagées/organisationnelles y sont modifiables. Les ressources au niveau de l'espace de travail sont en lecture seule dans les panneaux d'application et modifiées de manière centralisée à partir de Dispatch, de sorte que chaque application voit les mêmes fichiers canoniques sans étape de synchronisation.
@@ -104,7 +104,13 @@ Les chemins canoniques qui contrôlent la manière dont l'agent utilise chaque r
 | Profils d'agent personnalisés   | `agents/<slug>.md`                      | Disponible sous forme de profils d'agent local réutilisables    |
 | Serveurs HTTP MCP partagés      | `mcp-servers/<slug>.json`               | Chargé dans le registre d'outils MCP des applications accordées |
 
-Ces chemins s'appliquent aux trois étendues : espace de travail, organisation/application et personnel. La dernière portée l'emporte lorsque le même chemin existe à plusieurs niveaux.
+Ces chemins s'appliquent aux trois étendues de base : espace de travail, organisation/application et personnel. La dernière étendue l'emporte lorsque le même chemin existe à plusieurs niveaux.
+
+### Contexte de l’équipe liée {#team-resources}
+
+V1 ajoute une étendue d’équipe distincte pour les instructions, les skills et la mémoire. Elle ne donne pas à l’équipe la propriété des fichiers arbitraires, agents personnalisés, serveurs MCP, tâches ou données de l’application. Les ressources d’équipe exigent `scope: "team"` et `teamGroupId`. Elles s’appliquent uniquement aux conversations liées, pas à toutes les conversations des membres.
+
+Les exécutions au premier plan et en arrière-plan résolvent les valeurs héritées de l’espace de travail et de l’application, puis l’organisation, l’équipe liée et les ressources personnelles. Les fichiers d’équipe `AGENTS.md`, `instructions/*.md` et `memory/MEMORY.md` sont un contexte obligatoire. Les skills d’équipe sont indexées et lues à la demande. Une skill personnelle de même nom prend le dessus. La mémoire d’équipe reste distincte du `LEARNINGS.md` partagé et de la mémoire personnelle. L’appartenance actuelle est vérifiée avant le chargement. Voir [Contexte d’équipe](/docs/organizations-teams-permissions#team-context).
 
 ## Emporter vos ressources {#resource-pack}
 
@@ -220,7 +226,7 @@ agents/<slug>.md                # reusable custom agent profiles
 
 Conservez les fichiers `context/` factuels et faciles à parcourir. Mettez des règles qui doivent s'appliquer à chaque tour dans `instructions/guardrails.md`. Utilisez `skills/company-voice/SKILL.md` lorsque l'agent doit délibérément transformer ou réviser une copie avec la voix de l'entreprise.
 
-Pour remplacer une valeur par défaut globale pour une application ou une équipe, créez une ressource partagée/organisationnelle dans cette application avec le même chemin. Pour le remplacer pour une personne, créez une ressource personnelle avec le même chemin. Ne copiez pas le fichier d'espace de travail dans chaque application ; le runtime résout la pile en lecture :
+Pour remplacer une valeur par défaut globale pour une application, créez une ressource partagée/organisationnelle dans cette application au même chemin. Pour une personne, créez une ressource personnelle au même chemin. Le runtime résout la pile en lecture sans copier le fichier dans chaque application :
 
 ```text
 workspace context/brand.md
@@ -256,7 +262,7 @@ Au début de chaque conversation, l'agent lit automatiquement :
 
 ### AGENTS.md et instructions {#agents-md}
 
-`AGENTS.md` est une ressource d'instructions prédéfinie par défaut et chargée à chaque tour à partir de l'espace de travail, des étendues partagées/organisationnelles et personnelles dans cet ordre : espace de travail pour les valeurs par défaut à l'échelle de l'entreprise, partagé/application pour les règles d'équipe, personnel pour les préférences de chaque utilisateur. Les fichiers sous `instructions/` sont des documents de garde-fou distincts qui s'appliquent également à chaque tour (règles de conformité, politique d'escalade, voix de la marque) et suivent la même priorité. Les exécutions normales de chat et déclenchées par l'intégration les chargent avant de répondre.
+`AGENTS.md` et les fichiers sous `instructions/` sont chargés à chaque tour. L’ordre est : valeurs héritées de l’espace de travail et de l’application, organisation, équipe liée le cas échéant, puis ressources personnelles. Les exécutions au premier plan et en arrière-plan utilisent le même contexte lié. Changer l’équipe sélectionnée ne modifie pas le lien d’une conversation existante.
 
 ```text
 AGENTS.md
@@ -270,12 +276,12 @@ Le contexte d'entreprise réutilisable se trouve sous `context/` (personnages, p
 
 ### Mémoire {#memory}
 
-Les ressources de l'agent comportent deux surfaces de mémoire actuelles :
+Les ressources de l’agent comportent deux surfaces de mémoire de base, en plus de la mémoire de l’équipe liée décrite ci-dessus :
 
 - `LEARNINGS.md` dans la portée **Partagée** pour les conventions, les corrections et les connaissances durables de l'équipe à l'échelle du projet.
 - `memory/MEMORY.md` dans la portée **Personnelle** pour la mémoire structurée sur l'utilisateur actuel.
 
-Le système de ressources génère également un `LEARNINGS.md` personnel pour la compatibilité avec les anciens espaces de travail, mais le chemin de préchargement du chat est partagé `LEARNINGS.md` plus `memory/MEMORY.md` personnel.
+Le système génère aussi un `LEARNINGS.md` personnel par compatibilité. Le chat précharge le `LEARNINGS.md` partagé et le `memory/MEMORY.md` personnel, ainsi que le `memory/MEMORY.md` de l’équipe pour une conversation liée.
 
 **Ce qui est enregistré.** Lorsque vous corrigez l'agent (« utilisez toujours X au lieu de Y »), partagez une préférence (« Je préfère les réponses concises ») ou révélez le contexte (« mon équipe appelle cela « la couche de répartition »), l'agent capture cet apprentissage afin de ne pas répéter l'erreur ou de demander à nouveau. Les apprentissages à l'échelle du projet sont partagés dans le `LEARNINGS.md` ; la mémoire spécifique à l'utilisateur se trouve sous `memory/`. La compétence `capture-learnings` indique quand et comment.
 
@@ -314,7 +320,7 @@ Chacune de ces surfaces (`AGENTS.md`, skills, mémoire, agents personnalisés, s
         },
         {
           name: "scope",
-          type: "workspace | shared | personal",
+          type: "workspace | shared | team | personal",
           note: "À quel niveau se trouve cette rangée",
         },
         {

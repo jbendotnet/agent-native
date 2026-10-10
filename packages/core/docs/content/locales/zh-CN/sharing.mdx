@@ -90,6 +90,47 @@ description: "框架内置了熟悉且一致的共享方式。用户创建的每
 
 部分资源支持与用户组共享。用户组必须属于资源所在的组织，组内每位当前成员都会获得该资源的所选共享角色。请参阅[组织、团队与权限 → 用户组](/docs/organizations-teams-permissions#user-groups)，了解用户组的适用范围和限制。
 
+### 团队对话 {#team-conversations}
+
+对话由个人拥有，默认私有。绑定团队只决定上下文，不会自动共享或列出对话。只有记录中的所有者可以共享或取消共享，而且必须仍属于该组织和目标团队。已绑定的对话只能共享给绑定的团队，最多有一个团队查看者授权。查看者不能继续、编辑、删除或管理对话。组织管理员和团队负责人也不会因此获得这些权限。通用资源的编辑者或管理员授权不适用于团队对话。
+
+| 操作                            | 输入                               | 返回值                                                |
+| ------------------------------- | ---------------------------------- | ----------------------------------------------------- |
+| `share-chat-thread-with-team`   | `{ threadId, teamGroupId }`        | `{ threadId, teamGroupId, shared: true }`             |
+| `unshare-chat-thread-from-team` | `{ threadId, teamGroupId }`        | `{ threadId, teamGroupId, shared: false }`            |
+| `list-team-shared-chat-threads` | `{ teamGroupId, limit?, offset? }` | `{ threads, nextOffset }`                             |
+| `get-chat-thread-capabilities`  | `{ threadId }`                     | `{ threadId, canRead: true, canContinue, canManage }` |
+
+列表按最新优先排序。`limit` 为 1–100，默认 25。`offset` 为非负整数，默认 0。能力查询会先验证访问权限，不会返回无法读取的对话。
+
+所有者可以使用现有对话和团队的 ID 进行共享：
+
+```ts
+import { callAction } from "@agent-native/core/client/hooks";
+
+await callAction("share-chat-thread-with-team", { threadId, teamGroupId });
+```
+
+分页读取显式共享的团队对话，而不是所有绑定的私有对话：
+
+```ts
+const page = await callAction("list-team-shared-chat-threads", {
+  teamGroupId,
+  limit: 25,
+});
+if (page.nextOffset !== null) {
+  const nextPage = await callAction("list-team-shared-chat-threads", {
+    teamGroupId,
+    limit: 25,
+    offset: page.nextOffset,
+  });
+}
+```
+
+离开团队或组织会使后续请求失去访问权限。如果所有者离开，仍获授权的查看者可以读取已共享的对话，但不能继续对话。删除团队会保留绑定的对话、上下文、个人行和共享行，同时终止访问。同名的新团队会获得新 ID，不会继承旧访问权限。
+
+已绑定的对话不能创建或兑换公开链接，包括旧令牌。读取运行、重放、重新连接和新建流连接都会重新验证访问权限。已经打开的流可以结束，不会在中途被强制关闭。有关选择与绑定，见[团队上下文](/docs/organizations-teams-permissions#team-context)。
+
 ## 涵盖内容 {#covered}
 
 每个存储用户创作作品的模板都使用此模型。具体来说：

@@ -330,6 +330,24 @@
       ]
     },
     {
+      "id": "toolkit/app-chat-history",
+      "label": "Core-backed chat history controls",
+      "catalog": "toolkit-ui",
+      "catalogItems": ["app-chat-history"],
+      "entrypoints": ["./app/chat-history", "./app/chat-history/*"],
+      "strategy": "source-copy",
+      "sourceEntries": ["src/app/chat-history"],
+      "targetRoot": "app/components/agent-native/toolkit",
+      "dependencies": ["@agent-native/core", "react"],
+      "protectedImports": [
+        "@agent-native/core/client/hooks",
+        "@agent-native/core/client/org",
+        "@agent-native/toolkit/chat-history/ChatHistoryList",
+        "@agent-native/toolkit/ui/dropdown-menu"
+      ],
+      "verification": ["pnpm typecheck"]
+    },
+    {
       "id": "toolkit/app-org",
       "label": "Toolkit app Org",
       "catalog": "toolkit-ui",
@@ -536,7 +554,8 @@
         "@agent-native/core/shared/docs-url",
         "@agent-native/core/shared/first-party-agents",
         "@agent-native/core/shared/password-policy",
-        "@agent-native/core/user-profile/shared"
+        "@agent-native/core/user-profile/shared",
+        "@agent-native/core/workspace-connections/groups"
       ]
     },
     {
@@ -1453,6 +1472,9 @@
         "react",
         "recharts",
         "tailwind-merge"
+      ],
+      "protectedImports": [
+        "@agent-native/toolkit/app/chat-history/TeamShareMenu"
       ],
       "verification": ["pnpm typecheck"]
     },

@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const mockExecute = vi.fn();
 const mockGetSession = vi.fn();
 const mockGetUserSetting = vi.fn();
+const mockGetTeamSetting = vi.fn();
 const mockPutUserSetting = vi.fn();
 const mockGetSetting = vi.fn();
 const mockAppStatePut = vi.fn();
@@ -17,7 +18,10 @@ vi.mock("../server/auth.js", () => ({
   crossSiteCookieAttrs: () => ({ sameSite: "lax", secure: false }),
 }));
 vi.mock("../settings/user-settings.js", () => ({
-  getUserSetting: (...args: any[]) => mockGetUserSetting(...args),
+  getUserSetting: (...args: any[]) =>
+    args[1] === "active-workspace-teams"
+      ? mockGetTeamSetting(...args)
+      : mockGetUserSetting(...args),
   putUserSetting: (...args: any[]) => mockPutUserSetting(...args),
 }));
 vi.mock("../settings/store.js", async (importOriginal) => ({
@@ -25,6 +29,7 @@ vi.mock("../settings/store.js", async (importOriginal) => ({
   getSetting: (...args: any[]) => mockGetSetting(...args),
 }));
 vi.mock("../application-state/store.js", () => ({
+  appStateGet: async () => null,
   appStatePut: (...args: any[]) => mockAppStatePut(...args),
 }));
 
@@ -83,11 +88,27 @@ function queueSelect(...rows: any[][]) {
   }
 }
 
+function queueTeamRestoreMembership() {
+  mockExecute.mockImplementationOnce(async ({ sql, args }) => {
+    expect(sql).toContain("FROM org_members");
+    expect(args).toEqual([
+      mockPutUserSetting.mock.lastCall?.[2].orgId,
+      mockPutUserSetting.mock.lastCall?.[0].toLowerCase(),
+    ]);
+    return { rows: [{ role: "member" }] };
+  });
+  mockExecute.mockResolvedValueOnce({
+    rows: [{ identity_authority: null, identity_id: null }],
+  });
+  mockExecute.mockResolvedValueOnce({ rows: [{ role: "member" }] });
+}
+
 describe("getOrgContext", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockExecute.mockResolvedValue({ rows: [] });
     mockGetUserSetting.mockResolvedValue(null);
+    mockGetTeamSetting.mockResolvedValue(null);
     mockGetSetting.mockResolvedValue(null);
     mockAppStatePut.mockResolvedValue(undefined);
     delete process.env.AUTO_CREATE_DEFAULT_ORG;
@@ -387,6 +408,7 @@ describe("getOrgContext", () => {
       ],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ memberCount: 1 }] });
+    queueTeamRestoreMembership();
 
     expect(await getOrgContext(EVENT)).toEqual({
       email: "brent@builder.io",
@@ -472,6 +494,7 @@ describe("getOrgContext", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [{ orgId: "builder_io", role: "member", orgName: "Builder.io" }],
     });
+    queueTeamRestoreMembership();
 
     const ctx = await getOrgContext(EVENT);
 
@@ -556,6 +579,8 @@ describe("getOrgContext", () => {
         { orgId: "builder_io", role: "member", orgName: "Builder.io" },
       ],
     });
+    queueSelect([{ memberCount: 1 }]);
+    queueTeamRestoreMembership();
 
     const ctx = await getOrgContext(EVENT);
 
@@ -602,6 +627,8 @@ describe("getOrgContext", () => {
         { orgId: "builder_io", role: "member", orgName: "Builder.io" },
       ],
     });
+    queueSelect([{ memberCount: 1 }]);
+    queueTeamRestoreMembership();
 
     const ctx = await getOrgContext(EVENT);
 
@@ -770,11 +797,21 @@ describe("getOrgContext", () => {
       // this instance's cache is never told about the write.
       const switchEvent = makeEvent();
       mockGetUserSetting.mockResolvedValue({ orgId: "org-b" });
+      queueTeamRestoreMembership();
       await setActiveOrgId(
         "switcher@example.com",
         "org-b",
         "user switched organization",
         switchEvent,
+      );
+      expect(mockGetTeamSetting).toHaveBeenCalledWith(
+        "switcher@example.com",
+        "active-workspace-teams",
+      );
+      expect(mockAppStatePut).toHaveBeenCalledWith(
+        "switcher@example.com",
+        "active-workspace-team",
+        { orgId: "org-b", teamGroupId: null },
       );
       const switched = selectionCookieFrom(switchEvent);
 
@@ -860,6 +897,7 @@ describe("getOrgContext", () => {
         [], // INSERT organizations
         [], // INSERT org_members
       );
+      queueTeamRestoreMembership();
       const ctx = await getOrgContext(EVENT);
       expect(ctx.email).toBe("jane@startup.dev");
       expect(ctx.orgId).toBeTruthy();
@@ -893,6 +931,7 @@ describe("getOrgContext", () => {
         [], // INSERT organizations
         [], // INSERT org_members
       );
+      queueTeamRestoreMembership();
       const event = makeEvent();
       const ctx = await getOrgContext(event);
       const executeCalls = mockExecute.mock.calls.length;
@@ -916,6 +955,7 @@ describe("getOrgContext", () => {
         emailVerified: true,
       });
       queueSelect([], [], [], [], [], [], []);
+      queueTeamRestoreMembership();
       const ctx = await getOrgContext(EVENT);
       expect(ctx.orgName).toBe("John Q Public's workspace");
     });
@@ -954,6 +994,7 @@ describe("getOrgContext", () => {
         [], // INSERT org_members
         [{ orgId: "builder_io", role: "member", orgName: "Builder.io" }],
       );
+      queueTeamRestoreMembership();
       const ctx = await getOrgContext(EVENT);
       expect(ctx).toMatchObject({
         email: "new@builder.io",
@@ -1010,6 +1051,7 @@ describe("getOrgContext", () => {
       mockExecute.mockResolvedValueOnce({ rows: [] });
       mockExecute.mockResolvedValueOnce({ rows: [] });
       mockExecute.mockResolvedValueOnce({ rows: [] });
+      queueTeamRestoreMembership();
       const ctx = await getOrgContext(EVENT);
       expect(ctx.orgId).toBeTruthy();
       expect(ctx.role).toBe("owner");
@@ -1090,10 +1132,16 @@ describe("getOrgContext", () => {
           emailVerified: true,
         });
         queueSelect([], [], [], [], [], [], []);
+        queueTeamRestoreMembership();
         const ctx = await getOrgContext(EVENT);
         expect(ctx.orgId).toBeTruthy();
         expect(ctx.role).toBe("owner");
-        expect(mockAppStatePut).not.toHaveBeenCalled();
+        expect(mockAppStatePut).not.toHaveBeenCalledWith(
+          "plan-user@startup.dev",
+          "onboarding:first-run-eligible",
+          expect.anything(),
+          expect.anything(),
+        );
       });
 
       it("writes the marker when the build embedded an active first-run onboarding mode", async () => {
@@ -1104,6 +1152,7 @@ describe("getOrgContext", () => {
           emailVerified: true,
         });
         queueSelect([], [], [], [], [], [], []);
+        queueTeamRestoreMembership();
         const ctx = await getOrgContext(EVENT);
         expect(mockAppStatePut).toHaveBeenCalledWith(
           "clips-user@startup.dev",
@@ -1121,6 +1170,7 @@ describe("getOrgContext", () => {
           emailVerified: true,
         });
         queueSelect([], [], [], [], [], [], []);
+        queueTeamRestoreMembership();
         const ctx = await getOrgContext(EVENT);
         expect(mockAppStatePut).toHaveBeenCalledWith(
           "unknown-build-user@startup.dev",

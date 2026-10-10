@@ -32,3 +32,29 @@ Consolidate focused tests into an explicit acceptance matrix rather than introdu
 ## Verification
 
 Use focused Core `pnpm --dir packages/core exec vitest --run <affected specs>` and affected Toolkit test commands confirmed from current package scripts. Run `pnpm typecheck`, `pnpm test:fast`, and applicable `pnpm guards` after focused proof. Exit 2/skipped guards are not passes. No source or runtime behavior is considered complete until its relevant matrix row passes.
+
+## Execution record at child 1 completion
+
+This record predates child 2 and the user's declaration that the whole epic is
+complete. See the [epic](../epic.md) for the final lifecycle status.
+
+See [acceptance evidence](../acceptance-evidence.md) for the ten-row assertion
+matrix, exact commands, independent results, and proof boundaries.
+
+- `tenancy-proof-matrix`: local coverage complete. Added missing integrated
+  legacy conversion/deletion and unsupported-family assertions, plus the
+  organization-member fixture ID needed by a background access test.
+- `independent-tenancy-proof`: all ten ADR rows and R-01/R-02 pass local proof:
+  20 Core files / 355 tests and 2 Toolkit files / 5 tests. Workspace typecheck,
+  changed-test formatting, and diff checks pass.
+- Required-check recovery is complete under `nvm` Node 24.14.0. The final
+  complete `pnpm test:fast`, workspace typecheck, all 85 child-base guards,
+  source formatting, and diff checks pass. Dedicated title-ranking performance
+  checks retain their original 50 ms limits and pass explicitly.
+- Independent recovery review covers the Core classification, Toolkit import
+  and eject boundaries, legacy public imports, and test/setup corrections.
+  Required runtime changes have a patch changeset. Earlier failed attempts and
+  the separate unverified Content DB-suite boundary remain recorded in the
+  evidence page, not counted as passes.
+- Child 1 is complete. Epic 6 stays in progress with child 2 still WIP.
+- No child 2, shipping, deployment, or new browser proof is included.

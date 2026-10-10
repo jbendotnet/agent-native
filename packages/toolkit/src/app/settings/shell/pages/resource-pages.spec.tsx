@@ -104,7 +104,9 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
   const scope = new URL(url, "http://app.test").searchParams.get("scope");
   const body = url.startsWith("/_agent-native/resources/tree")
     ? { tree: trees[scope ?? ""] ?? [] }
-    : {};
+    : url.includes("list-workspace-user-groups")
+      ? []
+      : {};
   return new Response(JSON.stringify(body), {
     status: 200,
     headers: { "Content-Type": "application/json" },

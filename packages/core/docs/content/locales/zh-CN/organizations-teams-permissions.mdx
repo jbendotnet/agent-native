@@ -49,6 +49,55 @@ Forms 保留现有未分配角色成员的编辑权限。显式分配的 Reviewe
 
 组织可以创建由当前成员组成的可复用用户组。所有者和管理员负责管理组成员，一个人可以加入多个组。应用可以使用用户组共享支持组共享的资源，也可以限制哪些人可以使用工作区连接。
 
-用户组是访问名单，不是下级团队。它没有独立的组织或应用角色、数据边界，也没有团队专属的设置、说明、上下文、技能、记忆或工作视图。将资源共享给用户组后，该资源的共享角色会授予组内所有当前成员。访问者仍须属于资源所在的组织。
+普通用户组是访问名单。只有显式设置 `isTeam: true` 才会将其转换为团队。转换保留 ID、成员以及资源和连接授权。更新时省略 `isTeam` 会保留现有类型。组织所有者和管理员可创建、转换、重命名和删除团队，以及指定负责人。负责人只能管理自己团队的普通成员，不会获得组织角色或私人对话访问权。
+
+### 团队上下文与对话绑定 {#team-context}
+
+选择按用户和组织保存。`get-active-workspace-team` 恢复并验证选择。`set-active-workspace-team` 选择当前团队，或用 `null` 选择个人工作。这只影响新对话。现有对话的绑定不可变，旧的未绑定对话仍未绑定。选择团队不会授予访问权或共享对话。
+
+V1 只支持团队指令、技能和记忆，不支持团队拥有任意应用数据。资源使用 `scope: "team"` 和 `teamGroupId`。前台和后台运行在组织上下文之后、个人上下文之前加载绑定团队的上下文。删除团队会保留绑定对话、上下文、个人资源和共享记录，但终止通过该团队的访问。同名新团队会获得新的 ID。
+
+### 团队操作 {#team-actions}
+
+| 操作                                | 输入                                                      | 返回值                                                                                             |
+| ----------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `upsert-workspace-user-group`       | `{ id?, name, memberEmails?: [], isTeam?, leadEmails? }`  | 含 `id`、`orgId`、`name`、`memberEmails`、`isTeam`、`leadEmails` 和元数据的用户组。成员默认为 `[]` |
+| `set-workspace-team-leads`          | `{ teamGroupId, leadEmails }`                             | 更新后的用户组。替换完整负责人列表                                                                 |
+| `bulk-update-workspace-user-groups` | `{ groupId, memberEmails, operation: "add" \| "remove" }` | 更新后的用户组。1 至 100 个邮箱                                                                    |
+| `list-workspace-user-groups`        | `{}`                                                      | 用户组。仅所有者、管理员及该团队成员可查看成员和负责人列表                                         |
+| `delete-workspace-user-group`       | `{ id }`                                                  | `{ id, deleted: true }`。不存在时失败                                                              |
+| `set-active-workspace-team`         | `{ teamGroupId: string \| null }`                         | 验证成员资格后返回 `{ orgId, teamGroupId }`                                                        |
+| `get-active-workspace-team`         | `{}`                                                      | `{ orgId, teamGroupId }`，并将选择恢复到应用状态                                                   |
+
+所有者或管理员可以创建团队，但必须也是团队成员才能选择它：
+
+```ts
+import { callAction } from "@agent-native/core/client/hooks";
+
+await callAction("upsert-workspace-user-group", {
+  name: "Support",
+  isTeam: true,
+  memberEmails: ["lead@example.com", "member@example.com"],
+  leadEmails: ["lead@example.com"],
+});
+```
+
+转换现有用户组时须显式保留成员。随后可切回个人工作：
+
+```ts
+const groups = await callAction("list-workspace-user-groups", {});
+const group = groups.find((group) => group.name === "Support");
+if (!group) throw new Error("未找到 Support 用户组");
+
+await callAction("upsert-workspace-user-group", {
+  id: group.id,
+  name: group.name,
+  memberEmails: group.memberEmails,
+  isTeam: true,
+});
+await callAction("set-active-workspace-team", { teamGroupId: null });
+```
+
+对话仍由个人拥有，默认保持私密。只读共享规则见[团队对话](/docs/sharing#team-conversations)。
 
 详情请参阅[共享与隐私 → 组共享](/docs/sharing#group-grants)和[工作区连接](/docs/workspace-connections)。

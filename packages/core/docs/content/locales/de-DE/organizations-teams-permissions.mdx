@@ -49,6 +49,55 @@ Bei organisationseigenen Formularen erfordern die Bearbeitung und die Prüfung v
 
 Organisationen können wiederverwendbare Benutzergruppen aus ihren aktuellen Mitgliedern anlegen. Inhaber und Administratoren verwalten die Mitgliedschaft, und eine Person kann mehreren Gruppen angehören. Apps können eine Gruppe nutzen, um eine Ressource freizugeben, die Gruppenfreigaben unterstützt, oder den Zugriff auf eine Workspace-Verbindung einzuschränken.
 
-Eine Gruppe ist eine Zugriffsliste, kein Unterteam. Sie hat keine eigenen Organisations- oder App-Rollen, keine separate Datengrenze und keine teamspezifischen Einstellungen, Anweisungen, Kontexte, Skills, Erinnerungen oder Arbeitsansicht. Eine Gruppenfreigabe gewährt allen aktuellen Gruppenmitgliedern dieselbe Ressourcenrolle. Der Zugriff setzt weiterhin die Mitgliedschaft in der Organisation der Ressource voraus.
+Eine gewöhnliche Gruppe ist eine Zugriffsliste. Nur `isTeam: true` wandelt sie ausdrücklich in ein Team um. Dabei bleiben ID, Mitglieder sowie Ressourcen- und Verbindungsfreigaben erhalten. Ohne `isTeam` bleibt der bestehende Typ bei einer Aktualisierung unverändert. Organisationsinhaber und Administratoren erstellen, konvertieren, benennen und löschen Teams und bestimmen Teamleiter. Ein Teamleiter darf nur gewöhnliche Mitglieder seines eigenen Teams ändern. Er erhält weder Organisationsrollen noch Zugriff auf private Gespräche.
+
+### Teamkontext und Gesprächsbindung {#team-context}
+
+Die Auswahl wird je Benutzer und Organisation gespeichert. `get-active-workspace-team` stellt sie wieder her und prüft sie. `set-active-workspace-team` wählt ein aktuelles Team oder `null` für persönliche Arbeit. Dies betrifft nur neue Gespräche. Bestehende Bindungen sind unveränderlich. Alte Gespräche ohne Team bleiben ungebunden. Die Auswahl erteilt keinen Zugriff und gibt kein Gespräch frei.
+
+V1 unterstützt Teamanweisungen, Skills und Erinnerungen, keine allgemeine Teameigentümerschaft an App-Daten. Ressourcen verwenden `scope: "team"` und `teamGroupId`. Vordergrund- und Hintergrundläufe laden den gebundenen Teamkontext nach dem Organisationskontext und vor dem persönlichen Kontext. Das Löschen eines Teams behält gebundene Gespräche, Kontext, persönliche Ressourcen und Freigabezeilen bei, beendet aber den Zugriff über dieses Team. Ein neues gleichnamiges Team erhält eine neue ID.
+
+### Teamaktionen {#team-actions}
+
+| Aktion                              | Eingabe                                                   | Ergebnis                                                                                                            |
+| ----------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `upsert-workspace-user-group`       | `{ id?, name, memberEmails?: [], isTeam?, leadEmails? }`  | Gruppe mit `id`, `orgId`, `name`, `memberEmails`, `isTeam`, `leadEmails` und Metadaten. Mitgliederstandard: `[]`    |
+| `set-workspace-team-leads`          | `{ teamGroupId, leadEmails }`                             | Aktualisierte Gruppe. Ersetzt die vollständige Leiterliste                                                          |
+| `bulk-update-workspace-user-groups` | `{ groupId, memberEmails, operation: "add" \| "remove" }` | Aktualisierte Gruppe. 1 bis 100 E-Mail-Adressen                                                                     |
+| `list-workspace-user-groups`        | `{}`                                                      | Gruppen. Mitglieder- und Leiterlisten nur für Inhaber, Administratoren und Mitglieder des jeweiligen Teams sichtbar |
+| `delete-workspace-user-group`       | `{ id }`                                                  | `{ id, deleted: true }`. Fehler bei fehlender Gruppe                                                                |
+| `set-active-workspace-team`         | `{ teamGroupId: string \| null }`                         | `{ orgId, teamGroupId }` nach Mitgliedschaftsprüfung                                                                |
+| `get-active-workspace-team`         | `{}`                                                      | `{ orgId, teamGroupId }` und wiederhergestellte Auswahl im Anwendungszustand                                        |
+
+Ein Inhaber oder Administrator kann ein Team erstellen. Für die Auswahl muss er selbst Mitglied sein:
+
+```ts
+import { callAction } from "@agent-native/core/client/hooks";
+
+await callAction("upsert-workspace-user-group", {
+  name: "Support",
+  isTeam: true,
+  memberEmails: ["lead@example.com", "member@example.com"],
+  leadEmails: ["lead@example.com"],
+});
+```
+
+Bei der Umwandlung einer bestehenden Gruppe werden ihre Mitglieder ausdrücklich übernommen. Danach kann persönliche Arbeit gewählt werden:
+
+```ts
+const groups = await callAction("list-workspace-user-groups", {});
+const group = groups.find((group) => group.name === "Support");
+if (!group) throw new Error("Gruppe Support nicht gefunden");
+
+await callAction("upsert-workspace-user-group", {
+  id: group.id,
+  name: group.name,
+  memberEmails: group.memberEmails,
+  isTeam: true,
+});
+await callAction("set-active-workspace-team", { teamGroupId: null });
+```
+
+Gespräche bleiben persönlich und standardmäßig privat. [Teamgespräche](/docs/sharing#team-conversations) beschreibt die reine Lesefreigabe.
 
 Details stehen unter [Teilen und Datenschutz → Gruppenfreigaben](/docs/sharing#group-grants) und [Workspace-Verbindungen](/docs/workspace-connections).

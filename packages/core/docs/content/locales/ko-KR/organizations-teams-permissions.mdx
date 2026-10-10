@@ -49,6 +49,55 @@ Forms는 역할이 할당되지 않은 기존 구성원의 편집 권한을 유�
 
 조직은 현재 구성원으로 재사용 가능한 사용자 그룹을 만들 수 있습니다. 소유자와 관리자가 그룹 구성원을 관리하며, 한 사람이 여러 그룹에 속할 수 있습니다. 앱은 그룹 공유를 지원하는 리소스에 접근 권한을 주거나 워크스페이스 연결 사용자를 제한할 때 그룹을 사용할 수 있습니다.
 
-그룹은 접근 목록이지 하위 팀이 아닙니다. 별도의 조직 또는 앱 역할, 데이터 경계, 팀 전용 설정, 지침, 컨텍스트, 스킬, 메모리, 작업 보기 기능은 없습니다. 리소스를 그룹과 공유하면 현재 그룹 구성원 모두에게 해당 리소스 역할이 적용됩니다. 접근하려면 계속해서 해당 리소스의 조직 구성원이어야 합니다.
+일반 그룹은 접근 목록입니다. `isTeam: true`를 명시해야 팀으로 변환됩니다. 변환은 ID, 구성원, 리소스 및 연결 권한을 유지합니다. 업데이트에서 `isTeam`을 생략하면 기존 유형이 유지됩니다. 조직 소유자와 관리자는 팀 생성, 변환, 이름 변경, 삭제 및 리더 지정을 할 수 있습니다. 리더는 자기 팀의 일반 구성원만 변경합니다. 조직 역할이나 비공개 대화 접근 권한은 얻지 않습니다.
+
+### 팀 컨텍스트와 대화 연결 {#team-context}
+
+선택은 사용자와 조직별로 저장됩니다. `get-active-workspace-team`은 선택을 복원하고 검증합니다. `set-active-workspace-team`은 현재 팀 또는 개인 작업을 뜻하는 `null`을 선택합니다. 새 대화에만 영향을 줍니다. 기존 연결은 변경할 수 없으며 이전의 연결되지 않은 대화는 그대로 유지됩니다. 팀 선택은 접근 권한이나 공유를 부여하지 않습니다.
+
+V1은 팀 지침, 스킬, 메모리만 지원하며 임의의 앱 데이터를 팀 소유로 만들지 않습니다. 리소스는 `scope: "team"`과 `teamGroupId`를 사용합니다. 전경과 배경 실행은 조직 컨텍스트 다음, 개인 컨텍스트 전에 연결된 팀의 컨텍스트를 읽습니다. 팀 삭제 시 연결된 대화, 컨텍스트, 개인 리소스, 공유 행은 보존되지만 해당 팀을 통한 접근은 종료됩니다. 같은 이름의 새 팀에는 새 ID가 부여됩니다.
+
+### 팀 액션 {#team-actions}
+
+| 액션                                | 입력                                                      | 결과                                                                                                           |
+| ----------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `upsert-workspace-user-group`       | `{ id?, name, memberEmails?: [], isTeam?, leadEmails? }`  | `id`, `orgId`, `name`, `memberEmails`, `isTeam`, `leadEmails` 및 메타데이터를 포함한 그룹. 구성원 기본값: `[]` |
+| `set-workspace-team-leads`          | `{ teamGroupId, leadEmails }`                             | 업데이트된 그룹. 전체 리더 목록을 교체                                                                         |
+| `bulk-update-workspace-user-groups` | `{ groupId, memberEmails, operation: "add" \| "remove" }` | 업데이트된 그룹. 이메일 1~100개                                                                                |
+| `list-workspace-user-groups`        | `{}`                                                      | 그룹. 구성원과 리더 목록은 소유자, 관리자, 해당 팀 구성원에게만 표시                                           |
+| `delete-workspace-user-group`       | `{ id }`                                                  | `{ id, deleted: true }`. 없으면 실패                                                                           |
+| `set-active-workspace-team`         | `{ teamGroupId: string \| null }`                         | 구성원 자격 검증 후 `{ orgId, teamGroupId }`                                                                   |
+| `get-active-workspace-team`         | `{}`                                                      | `{ orgId, teamGroupId }` 및 앱 상태에 선택 복원                                                                |
+
+소유자나 관리자는 팀을 만들 수 있습니다. 선택하려면 자신도 구성원이어야 합니다:
+
+```ts
+import { callAction } from "@agent-native/core/client/hooks";
+
+await callAction("upsert-workspace-user-group", {
+  name: "Support",
+  isTeam: true,
+  memberEmails: ["lead@example.com", "member@example.com"],
+  leadEmails: ["lead@example.com"],
+});
+```
+
+기존 그룹 변환 시 구성원을 명시적으로 유지합니다. 이후 개인 작업으로 돌아갈 수 있습니다:
+
+```ts
+const groups = await callAction("list-workspace-user-groups", {});
+const group = groups.find((group) => group.name === "Support");
+if (!group) throw new Error("Support 그룹을 찾을 수 없습니다");
+
+await callAction("upsert-workspace-user-group", {
+  id: group.id,
+  name: group.name,
+  memberEmails: group.memberEmails,
+  isTeam: true,
+});
+await callAction("set-active-workspace-team", { teamGroupId: null });
+```
+
+대화는 개인 소유이며 기본적으로 비공개입니다. 읽기 전용 공유는 [팀 대화](/docs/sharing#team-conversations)를 참조하세요.
 
 자세한 내용은 [공유 및 개인정보 보호 → 그룹 공유](/docs/sharing#group-grants)와 [워크스페이스 연결](/docs/workspace-connections)을 참고하세요.

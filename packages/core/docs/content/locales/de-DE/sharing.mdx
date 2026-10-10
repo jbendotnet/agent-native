@@ -90,6 +90,45 @@ Wenn Sie etwas mit einem bestimmten Benutzer oder einer bestimmten Organisation 
 
 Einige Ressourcen unterstützen Gruppenfreigaben. Eine Gruppe muss zur Organisation der Ressource gehören. Jedes aktuelle Gruppenmitglied erhält die ausgewählte Freigaberolle für diese Ressource. Unter [Organisationen, Teams und Berechtigungen → Benutzergruppen](/docs/organizations-teams-permissions#user-groups) steht, wofür Gruppen gelten und wofür nicht.
 
+### Team-Unterhaltungen {#team-conversations}
+
+Unterhaltungen bleiben persönliches Eigentum und sind standardmäßig privat. Die Bindung an ein Team gewährt keinen Zugriff und macht sie nicht in der gemeinsamen Liste sichtbar. Nur der gespeicherte Eigentümer, der weiterhin Mitglied der Organisation und des Teams sein muss, darf sie freigeben oder die Freigabe aufheben. Eine gebundene Unterhaltung kann nur an ihr gebundenes Team freigegeben werden. Es ist höchstens eine Team-Freigabe erlaubt, ausschließlich zum Lesen. Leser dürfen die Unterhaltung weder fortsetzen noch bearbeiten, löschen oder verwalten, auch nicht als Administrator oder Teamleiter. Allgemeine Editor- und Administratorrollen für Ressourcen gelten hier nicht.
+
+| Aktion                          | Eingabe                                            | Ergebnis                                                                    |
+| ------------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------- |
+| `share-chat-thread-with-team`   | `threadId`, `teamGroupId`                          | `{ threadId, teamGroupId, shared: true }`                                   |
+| `unshare-chat-thread-from-team` | `threadId`, `teamGroupId`                          | `{ threadId, teamGroupId, shared: false }`                                  |
+| `list-team-shared-chat-threads` | `teamGroupId`, `limit?: 1..100`, `offset?: number` | `{ threads, nextOffset }`, neueste zuerst                                   |
+| `get-chat-thread-capabilities`  | `threadId`                                         | `{ threadId, canRead: true, canContinue, canManage }`, nach Zugriffsprüfung |
+
+Die Liste verwendet standardmäßig `limit: 25` und `offset: 0`. Der Offset darf nicht negativ sein. Die Beispiele verwenden die IDs einer vorhandenen Unterhaltung und ihres autorisierten Teams.
+
+```ts
+import { callAction } from "@agent-native/core/client/hooks";
+
+await callAction("share-chat-thread-with-team", { threadId, teamGroupId });
+```
+
+Weitere Seiten werden nur geladen, wenn `nextOffset` nicht `null` ist.
+
+```ts
+const page = await callAction("list-team-shared-chat-threads", {
+  teamGroupId,
+  limit: 25,
+});
+if (page.nextOffset !== null) {
+  await callAction("list-team-shared-chat-threads", {
+    teamGroupId,
+    limit: 25,
+    offset: page.nextOffset,
+  });
+}
+```
+
+Nach dem Verlassen von Team oder Organisation wird der Zugriff bei weiteren Anfragen verweigert. Verlässt der Eigentümer das Team, können berechtigte Leser weiterhin lesen, aber nicht fortsetzen. Das Löschen eines Teams behält gebundene Unterhaltungen, Kontext, persönliche Ressourcen und Freigabezeilen bei, beendet jedoch den weiteren Zugriff. Ein neues Team mit demselben Namen erhält eine neue ID und übernimmt keine alten Daten.
+
+Öffentliche Links für gebundene Unterhaltungen können weder erstellt noch eingelöst werden, auch nicht mit alten Tokens. Jeder Laufabruf, jede Wiedergabe, Wiederverbindung und neue Stream-Verbindung prüft den Zugriff erneut. Ein bereits offener Stream darf enden. Siehe [Team-Kontext](/docs/organizations-teams-permissions#team-context).
+
 ## Was abgedeckt ist {#covered}
 
 Jede Vorlage, die vom Benutzer erstellte Arbeiten speichert, verwendet dieses Modell. Konkret:

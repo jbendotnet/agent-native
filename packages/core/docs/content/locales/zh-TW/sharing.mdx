@@ -90,6 +90,47 @@ description: "框架內建了熟悉且一致的共享方式。使用者建立的
 
 部分資源支援與群組分享。群組必須屬於資源所在的組織，群組內每位目前成員都會取得該資源所選的分享角色。請參閱[組織、團隊與權限 → 使用者群組](/docs/organizations-teams-permissions#user-groups)，了解群組的適用範圍和限制。
 
+### 團隊對話 {#team-conversations}
+
+對話由個人擁有，預設為私有。綁定團隊只決定脈絡，不會自動分享或列出對話。只有記錄中的擁有者可以分享或取消分享，而且必須仍屬於該組織和目標團隊。已綁定的對話只能分享給綁定的團隊，最多有一個團隊檢視者授權。檢視者不能繼續、編輯、刪除或管理對話。組織管理員和團隊負責人也不會因此取得這些權限。一般資源的編輯者或管理員授權不適用於團隊對話。
+
+| 操作                            | 輸入                               | 傳回值                                                |
+| ------------------------------- | ---------------------------------- | ----------------------------------------------------- |
+| `share-chat-thread-with-team`   | `{ threadId, teamGroupId }`        | `{ threadId, teamGroupId, shared: true }`             |
+| `unshare-chat-thread-from-team` | `{ threadId, teamGroupId }`        | `{ threadId, teamGroupId, shared: false }`            |
+| `list-team-shared-chat-threads` | `{ teamGroupId, limit?, offset? }` | `{ threads, nextOffset }`                             |
+| `get-chat-thread-capabilities`  | `{ threadId }`                     | `{ threadId, canRead: true, canContinue, canManage }` |
+
+清單依最新優先排序。`limit` 為 1–100，預設為 25。`offset` 為非負整數，預設為 0。能力查詢會先驗證存取權限，不會傳回無法讀取的對話。
+
+擁有者可以使用現有對話和團隊的 ID 分享對話：
+
+```ts
+import { callAction } from "@agent-native/core/client/hooks";
+
+await callAction("share-chat-thread-with-team", { threadId, teamGroupId });
+```
+
+分頁讀取明確分享的團隊對話，而不是所有綁定的私有對話：
+
+```ts
+const page = await callAction("list-team-shared-chat-threads", {
+  teamGroupId,
+  limit: 25,
+});
+if (page.nextOffset !== null) {
+  const nextPage = await callAction("list-team-shared-chat-threads", {
+    teamGroupId,
+    limit: 25,
+    offset: page.nextOffset,
+  });
+}
+```
+
+離開團隊或組織會使後續請求失去存取權限。如果擁有者離開，仍獲授權的檢視者可以讀取已分享的對話，但不能繼續對話。刪除團隊會保留綁定的對話、脈絡、個人資料列和分享資料列，同時終止存取。同名的新團隊會取得新 ID，不會繼承舊存取權限。
+
+已綁定的對話不能建立或兌換公開連結，包括舊權杖。讀取執行、重播、重新連線和新建串流連線都會重新驗證存取權限。已開啟的串流可以結束，不會在中途被強制關閉。選擇與綁定的詳細資訊見[團隊脈絡](/docs/organizations-teams-permissions#team-context)。
+
 ## 涵蓋內容 {#covered}
 
 每個儲存使用者創作作品的範本都使用此模型。具體來說：

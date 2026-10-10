@@ -86,10 +86,10 @@ Gleiche Funktionen. Andere Wirtschaftswissenschaften. Warum dies für SaaS wicht
 
 ## Übersicht {#overview}
 
-Ressourcen haben drei Laufzeitbereiche:
+Ressourcen haben drei Basisbereiche zur Laufzeit:
 
 - **Persönlich** – auf einen einzelnen Benutzer (seine E-Mail-Adresse) beschränkt. Gut für Einstellungen, Notizen und den Kontext pro Benutzer.
-- **Freigegeben / Organisation** – sichtbar für alle Benutzer in der App oder Organisation. Gut für App-/Teamanweisungen, skills und gemeinsame Konfiguration.
+- **Freigegeben / Organisation** – sichtbar für alle Benutzer in der App oder Organisation. Gut für App-Anweisungen, skills und gemeinsame Konfiguration.
 - **Workspace** – geerbte globale Standardeinstellungen, verwaltet von Dispatch Resources. Gut für Unternehmensfakten, Positionierung, Markenrichtlinien, globale Leitplanken, arbeitsbereichsweites skills und gemeinsam genutzte MCP-Server. Apps lesen diese zur Laufzeit; Sie werden nicht in jede App kopiert.
 
 Die In-App-Registerkarte Ressourcen zeigt alle drei Bereiche. Persönliche und freigegebene/Organisationsressourcen können dort bearbeitet werden. Arbeitsbereichsbezogene Ressourcen sind in App-Panels schreibgeschützt und werden zentral von Dispatch aus bearbeitet, sodass jede App ohne einen Synchronisierungsschritt dieselben kanonischen Dateien sieht.
@@ -104,7 +104,13 @@ Die kanonischen Pfade, die steuern, wie der Agent jede Ressource nutzt:
 | Benutzerdefinierte Agentenprofile | `agents/<slug>.md`                        | Verfügbar als wiederverwendbare lokale Agentenprofile       |
 | Freigegebene HTTP MCP-Server      | `mcp-servers/<slug>.json`                 | In die Tool-Registrierung MCP gewährter Apps geladen        |
 
-Diese Pfade gelten für alle drei Bereiche – Arbeitsbereich, Organisation/App und Persönlich. Der spätere Bereich gewinnt, wenn derselbe Pfad auf mehreren Ebenen vorhanden ist.
+Diese Pfade gelten für die drei Basisbereiche Arbeitsbereich, Organisation/App und Persönlich. Der spätere Bereich gewinnt, wenn derselbe Pfad auf mehreren Ebenen vorhanden ist.
+
+### Kontext des gebundenen Teams {#team-resources}
+
+V1 ergänzt einen eigenen Teambereich für Anweisungen, Skills und Speicher. Er bedeutet keinen Teambesitz an beliebigen Dateien, eigenen Agenten, MCP-Servern, Aufgaben oder App-Daten. Teamressourcen benötigen `scope: "team"` und `teamGroupId`. Sie gelten nur für gebundene Gespräche, nicht für alle Gespräche der Mitglieder.
+
+Vordergrund- und Hintergrundläufe lösen geerbte Arbeitsbereichs- und App-Standardwerte auf, danach Organisation, gebundenes Team und persönliche Ressourcen. `AGENTS.md`, `instructions/*.md` und `memory/MEMORY.md` des Teams sind verpflichtender Kontext. Team-Skills werden indexiert und bei Bedarf gelesen. Ein persönlicher Skill gleichen Namens hat Vorrang. Teamspeicher bleibt vom gemeinsamen `LEARNINGS.md` und persönlichen Speicher getrennt. Vor dem Laden wird die aktuelle Mitgliedschaft geprüft. Siehe [Teamkontext](/docs/organizations-teams-permissions#team-context).
 
 ## Ressourcen mitnehmen {#resource-pack}
 
@@ -219,7 +225,7 @@ agents/<slug>.md                # reusable custom agent profiles
 
 Halten Sie `context/`-Dateien sachlich und leicht zu überfliegen. Legen Sie in `instructions/guardrails.md` Regeln fest, die in jeder Runde gelten müssen. Verwenden Sie `skills/company-voice/SKILL.md`, wenn der Agent die Kopie im Namen des Unternehmens absichtlich umwandeln oder überprüfen soll.
 
-Um einen globalen Standard für eine App oder ein Team zu überschreiben, erstellen Sie in dieser App eine freigegebene/Organisationsressource mit demselben Pfad. Um es für eine Person zu überschreiben, erstellen Sie eine persönliche Ressource mit demselben Pfad. Kopieren Sie die Arbeitsbereichsdatei nicht in jede App; Die Laufzeit löst den Stapel beim Lesen auf:
+Um einen globalen Standard für eine App zu überschreiben, erstellen Sie dort eine freigegebene/Organisationsressource mit demselben Pfad. Für eine Person erstellen Sie eine persönliche Ressource mit demselben Pfad. Die Laufzeit löst den Stapel beim Lesen auf, ohne die Datei in jede App zu kopieren:
 
 ```text
 workspace context/brand.md
@@ -255,7 +261,7 @@ Zu Beginn jedes Gesprächs liest der Agent automatisch:
 
 ### AGENTS.md und Anweisungen {#agents-md}
 
-`AGENTS.md` ist eine Anweisungsressource, die standardmäßig erstellt und in jeder Runde aus den Bereichen Arbeitsbereich, Gemeinsam/Organisation und Persönlich in dieser Reihenfolge geladen wird – Arbeitsbereich für unternehmensweite Standardeinstellungen, Gemeinsam/App für Teamregeln, Persönlich für benutzerspezifische Einstellungen. Dateien unter `instructions/` sind separate Leitdokumente, die ebenfalls in jeder Hinsicht gelten (Compliance-Regeln, Eskalationsrichtlinie, Markenstimme) und der gleichen Priorität folgen. Sowohl normale Chat- als auch durch die Integration ausgelöste Ausführungen laden sie, bevor sie antworten.
+`AGENTS.md` und Dateien unter `instructions/` werden in jeder Runde geladen. Die Reihenfolge ist: geerbte Arbeitsbereichs- und App-Standardwerte, Organisation, gegebenenfalls gebundenes Team und persönliche Ressourcen. Vordergrund- und Hintergrundläufe verwenden denselben gebundenen Kontext. Eine andere Teamauswahl ändert die Bindung bestehender Gespräche nicht.
 
 ```text
 AGENTS.md
@@ -269,12 +275,12 @@ Wiederverwendbarer Unternehmenskontext steht unter `context/` (Personas, Positio
 
 ### Speicher {#memory}
 
-Agent-Ressourcen verfügen über zwei aktuelle Speicheroberflächen:
+Agent-Ressourcen haben zwei Basis-Speicheroberflächen sowie den oben beschriebenen Speicher des gebundenen Teams:
 
 - `LEARNINGS.md` im **gemeinsamen** Bereich für projektweite Konventionen, Korrekturen und dauerhaftes Teamwissen.
 - `memory/MEMORY.md` im **Persönlichen** Bereich für strukturierten Speicher über den aktuellen Benutzer.
 
-Das Ressourcensystem setzt auch einen persönlichen `LEARNINGS.md` für die Kompatibilität mit älteren Arbeitsbereichen, aber der Chat-Preload-Pfad ist gemeinsam genutzter `LEARNINGS.md` plus persönlicher `memory/MEMORY.md`.
+Das System legt aus Kompatibilitätsgründen auch eine persönliche `LEARNINGS.md` an. Der Chat lädt die gemeinsame `LEARNINGS.md` und persönliche `memory/MEMORY.md` vorab sowie bei gebundenen Gesprächen die `memory/MEMORY.md` des Teams.
 
 **Was gespeichert wird.** Wenn Sie den Agenten korrigieren („Verwenden Sie immer Projektweite Erkenntnisse werden gemeinsam genutzt `LEARNINGS.md`; Der benutzerspezifische Speicher fällt unter `memory/`. Die `capture-learnings`-Fertigkeit gibt an, wann und wie.
 
@@ -313,7 +319,7 @@ Jede dieser Oberflächen – `AGENTS.md`, skills, Speicher, benutzerdefinierte A
         },
         {
           name: "scope",
-          type: "workspace | shared | personal",
+          type: "workspace | shared | team | personal",
           note: "Auf welcher Ebene befindet sich diese Reihe?",
         },
         {

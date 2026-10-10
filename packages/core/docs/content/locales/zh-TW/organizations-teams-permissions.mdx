@@ -49,6 +49,55 @@ Forms 保留現有未指派角色成員的編輯權限。明確指派的 Reviewe
 
 組織可以建立由目前成員組成的可重複使用使用者群組。擁有者和管理員負責管理群組成員，同一個人可以加入多個群組。應用程式可以使用群組來分享支援群組分享的資源，或限制可使用工作區連線的人員。
 
-群組是存取名單，不是下層團隊。它沒有獨立的組織或應用程式角色、資料邊界，也沒有團隊專屬的設定、指示、脈絡、技能、記憶或工作檢視。將資源分享給群組後，該資源的分享角色會授予群組內所有目前成員。存取者仍須屬於資源所在的組織。
+一般群組是存取名單。只有明確設定 `isTeam: true` 才會將其轉換為團隊。轉換保留 ID、成員以及資源和連線授權。更新時省略 `isTeam` 會保留現有類型。組織擁有者和管理員可建立、轉換、重新命名和刪除團隊，以及指定負責人。負責人只能管理自己團隊的一般成員，不會取得組織角色或私人對話存取權。
+
+### 團隊脈絡與對話綁定 {#team-context}
+
+選擇按使用者和組織儲存。`get-active-workspace-team` 還原並驗證選擇。`set-active-workspace-team` 選擇目前團隊，或用 `null` 選擇個人工作。這只影響新對話。現有對話的綁定不可變，舊的未綁定對話仍未綁定。選擇團隊不會授予存取權或分享對話。
+
+V1 只支援團隊指示、技能和記憶，不支援團隊擁有任意應用程式資料。資源使用 `scope: "team"` 和 `teamGroupId`。前景和背景執行在組織脈絡之後、個人脈絡之前載入綁定團隊的脈絡。刪除團隊會保留綁定對話、脈絡、個人資源和分享記錄，但終止透過該團隊的存取。同名新團隊會取得新的 ID。
+
+### 團隊操作 {#team-actions}
+
+| 操作                                | 輸入                                                      | 回傳值                                                                                             |
+| ----------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `upsert-workspace-user-group`       | `{ id?, name, memberEmails?: [], isTeam?, leadEmails? }`  | 含 `id`、`orgId`、`name`、`memberEmails`、`isTeam`、`leadEmails` 和中繼資料的群組。成員預設為 `[]` |
+| `set-workspace-team-leads`          | `{ teamGroupId, leadEmails }`                             | 更新後的群組。取代完整負責人清單                                                                   |
+| `bulk-update-workspace-user-groups` | `{ groupId, memberEmails, operation: "add" \| "remove" }` | 更新後的群組。1 至 100 個電子郵件地址                                                              |
+| `list-workspace-user-groups`        | `{}`                                                      | 群組。僅擁有者、管理員及該團隊成員可查看成員和負責人清單                                           |
+| `delete-workspace-user-group`       | `{ id }`                                                  | `{ id, deleted: true }`。不存在時失敗                                                              |
+| `set-active-workspace-team`         | `{ teamGroupId: string \| null }`                         | 驗證成員資格後回傳 `{ orgId, teamGroupId }`                                                        |
+| `get-active-workspace-team`         | `{}`                                                      | `{ orgId, teamGroupId }`，並將選擇還原至應用程式狀態                                               |
+
+擁有者或管理員可以建立團隊，但必須也是團隊成員才能選擇它：
+
+```ts
+import { callAction } from "@agent-native/core/client/hooks";
+
+await callAction("upsert-workspace-user-group", {
+  name: "Support",
+  isTeam: true,
+  memberEmails: ["lead@example.com", "member@example.com"],
+  leadEmails: ["lead@example.com"],
+});
+```
+
+轉換現有群組時須明確保留成員。之後可切回個人工作：
+
+```ts
+const groups = await callAction("list-workspace-user-groups", {});
+const group = groups.find((group) => group.name === "Support");
+if (!group) throw new Error("找不到 Support 群組");
+
+await callAction("upsert-workspace-user-group", {
+  id: group.id,
+  name: group.name,
+  memberEmails: group.memberEmails,
+  isTeam: true,
+});
+await callAction("set-active-workspace-team", { teamGroupId: null });
+```
+
+對話仍由個人擁有，預設保持私密。唯讀分享規則見[團隊對話](/docs/sharing#team-conversations)。
 
 詳情請參閱[分享與隱私 → 群組分享](/docs/sharing#group-grants)和[工作區連線](/docs/workspace-connections)。
