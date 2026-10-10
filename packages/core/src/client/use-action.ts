@@ -9,6 +9,7 @@ import type {
   UseMutationOptions,
 } from "@tanstack/react-query";
 
+import { SLOW_ACTION_RESPONSE_MS } from "../shared/analytics-events.js";
 import { ANALYTICS_CLIENT_PLATFORM_HEADER } from "../shared/analytics-platform.js";
 import {
   actionCircuitRemainingMs,
@@ -39,6 +40,7 @@ import {
   reloadForClientCompatibilityMismatch,
 } from "./build-compatibility.js";
 import { ensureEmbedAuthFetchInterceptor } from "./embed-auth.js";
+import { currentRouteTemplate } from "./route-template.js";
 import { recheckSessionAfterUnauthorized } from "./use-session.js";
 
 function actionPrefix(): string {
@@ -590,12 +592,22 @@ type ActionResponseSampling = {
   sampled: boolean;
 };
 
+function actionTelemetryRoute(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    return currentRouteTemplate() ?? undefined;
+  } catch {
+    // coercion-ok: telemetry never changes the action; the event omits route.
+    return undefined;
+  }
+}
+
 function getActionResponseSampling(
   error: unknown,
   durationMs: number,
   response: Response | undefined,
 ): ActionResponseSampling {
-  if (error || durationMs >= 1_000) {
+  if (error || durationMs >= SLOW_ACTION_RESPONSE_MS) {
     return { track: true, sampleRate: 1, sampled: false };
   }
   if (response && response.status >= 400 && response.status < 500) {
@@ -621,6 +633,7 @@ async function actionFetch<T>(
 ): Promise<T> {
   assertAgentNativeApiEnabled(`${method} ${name}`);
   const startedAt = actionTelemetryNow();
+  const routeAtStart = actionTelemetryRoute();
   const hiddenEpochAtStart = pageHiddenEpoch;
   const hiddenAtStart =
     typeof document !== "undefined" && document.visibilityState !== "visible";
@@ -680,6 +693,7 @@ async function actionFetch<T>(
             response?.headers.get("x-agent-native-request-id") ?? undefined,
           action: name,
           method,
+          route: routeAtStart,
           sample_rate: sampling.sampleRate,
           sample_weight: 1 / sampling.sampleRate,
           sampled: sampling.sampled,
@@ -1087,6 +1101,13 @@ export function useActionMutation<
     method?: "POST" | "PUT" | "DELETE";
     skipActionQueryInvalidation?: boolean;
     timeoutMs?: number;
+    headers?:
+      | Record<string, string>
+      | ((
+          variables: TVariables extends undefined
+            ? ActionParams<TName>
+            : TVariables,
+        ) => Record<string, string> | undefined);
   },
 ) {
   const queryClient = useQueryClient();
@@ -1095,6 +1116,7 @@ export function useActionMutation<
     onSuccess,
     skipActionQueryInvalidation = false,
     timeoutMs,
+    headers,
     ...restOptions
   } = options ?? ({} as any);
   const method = methodOpt ?? "POST";
@@ -1107,6 +1129,7 @@ export function useActionMutation<
     mutationFn: (params) =>
       actionFetch<D>(actionName, method, params as Record<string, any>, {
         timeoutMs,
+        headers: typeof headers === "function" ? headers(params) : headers,
       }),
     onSuccess: (...args: [any, any, any]) => {
       // A write that succeeded may have fixed whatever was failing reads.

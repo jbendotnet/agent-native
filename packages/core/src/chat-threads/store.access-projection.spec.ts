@@ -23,7 +23,11 @@ vi.mock("../workspace-connections/groups.js", () => ({
 
 vi.mock("./emitter.js", () => ({ emitChatThreadChange: vi.fn() }));
 
-import { resolveThreadAccess } from "./store.js";
+vi.mock("../agent/run-manager.js", () => ({ getRun: vi.fn() }));
+vi.mock("../agent/run-store.js", () => ({ getRunById: vi.fn() }));
+
+import { callerHasThreadAccess } from "../agent/run-ownership.js";
+import { hasThreadAccess, resolveThreadAccess } from "./store.js";
 
 const THREAD_ROW = {
   id: "t1",
@@ -183,5 +187,72 @@ describe("resolveThreadAccess loads the ACL without the conversation blob", () =
         orgId: "org-1",
       }),
     ).resolves.toBeNull();
+  });
+});
+
+describe("yes/no thread access never reads the conversation body", () => {
+  const OWNER_RESOURCE = {
+    id: "t1",
+    ownerEmail: "owner@example.com",
+    orgId: null,
+    visibility: "private",
+  };
+
+  beforeEach(() => {
+    executeMock.mockReset();
+    resolveAccessMock.mockReset();
+    executeMock.mockImplementation(async (query: any) => {
+      const sql = typeof query === "string" ? query : query.sql;
+      if (/^SELECT .* FROM chat_threads WHERE id = \?/.test(sql)) {
+        return { rows: [THREAD_ROW], rowsAffected: 0 };
+      }
+      return { rows: [], rowsAffected: 0 };
+    });
+  });
+
+  it("hasThreadAccess checks the thread binding without selecting its body", async () => {
+    resolveAccessMock.mockResolvedValue({
+      role: "owner",
+      resource: OWNER_RESOURCE,
+    });
+
+    await expect(hasThreadAccess("owner@example.com", "t1")).resolves.toBe(
+      true,
+    );
+    expect(executeMock).toHaveBeenCalledWith({
+      sql: "SELECT org_id, team_group_id, owner_email FROM chat_threads WHERE id = ?",
+      args: ["t1"],
+    });
+  });
+
+  it("callerHasThreadAccess (run polling) never selects thread_data", async () => {
+    resolveAccessMock.mockResolvedValue({
+      role: "owner",
+      resource: OWNER_RESOURCE,
+    });
+
+    await expect(
+      callerHasThreadAccess("owner@example.com", "t1"),
+    ).resolves.toBe(true);
+    // resolveAccess is mocked here, so the projection itself is only visible at
+    // this seam: the real resolver reads the body unless this option is set.
+    expect(resolveAccessMock.mock.calls[0][3]).toEqual({
+      skipResourceBody: true,
+    });
+    const sqls = executeMock.mock.calls.map(([query]) =>
+      typeof query === "string" ? query : query.sql,
+    );
+    expect(sqls.some((sql) => /thread_data/.test(sql))).toBe(false);
+  });
+
+  it("callerHasThreadAccess still denies a caller whose role is too low", async () => {
+    resolveAccessMock.mockResolvedValue({
+      role: "viewer",
+      resource: OWNER_RESOURCE,
+    });
+
+    await expect(
+      callerHasThreadAccess("viewer@example.com", "t1", "editor"),
+    ).resolves.toBe(false);
   });
 });

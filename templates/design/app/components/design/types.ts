@@ -87,6 +87,7 @@ export interface RuntimeStructureInsertRequest {
     pendingNodeId?: string | null;
   };
   placement: "before" | "after" | "inside";
+  dropMode?: "flow-insert" | "absolute-container";
   gridPlacement?: {
     column: number;
     columnEnd: number;
@@ -170,6 +171,19 @@ export interface ElementInfo {
     width: number;
     height: number;
   };
+  positionReferenceRect?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  positionContainingBlockOrigin?: { x: number; y: number };
+  positionContainingBlockTransform?: {
+    a: number;
+    b: number;
+    c: number;
+    d: number;
+  };
   textContent?: string;
   textContentTruncated?: boolean;
   htmlContent?: string;
@@ -232,6 +246,11 @@ export interface ElementSelectionIntent {
   shiftKey?: boolean;
   metaKey?: boolean;
   ctrlKey?: boolean;
+  baseSelectedScreenIds?: string[];
+  marqueeHitScreenIds?: string[];
+  screenSelectionToggle?: { screenId: string; selected: boolean };
+  selectedScreenIds?: string[];
+  marqueeSelectedScreenIds?: string[];
 }
 
 export interface CanvasLayerHitCandidate {
