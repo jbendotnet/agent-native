@@ -46,9 +46,6 @@ jobs:
     services:
       postgres:
         image: ${{ vars.CI_POSTGRES_IMAGE || 'ghcr.io/builderio/agent-native-ci-postgres-fallback:17-alpine' }}
-        credentials:
-          username: ${{ !vars.CI_POSTGRES_IMAGE && github.actor || '' }}
-          password: ${{ !vars.CI_POSTGRES_IMAGE && secrets.GITHUB_TOKEN || '' }}
         env:
           POSTGRES_DB: design_e2e
           POSTGRES_HOST_AUTH_METHOD: trust
