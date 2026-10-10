@@ -4,9 +4,15 @@ import type * as Sentry from "@sentry/browser";
 import { recordTrackingEvent } from "../observability/tracing.js";
 import {
   AGENT_NATIVE_LIFECYCLE_EVENTS,
+  AGENT_SIGNALS_PAGEVIEW_PROPERTY,
+  AGENT_SIGNALS_VERSION,
   canonicalTrackingEvent,
   legacyLifecycleEvent,
   normalizeTrackingDimension,
+  PAGE_LOAD_PAGEVIEW_PROPERTY,
+  isWaitedActionResponse,
+  SLOW_ACTION_RESPONSE_MS,
+  TRACKING_EVENT_ALIAS_ID_PROPERTY,
   withCanonicalTrackingProperties,
   type AgentNativeLifecycleEventName,
 } from "../shared/analytics-events.js";
@@ -30,12 +36,14 @@ import { isSyntheticTrafficValue } from "../shared/test-traffic.js";
 import { toPostHogExceptionProperties } from "../tracking/posthog-exception.js";
 import { getAnalyticsClientPlatform } from "./analytics-platform.js";
 import {
+  getAnalyticsPageLoadId,
   getOrCreateAnalyticsAnonymousId,
   getOrCreateAnalyticsSessionId,
 } from "./analytics-session.js";
 import { injectedAgentNativeConfig } from "./app-config.js";
 import { clientBuildId } from "./build-compatibility.js";
 import { clientFailureContext } from "./failure-report.js";
+import { replayEndpointFromAnalyticsEndpoint } from "./session-replay-endpoint.js";
 import { scheduleAfterPaint } from "./use-after-paint.js";
 export {
   clearAnalyticsSessionId,
@@ -50,11 +58,18 @@ import {
   installErrorCapture,
   type CapturedExceptionEvent,
 } from "./error-capture.js";
+import { currentRouteTemplate } from "./route-template.js";
 import type {
   SessionReplayOptions,
   SessionReplayStartResult,
 } from "./session-replay.js";
 import { scrubUrl } from "./url-scrub.js";
+import {
+  installWebVitals,
+  type PageViewVitals,
+  type WebVitalsController,
+  type WebVitalsLocation,
+} from "./web-vitals.js";
 export { scrubUrl } from "./url-scrub.js";
 export {
   addErrorBreadcrumb,
@@ -93,6 +108,7 @@ declare global {
       workspaceGatewayUrl?: string;
       workspaceOAuthOrigin?: string;
       workspaceRuntime?: boolean;
+      workspaceAppPath?: string;
       workspaceAppMountPaths?: string[];
       sentryDsn?: string;
       sentryEnvironment?: string;
@@ -115,6 +131,8 @@ type GetDefaultProps = (
 type PageviewTrackingState = {
   installed: boolean;
   lastPageviewKey: string | null;
+  webVitalsInstalled?: boolean;
+  webVitals?: WebVitalsController | null;
 };
 
 type AppEntryTrackingState = {
@@ -145,6 +163,7 @@ export type ConfigureTrackingOptions = {
   llmConnectionStatus?: boolean;
   authSessionRefresh?: boolean;
   pageviewTracking?: boolean;
+  webVitals?: boolean;
   sessionReplay?: boolean | SessionReplayOptions;
   errorCapture?: boolean | ErrorCaptureConfigOptions;
 };
@@ -222,6 +241,7 @@ const AGENT_CHAT_TRACKING_STATE_KEY = Symbol.for(
 );
 const AGENT_CHAT_LIFECYCLE_DEDUPE_TTL_MS = 10 * 60 * 1_000;
 const MAX_AGENT_CHAT_LIFECYCLE_DEDUPE_KEYS = 1_000;
+const PAGEVIEW_STARTUP_WAIT_MS = 250;
 
 const LLM_CONNECTION_STORAGE_KEY = "agent-native.llm_connection_status";
 const LLM_CONNECTION_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -568,19 +588,20 @@ function setTrackingIdentityFromSession(data: unknown): void {
 }
 
 function refreshTrackingAuthSession(): Promise<void> {
-  if (typeof window === "undefined" || typeof fetch !== "function") {
+  if (typeof window === "undefined") {
     _trackingIdentityResolved = true;
     return Promise.resolve();
   }
+  if (typeof fetch !== "function") return Promise.resolve();
   if (_trackingSessionRefresh) return _trackingSessionRefresh;
   _trackingSessionRefresh = fetchAuthSessionStatus()
     .then((result) => {
       if (result.state === "available") {
         setTrackingIdentityFromSession(result.value);
+        _trackingIdentityResolved = true;
       }
     })
     .finally(() => {
-      _trackingIdentityResolved = true;
       _trackingSessionRefresh = null;
     });
   return _trackingSessionRefresh;
@@ -625,6 +646,15 @@ function getTrackingAuthUserId(): string | undefined {
 
 export function getAnalyticsIdentityKey(): string | undefined {
   return getTrackingUserId() || getOrCreateAnonymousId();
+}
+
+export async function resolveAnalyticsIdentityKey(): Promise<
+  string | undefined
+> {
+  if (!_trackingIdentityResolved) {
+    await (_trackingSessionRefresh ?? refreshTrackingAuthSession());
+  }
+  return _trackingIdentityResolved ? getAnalyticsIdentityKey() : undefined;
 }
 
 function getOrCreateAnonymousId(): string | undefined {
@@ -1416,9 +1446,6 @@ export function configureTracking(options: ConfigureTrackingOptions): void {
     if (options.authSessionRefresh !== false) {
       installTrackingAuthSessionRefresh();
     }
-    if (options.pageviewTracking !== false) {
-      installPageviewTracking();
-    }
     maybeInstallSessionReplay(
       options.sessionReplay,
       {
@@ -1427,6 +1454,10 @@ export function configureTracking(options: ConfigureTrackingOptions): void {
       },
       _trackingContentCaptureEnabled,
     );
+    if (options.pageviewTracking !== false) {
+      installPageviewTracking();
+      if (options.webVitals !== false) installWebVitalsTracking();
+    }
     maybeInstallErrorCapture(options.errorCapture);
   }
 }
@@ -1685,17 +1716,24 @@ function configuredSessionReplayOptions(
   tracking: { endpoint?: string; publicKey?: string } = {},
 ): SessionReplayOptions | null {
   const env = (import.meta.env as Record<string, string | undefined>) ?? {};
+  const runtimeConfig =
+    typeof window === "undefined" ? undefined : window.__AGENT_NATIVE_CONFIG__;
   const publicKey =
     tracking.publicKey ||
     _agentNativeAnalyticsPublicKey ||
+    runtimeConfig?.agentNativeAnalyticsPublicKey ||
     env.VITE_AGENT_NATIVE_ANALYTICS_PUBLIC_KEY;
   const trackingEndpoint =
     tracking.endpoint ||
     _agentNativeAnalyticsEndpoint ||
+    runtimeConfig?.agentNativeAnalyticsEndpoint ||
     env.VITE_AGENT_NATIVE_ANALYTICS_ENDPOINT ||
     (publicKey ? AGENT_NATIVE_ANALYTICS_DEFAULT_ENDPOINT : undefined);
   const endpoint = trackingEndpoint
-    ? replayEndpointFromTrackingEndpoint(trackingEndpoint)
+    ? (replayEndpointFromAnalyticsEndpoint(
+        trackingEndpoint,
+        typeof document === "undefined" ? undefined : document.baseURI,
+      ) ?? undefined)
     : undefined;
   const withTrackingDefaults = (
     options: SessionReplayOptions,
@@ -1780,32 +1818,6 @@ function replayExtraPropertiesWithDefaults(
       isQaTrackingIdentity(identity) ? null : identity,
     );
   };
-}
-
-function replayEndpointFromTrackingEndpoint(value: string): string | undefined {
-  try {
-    const url = new URL(value);
-    if (url.pathname.endsWith("/api/analytics/track")) {
-      url.pathname = url.pathname.replace(
-        /\/api\/analytics\/track$/,
-        "/api/analytics/replay",
-      );
-      return url.toString();
-    }
-    if (url.pathname.endsWith("/track")) {
-      url.pathname = url.pathname.replace(/\/track$/, "/api/analytics/replay");
-      return url.toString();
-    }
-  } catch {
-    // Fall through to relative-path handling below.
-  }
-  if (value.endsWith("/api/analytics/track")) {
-    return value.replace(/\/api\/analytics\/track$/, "/api/analytics/replay");
-  }
-  if (value.endsWith("/track")) {
-    return value.replace(/\/track$/, "/api/analytics/replay");
-  }
-  return undefined;
 }
 
 function maybeInstallSessionReplay(
@@ -1944,6 +1956,12 @@ function inferTemplateName(properties: Record<string, unknown>): string | null {
   return app;
 }
 
+/**
+ * Events that name their page only by route template. A path can hold a slug
+ * or an email, so it never rides along, not even from an app's default props.
+ */
+const ROUTE_ONLY_EVENT_NAMES = new Set(["web_vitals"]);
+
 function resolveProps(
   name: string,
   params?: Record<string, unknown>,
@@ -2003,7 +2021,7 @@ function resolveProps(
   });
   const withIdentity = applyTrackingIdentity(standard);
   const identity = _trackingIdentity;
-  return {
+  const resolved: Record<string, unknown> = {
     ...withIdentity,
     ...(getTrackingUserId() ? { user_id: getTrackingUserId() } : {}),
     ...(identity?.userEmail ? { user_email: identity.userEmail } : {}),
@@ -2012,6 +2030,11 @@ function resolveProps(
       _configuredAnalyticsClientPlatform ?? undefined,
     ),
   };
+  if (ROUTE_ONLY_EVENT_NAMES.has(name)) {
+    delete resolved.url;
+    delete resolved.path;
+  }
+  return resolved;
 }
 
 function sessionReplayTrackingProperties(): Record<string, unknown> {
@@ -2032,23 +2055,28 @@ function sessionReplayTrackingProperties(): Record<string, unknown> {
   };
 }
 
-function pageviewKey(): string {
-  return window.location.href;
-}
+type PageviewSnapshot = {
+  key: string;
+  pathname: string;
+  hostname: string;
+  properties: Record<string, unknown>;
+};
 
-function pageviewProperties(reason: string): Record<string, unknown> {
+function snapshotPageview(reason: string): PageviewSnapshot {
+  const { href, origin, pathname, hostname, search } = window.location;
+  const contentCaptureEnabled = _trackingContentCaptureEnabled;
   const properties: Record<string, unknown> = {
-    url: !_trackingContentCaptureEnabled
-      ? window.location.origin + window.location.pathname
-      : scrubUrl(window.location.href),
-    path: window.location.pathname,
-    hostname: window.location.hostname,
+    url: !contentCaptureEnabled ? origin + pathname : scrubUrl(href),
+    path: pathname,
+    hostname,
     navigation_type: reason,
+    [AGENT_SIGNALS_PAGEVIEW_PROPERTY]: AGENT_SIGNALS_VERSION,
+    [PAGE_LOAD_PAGEVIEW_PROPERTY]: getAnalyticsPageLoadId(),
   };
-  if (_trackingContentCaptureEnabled && window.location.search) {
-    properties.search = scrubUrl(window.location.search);
+  if (contentCaptureEnabled && search) {
+    properties.search = scrubUrl(search);
   }
-  if (_trackingContentCaptureEnabled && typeof document !== "undefined") {
+  if (contentCaptureEnabled && typeof document !== "undefined") {
     if (document.referrer) {
       properties.referrer = scrubUrl(document.referrer);
     }
@@ -2056,7 +2084,7 @@ function pageviewProperties(reason: string): Record<string, unknown> {
       properties.title = document.title;
     }
   }
-  return properties;
+  return { key: href, pathname, hostname, properties };
 }
 
 function readAppEntryKeys(): string[] {
@@ -2104,7 +2132,7 @@ function rememberLastAppEntry(appName: string, now: number): number | null {
 
 let _appEntryAuthRetry: Promise<void> | null = null;
 
-function waitForTrackingIdentityBeforeAppEntry(): boolean {
+function waitForTrackingIdentityBeforeAppEntry(entryPath: string): boolean {
   const pending = _trackingSessionRefresh;
   if (!pending || _trackingIdentityResolved) return false;
   if (!_appEntryAuthRetry) {
@@ -2112,17 +2140,18 @@ function waitForTrackingIdentityBeforeAppEntry(): boolean {
       .catch(() => {})
       .then(() => {
         _appEntryAuthRetry = null;
-        emitAppEntered();
+        emitAppEntered(entryPath);
       });
   }
   return true;
 }
 
-function emitAppEntered(): void {
+function emitAppEntered(entryPath?: string): void {
   if (typeof window === "undefined" || !_getDefaultProps) return;
-  if (waitForTrackingIdentityBeforeAppEntry()) return;
+  const scheduledEntryPath = entryPath ?? window.location.pathname;
+  if (waitForTrackingIdentityBeforeAppEntry(scheduledEntryPath)) return;
   const properties = resolveProps(AGENT_NATIVE_LIFECYCLE_EVENTS.appEntered, {
-    entry_path: window.location.pathname,
+    entry_path: scheduledEntryPath,
   });
   const appName = normalizeTrackingDimension(
     properties.app_name ?? properties.app,
@@ -2139,7 +2168,7 @@ function emitAppEntered(): void {
   const attribution = getFirstTouchAttribution();
   trackEvent(AGENT_NATIVE_LIFECYCLE_EVENTS.appEntered, {
     app_name: appName,
-    entry_path: window.location.pathname,
+    entry_path: scheduledEntryPath,
     ...(attribution?.ref ? { source: attribution.ref } : {}),
     ...(attribution?.landing_referrer
       ? { referrer: attribution.landing_referrer }
@@ -2156,26 +2185,27 @@ function emitAppEntered(): void {
   }
 }
 
-function emitPageview(reason: string): void {
+function emitPageview(snapshot: PageviewSnapshot): void {
   if (typeof window === "undefined") return;
-  if (isLocalAnalyticsHostname(window.location.hostname)) return;
+  if (isLocalAnalyticsHostname(snapshot.hostname)) return;
   const state = getPageviewTrackingState();
-  const key = pageviewKey();
-  if (state.lastPageviewKey === key) return;
-  state.lastPageviewKey = key;
-  trackEvent("pageview", pageviewProperties(reason));
-  emitAppEntered();
+  if (state.lastPageviewKey === snapshot.key) return;
+  state.lastPageviewKey = snapshot.key;
+  trackEvent("pageview", snapshot.properties);
+  emitAppEntered(snapshot.pathname);
 }
 
 function schedulePageview(reason: string): void {
   if (!_trackingContentCaptureEnabled) {
     void stopSessionReplay("local-plan-privacy");
   }
-  const run = () => emitPageview(reason);
+  const snapshot = snapshotPageview(reason);
+  const run = () => emitPageview(snapshot);
   const deferredBootRefresh =
     _llmConnectionBootRefresh && !_llmConnectionStatus
       ? _llmConnectionBootRefresh
       : null;
+  const replayStart = _sessionReplayStartPromise;
   const pendingStartupContext: Array<Promise<void>> = [];
   if (_llmConnectionRefresh && !_llmConnectionStatus) {
     pendingStartupContext.push(_llmConnectionRefresh);
@@ -2184,17 +2214,30 @@ function schedulePageview(reason: string): void {
     pendingStartupContext.push(_trackingSessionRefresh);
   }
   if (deferredBootRefresh !== null) {
-    if (pendingStartupContext.length > 0) {
+    if (pendingStartupContext.length > 0 || replayStart) {
       const timeout = new Promise<void>((resolve) =>
-        window.setTimeout(resolve, 250),
+        window.setTimeout(resolve, PAGEVIEW_STARTUP_WAIT_MS),
       );
+      const startupContext = [
+        ...pendingStartupContext,
+        ...(replayStart ? [replayStart.then(() => undefined)] : []),
+      ];
       void Promise.all([
         deferredBootRefresh,
-        Promise.race([Promise.allSettled(pendingStartupContext), timeout]),
+        Promise.race([Promise.allSettled(startupContext), timeout]),
       ]).finally(run);
       return;
     }
     void deferredBootRefresh.finally(run);
+    return;
+  }
+  if (replayStart) {
+    const timeout = new Promise<void>((resolve) =>
+      window.setTimeout(resolve, PAGEVIEW_STARTUP_WAIT_MS),
+    );
+    void Promise.race([replayStart.then(() => undefined), timeout]).finally(
+      run,
+    );
     return;
   }
   if (typeof queueMicrotask === "function") {
@@ -2217,6 +2260,7 @@ function installPageviewTracking(): void {
   window.history.pushState = function pushState(...args) {
     const result = originalPushState.apply(this, args);
     syncTrackingContentCaptureForLocation();
+    state.webVitals?.navigate("push");
     schedulePageview("pushState");
     return result;
   };
@@ -2224,14 +2268,47 @@ function installPageviewTracking(): void {
   window.history.replaceState = function replaceState(...args) {
     const result = originalReplaceState.apply(this, args);
     syncTrackingContentCaptureForLocation();
+    state.webVitals?.navigate("replace");
     schedulePageview("replaceState");
     return result;
   };
 
   window.addEventListener("popstate", () => {
     syncTrackingContentCaptureForLocation();
+    state.webVitals?.navigate("push");
     schedulePageview("popstate");
   });
+}
+
+function webVitalsLocation(): WebVitalsLocation {
+  return {
+    route: currentRouteTemplate(),
+    pathname: window.location.pathname,
+  };
+}
+
+function reportPageViewVitals(vitals: PageViewVitals): void {
+  _sessionReplayModuleForCapture?.emitSessionReplayWebVitals?.(vitals);
+  trackEvent("web_vitals", {
+    ...(vitals.route ? { route: vitals.route } : {}),
+    navigation_type: vitals.navigationType,
+    ttfb_ms: vitals.ttfbMs,
+    lcp_ms: vitals.lcpMs,
+    inp_ms: vitals.inpMs,
+    cls: vitals.cls,
+  });
+}
+
+function installWebVitalsTracking(): void {
+  const state = getPageviewTrackingState();
+  if (state.webVitalsInstalled) return;
+  state.webVitalsInstalled = true;
+  if (isLocalAnalyticsHostname(window.location.hostname)) return;
+  try {
+    state.webVitals = installWebVitals(webVitalsLocation, reportPageViewVitals);
+  } catch (error) {
+    console.warn("[analytics] Web Vitals capture is unavailable:", error);
+  }
 }
 
 function sendAgentNativeAnalytics(
@@ -2284,15 +2361,27 @@ function sendAgentNativeAnalytics(
   }
 }
 
+function createTrackingAliasId(): string | undefined {
+  return typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : undefined;
+}
+
 function emitBrowserTrackingEvent(
   name: string,
   props: Record<string, unknown>,
   options: {
     gtagProperties?: Record<string, unknown>;
+    agentNativeProperties?: Record<string, unknown>;
     sendGtag?: boolean;
   } = {},
 ): void {
-  const { gtagProperties = props, sendGtag = true } = options;
+  const {
+    agentNativeProperties = props,
+    gtagProperties = props,
+    sendGtag = true,
+  } = options;
   const amplitudeProps = amplitudeEventProperties(name, props);
   if (sendGtag) {
     const gtag = window.__AGENT_NATIVE_GA_GTAG__ ?? window.gtag;
@@ -2308,7 +2397,9 @@ function emitBrowserTrackingEvent(
   const authUserId = getTrackingAuthUserId();
   sendAgentNativeAnalytics(
     name,
-    authUserId ? { ...props, auth_user_id: authUserId } : props,
+    authUserId
+      ? { ...agentNativeProperties, auth_user_id: authUserId }
+      : agentNativeProperties,
   );
 }
 
@@ -2318,6 +2409,7 @@ const REPLAY_UNMARKED_EVENT_NAMES = new Set([
   "session status",
   "session_status",
   "action.response",
+  "web_vitals",
   "agent_chat_lifecycle",
   "session_replay_started",
   "session replay upload rejected",
@@ -2325,7 +2417,18 @@ const REPLAY_UNMARKED_EVENT_NAMES = new Set([
   AGENT_NATIVE_EXCEPTION_EVENT_NAME,
 ]);
 
-function markTrackedEventInSessionReplay(name: string): void {
+function markTrackedEventInSessionReplay(
+  name: string,
+  props: Record<string, unknown>,
+): void {
+  if (
+    name === "action.response" &&
+    typeof props.duration_ms === "number" &&
+    props.duration_ms >= SLOW_ACTION_RESPONSE_MS &&
+    isWaitedActionResponse(props)
+  ) {
+    _sessionReplayModuleForCapture?.emitSessionReplaySlowRequest?.(props);
+  }
   if (REPLAY_UNMARKED_EVENT_NAMES.has(name)) return;
   _sessionReplayModuleForCapture?.emitSessionReplayAnalyticsEvent?.(name);
 }
@@ -2348,17 +2451,29 @@ function trackBrowserEvent(
   ensureSentry();
   const props = resolveProps(name, params);
   const canonical = canonicalTrackingEvent(name, props);
+  const aliasId = canonical ? createTrackingAliasId() : undefined;
   const gtagNameMatchesCanonical =
     canonical !== null && name.replace(/\s+/g, "_") === canonical.name;
   emitBrowserTrackingEvent(name, props, {
+    agentNativeProperties: aliasId
+      ? { ...props, [TRACKING_EVENT_ALIAS_ID_PROPERTY]: aliasId }
+      : props,
     gtagProperties: gtagNameMatchesCanonical ? canonical.properties : props,
   });
   if (canonical) {
     emitBrowserTrackingEvent(canonical.name, canonical.properties, {
+      agentNativeProperties: aliasId
+        ? {
+            ...canonical.properties,
+            [TRACKING_EVENT_ALIAS_ID_PROPERTY]: aliasId,
+          }
+        : canonical.properties,
       sendGtag: !gtagNameMatchesCanonical,
     });
   }
-  if (markInReplay) markTrackedEventInSessionReplay(canonical?.name ?? name);
+  if (markInReplay) {
+    markTrackedEventInSessionReplay(canonical?.name ?? name, props);
+  }
   void recordTrackingEvent(name, props, "client");
   const lifecycle = legacyLifecycleEvent(name, props);
   // The alias describes the same moment, so it gets no second replay marker.
