@@ -346,7 +346,7 @@ function ChatRunFailure({
       recoveryMetadata(message)?.agentNativeRecoveryAction === "retry" &&
       recoveryMetadata(message)?.agentNativeRecoveryOfRunId === runId,
   );
-  const retryFirstMessage = useCallback(() => {
+  const retryFirstMessage = useCallback(async () => {
     if (retryStartedForRunsRef.current.has(runId)) return;
     const attachments =
       originalRequest?.parts.filter((part) => part.type === "file") ?? [];
@@ -467,14 +467,16 @@ function ChatLifecycleTracking({ threadId }: { threadId: string }) {
 function ChatAgentFooter({ children }: { children: ReactNode }) {
   const { controller, threadId } = useAgentKit();
   const submitAnswers = useCallback(
-    ({ formattedAnswers }: { formattedAnswers: string }) => {
-      void controller.sendMessage({ threadId, text: formattedAnswers });
+    async ({ formattedAnswers }: { formattedAnswers: string }) => {
+      await controller.sendMessage({ threadId, text: formattedAnswers });
+      return { delivered: true };
     },
     [controller, threadId],
   );
   const skipQuestions = useCallback(
-    ({ message }: { message: string }) => {
-      void controller.sendMessage({ threadId, text: message });
+    async ({ message }: { message: string }) => {
+      await controller.sendMessage({ threadId, text: message });
+      return { delivered: true };
     },
     [controller, threadId],
   );
@@ -679,12 +681,13 @@ function ChatCanvas({
   return (
     <AgentKitChat
       className="h-full"
-      title={thread.thread?.title ?? APP_TITLE}
+      title={thread.thread?.title?.trim() || APP_TITLE}
       toolbar={toolbar}
       emptyComposerPlacement="center"
       composerProps={{
         disabled: readOnly,
         placeholder: readOnly ? t("chat.teamReadOnly") : undefined,
+        requireAgentEngine: true,
         stopButton,
         queueWhileRunning: true,
         autoFocus: true,

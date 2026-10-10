@@ -192,6 +192,12 @@ async function grantResourceAccessLocked(
       );
     }
   }
+  // Runs for every grant, including approved access requests, so a
+  // registration cannot be bypassed by a second entry point.
+  await reg.assertSharingChange?.({
+    resource: access.resource,
+    change: { kind: "grant" },
+  });
   const extensionTargetsBefore = await getExtensionShareChangeTargets(
     input.resourceType,
     input.resourceId,

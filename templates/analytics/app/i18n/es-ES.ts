@@ -8,6 +8,7 @@ export default {
     overview: "Resumen",
     dashboard: "Panel",
     dataSources: "Fuentes de datos",
+    sourceStatus: "Estado de las fuentes",
     dataDictionary: "Diccionario de datos",
     sessions: "Sesiones",
     monitoring: "Monitoring",
@@ -89,7 +90,7 @@ export default {
     visibilityPrivateOnly: "Míos",
     visibilitySharedOnly: "Compartido",
     visibilityAllDescription: "Mostrar todos los elementos",
-    visibilityPrivateOnlyDescription: "Mostrar solo elementos visibles para ti",
+    visibilityPrivateOnlyDescription: "Mostrar elementos que has creado",
     visibilitySharedOnlyDescription:
       "Mostrar elementos compartidos con la organización y públicos",
     hiddenAnalyses: "Análisis ocultos",
@@ -523,6 +524,34 @@ export default {
       resourcesSubmitted: "{{count}} recursos enviados.",
     },
   },
+  dataStatus: {
+    sources: "Fuentes",
+    index: "Índice",
+    connected: "Conectado",
+    notConnected: "No conectado",
+    needsReauth: "Requiere reautenticación",
+    error: "Error",
+    loadingSources: "Cargando el estado de las fuentes",
+    indexNotImported: "No se ha importado ningún índice generado.",
+    indexUnreadable:
+      "No se pudo leer el índice guardado. Sube un índice válido.",
+    indexReadFailed: "No se pudo cargar el estado del índice.",
+    lastBuilt: "Última generación",
+    freshness: "Actualidad",
+    fresh: "Actual · {{age}}",
+    stale: "Desactualizado · {{age}}",
+    generatedUnapproved: "Generado · sin aprobar",
+    entriesBySource: "{{count}} entradas por fuente",
+    noSourceEntries: "No hay recuentos por fuente disponibles.",
+    countUnavailable: "No disponible",
+    adminUpload: "Carga de administrador",
+    exportDictionary: "Exportar diccionario",
+    exportingDictionary: "Exportando diccionario…",
+    exportFailed: "No se pudo exportar el diccionario. Inténtalo de nuevo.",
+    exportEmpty: "No hay entradas del diccionario para exportar.",
+    exportLimitReached:
+      "El diccionario supera el límite de exportación. Contacta con un administrador.",
+  },
   dataDictionary: {
     intro:
       "El catálogo de métricas, tablas y definiciones comerciales que utiliza el agente de análisis al crear paneles a partir de solicitudes. Mantenga las entradas precisas y el agente dejará de adivinar sus datos.",
@@ -537,6 +566,7 @@ export default {
     approved: "aprobado",
     suggestion: "sugerencia",
     unreviewed: "sin revisar",
+    deprecated: "obsoleto",
     ai: "AI",
     source: "fuente",
     deleteTitle: '¿Eliminar "{{metric}}"?',
@@ -583,6 +613,31 @@ export default {
     exampleUseCasePlaceholder: "¿Cuándo debería alguien alcanzar esta métrica?",
     saving: "Ahorro...",
     saveEntry: "Guardar entrada",
+    importIndex: "Importar índice de fuentes",
+    indexNotImported: "No se ha importado ningún índice de fuentes generado.",
+    indexUnreadable:
+      "No se pudo leer el índice guardado; vuelve a importar un archivo válido.",
+    indexReadFailed:
+      "No se pudo comprobar el índice guardado. Inténtalo de nuevo.",
+    generatedEntriesMayBeMissing:
+      "Puede que falten entradas de fuentes generadas; las entradas guardadas siguen disponibles.",
+    indexReady: "{{count}} definiciones de fuentes generadas el {{date}}.",
+    indexStale:
+      "La instantánea tiene {{days}} días. Actualízala para comprobar si hay revisiones más recientes.",
+    indexFileInvalid:
+      "Elige un archivo JSON de índice válido de 750 KB como máximo.",
+    replaceIndexTitle: "¿Reemplazar el índice de fuentes?",
+    replaceIndexDescription:
+      "Esto reemplaza el índice de fuentes actual de la organización. Las definiciones importadas siguen siendo sugerencias sin aprobar, no resultados de consultas en tiempo real.",
+    indexPreview:
+      "{{count}} definiciones de {{sources}}; generado el {{date}}.",
+    replaceIndex: "Reemplazar índice",
+    importingIndex: "Importando…",
+    indexImportFailed:
+      "No se pudo importar el índice de fuentes. Revisa el archivo e inténtalo de nuevo.",
+    dictionaryPage: "Página {{page}} · {{count}} de {{total}} resultados",
+    previousPage: "Anterior",
+    nextPage: "Siguiente",
   },
   dataSources: {
     uploadFile: "Subir archivo",
@@ -621,6 +676,10 @@ export default {
       "Usando credenciales guardadas en esta aplicación. Para reutilizar entre aplicaciones, conéctese y otorgue este proveedor en Dispatch.",
     sharedFallback:
       "Conecte u otorgue este proveedor en Dispatch para reutilizarlo en todas las aplicaciones, o guarde las credenciales locales a continuación.",
+    sharedNeedsReauth:
+      "Esta conexión compartida necesita volver a autorizarse. Vuelve a conectarla en Dispatch.",
+    sharedError:
+      "Esta conexión compartida informó de un error. Abre Dispatch para revisarla y repararla.",
     workspaceReadyDescription:
       "Esta fuente está lista a través de una conexión de espacio de trabajo compartido. Administre el acceso compartido en Dispatch o agregue credenciales locales solo para esta aplicación.",
     testing: "Pruebas...",
@@ -693,6 +752,19 @@ export default {
     copied: "copiado",
     copy: "Copiar",
     keyActions: "Acciones clave {{name}}",
+    manageReplayOrigins: "Administrar orígenes de reproducción",
+    replayOriginsDescription:
+      "Añade orígenes HTTPS exactos, uno por línea. Se conservarán los existentes.",
+    currentReplayOrigins: "Orígenes permitidos actuales",
+    anyReplayOriginAllowed:
+      "Actualmente se permite cualquier origen. Al añadir orígenes, la reproducción se limitará a la lista; incluye todas las aplicaciones que usan esta clave.",
+    originsToAdd: "Orígenes para añadir",
+    replayOriginsPlaceholder: "https://app.example.com",
+    addReplayOrigins: "Añadir orígenes",
+    addingReplayOrigins: "Añadiendo orígenes…",
+    replayOriginsUpdateFailed:
+      "No se pudieron actualizar los orígenes permitidos.",
+    cancel: "Cancelar",
     lastUsed: "último usado {{date}}",
     neverUsed: "nunca usado",
     revoking: "Revocando...",
@@ -985,8 +1057,10 @@ export default {
     dashboard: "Panel de control - Analytics",
     dataDictionary: "Diccionario de datos - Analytics",
     dataSources: "Fuentes de datos - Analytics",
+    sourceStatus: "Estado de las fuentes - Analytics",
     sessions: "Sesiones - Analytics",
     eventCatalog: "Catálogo de eventos - Analytics",
+    routePerformance: "Rendimiento por ruta - Analytics",
     monitoring: "Monitorización - Analytics",
     agents: "Agentes - Analytics",
     session: "Reproducción de sesión - Analytics",
@@ -1096,6 +1170,12 @@ export default {
   },
   sqlDashboard: {
     customRange: "Rango personalizado",
+    allValues: "Todos",
+    searchValues: "Buscar valores",
+    noValuesFound: "No se encontraron valores",
+    selectAll: "Seleccionar todo",
+    selectOnly: "Solo",
+    selectOnlyValue: "Solo {{value}}",
     untitledDashboard: "Panel de control sin título",
     dashboardFallback: "panel",
     viewOnly: "Tiene acceso de solo lectura a este panel.",
@@ -1311,7 +1391,43 @@ export default {
     showingSingular: "{{count}} sesión",
     labName: "Clasificación de sesiones",
     labDescription:
-      "Filtra sesiones por eventos registrados, ve los eventos de la app en la línea de tiempo de la reproducción y explora el catálogo de eventos.",
+      "Filtra sesiones por eventos registrados, señales de fricción y velocidad, ve los eventos de la app y las métricas web de la página en la línea de tiempo de la reproducción, y explora el catálogo de eventos y el rendimiento por ruta.",
+    friction: "Fricción",
+    frictionFiltersActive: "Fricción ({{count}})",
+    sortFriction: "Más fricción",
+    frictionNotMeasured: "Fricción no medida",
+    signalNotMeasured: "{{label}}: sin medir",
+    issueLinksUnavailable: "Enlaces a incidencias no disponibles",
+    frictionCoverageSince: "La fricción cubre las sesiones desde el {{date}}.",
+    frictionCoverageIncomplete:
+      "La fricción aún no se mide en todas las sesiones de este periodo.",
+    labStateUnavailable:
+      "No se pudieron cargar tus ajustes de Lab, así que los filtros de este enlace no se aplican.",
+    labFeaturesUnavailable:
+      "No se pudieron cargar tus ajustes de Lab, así que las funciones de Lab están ocultas.",
+    frictionUnavailable: "No se pudo cargar la fricción.",
+    frictionSignalCount: "{{label}}: {{count}}",
+    frictionFiltersNeedLab:
+      "Este enlace filtra u ordena por fricción. Activa el Lab Clasificación de sesiones en Ajustes para aplicarlo.",
+    openErrorIssue: "Abrir incidencia de error: {{title}}",
+    troubleWithStatus: "{{label}} ({{status}})",
+    signalErrorThenLeave: "Salió tras un error",
+    signalHttp5xx: "Respuestas 5xx",
+    signalRetryLoops: "Bucles de reintento",
+    signalErrorToasts: "Avisos de error",
+    signalDeadClicks: "Clics sin respuesta",
+    signalStalledRequests: "Solicitudes estancadas",
+    signalHttp4xx: "Respuestas 4xx",
+    signalAgentFailures: "Fallos del agente",
+    signalStuckChats: "Chats del agente atascados",
+    signalThumbsDown: "Valoraciones negativas",
+    signalFailedActions: "Acciones fallidas",
+    signalQuickBacks: "Vueltas atrás rápidas",
+    signalCancelledRuns: "Ejecuciones del agente canceladas",
+    causeNoModelConnected: "Ningún modelo conectado",
+    causeRateLimit: "Límite de frecuencia",
+    causeContextOverflow: "Contexto excedido",
+    causeProviderError: "Error del proveedor",
     allApps: "Todas las apps",
     customRange: "Rango personalizado",
     fromDate: "Desde",
@@ -1389,6 +1505,37 @@ export default {
     catalogMoreKeys: "+{{count}} más",
     catalogTruncated:
       "Solo se muestran los {{count}} eventos vistos más recientemente.",
+    routePerformance: "Rendimiento por ruta",
+    speed: "Velocidad",
+    anySpeed: "Cualquier velocidad",
+    speedSlowAny: "Lentas",
+    speedPoorVitals: "Web Vitals deficientes",
+    speedSlowRequests: "Solicitudes lentas",
+    speedCoverageSince: "Velocidad medida desde el {{date}}.",
+    speedCoverageStarting:
+      "La velocidad se mide en las páginas vistas a partir de ahora.",
+    speedFilterNeedsLab:
+      "Este enlace tiene un filtro de velocidad. Activa el Lab Clasificación de sesiones en Ajustes para aplicarlo.",
+    slowRequestCount: "{{count}} solicitudes lentas",
+    slowRequestCountSingular: "{{count}} solicitud lenta",
+    speedIncomplete: "Datos de velocidad incompletos",
+    speedNotMeasured: "Velocidad no medida",
+    speedUnavailable: "No se pudieron cargar los datos de velocidad.",
+    markerPageVitals: "Métricas de la página",
+    markerSlowRequest: "Solicitud lenta",
+    perfRoute: "Ruta de página",
+    perfRequests: "Solicitudes",
+    perfNoData: "Sin datos",
+    perfAccuracy:
+      "Cada celda muestra p50 / p95, con un margen aproximado del 28 %. Las solicitudes de menos de 1 s se muestrean; las lentas se cuentan con exactitud.",
+    perfEmpty: "No hay páginas vistas medidas en este intervalo.",
+    perfIncomplete:
+      "Algunos eventos no se contaron en estos días, así que pueden estar incompletos: {{dates}}",
+    perfLoadFailed: "No se pudo cargar el rendimiento por ruta: {{message}}",
+    perfNeedsLab:
+      "El rendimiento por ruta forma parte del Lab Clasificación de sesiones.",
+    perfTruncated: "Solo se muestran las {{count}} rutas con más tráfico.",
+    perfAtLeast: "≥ {{value}}",
     anyActivity: "Cualquier actividad",
     filtersDescription:
       "Los filtros se guardan en la URL para que el agente y los enlaces compartidos vean la misma lista de sesiones.",
@@ -1446,6 +1593,8 @@ export default {
     replayLoading: "Cargando reproducción...",
     replayLoadingProgress:
       "{{loaded}} de {{total}} fragmentos de reproducción cargados",
+    replayTargetFallback:
+      "El desplazamiento solicitado ({{requested}}) no está disponible; se muestra el fotograma de reproducción más cercano en {{available}}.",
     replayUnavailable: "Esta sesión no tiene fragmentos de reproducción",
     replayUnavailableDescription:
       "La sesión tiene eventos de analítica, pero no se encontraron eventos de fragmentos rrweb.",
@@ -1455,6 +1604,19 @@ export default {
       "Fragmentos con acceso controlado usados para reconstruir esta reproducción. Las URL del proveedor permanecen privadas.",
     chunkAndEventCount: "{{chunks}} chunks, {{events}} replay events",
     replayEventCount: "{{events}} replay events",
+    saveScreenshot: "Descargar captura",
+    savingScreenshot: "Guardando captura…",
+    screenshotDownloaded: "Captura descargada",
+    screenshotSaveFailed: "No se pudo guardar la captura",
+    copyScreenshot: "Copiar a Design",
+    copyingScreenshot: "Copiando captura…",
+    screenshotCopiedForDesign: "Captura copiada. Pégala en Design.",
+    screenshotCopyFailed:
+      "No se pudo copiar la captura. Descárgala y sube el PNG a Design.",
+    screenshotCopyUnsupportedAssets:
+      "No se copió la captura: este momento contiene medios o imágenes que no se pueden capturar de forma segura. Prueba otro momento de la reproducción.",
+    screenshotUnsupportedAssets:
+      "No se guardó la captura: algunos medios o imágenes incrustados no se pudieron capturar de forma segura.",
     timeline: "Línea de tiempo de eventos",
     replayTimeline: "Línea de tiempo de reproducción",
     timelineDescription: "Mostrando {{count}} de {{total}} eventos útiles.",
@@ -1490,8 +1652,12 @@ export default {
     time: "Hora",
     storageSetupTitle: "Conectar almacenamiento de repeticiones",
     storageSetupDescription:
-      "Las grabaciones de repetición de sesión necesitan almacenamiento antes de poder guardar los fragmentos. Usa el almacenamiento de nivel gratuito de Builder.io o configura tu propio bucket compatible con S3.",
+      "Las repeticiones de sesión necesitan un proveedor autorizado para subir archivos. Builder.io puede almacenarlas cuando se concede el permiso de subida, o puedes configurar tu propio bucket compatible con S3.",
     storageConnected: "Almacenamiento conectado",
+    storageStatusUnavailable:
+      "No se pudo comprobar el estado del almacenamiento de repeticiones. Reintenta para saber si las subidas están disponibles.",
+    builderAiConnectedStorageNeedsGrant:
+      "Builder.io está conectado para IA y créditos, pero las subidas de repeticiones necesitan un permiso de almacenamiento independiente.",
     connectBuilder: "Usar Builder.io",
     configureS3: "Configurar almacenamiento S3",
     devtools: "Herramientas de desarrollo",
@@ -1524,6 +1690,61 @@ export default {
       "Ningún mensaje de consola coincide con los filtros actuales.",
     devtoolsNoNetworkMatches:
       "Ninguna solicitud coincide con los filtros actuales.",
+    storyboardSelectionCoverage:
+      "Seleccionaste {{selected}} de {{total}} sesiones de reproducción ({{percent}}).",
+    storyboardSelectHint:
+      "Selecciona hasta 3 sesiones para crear un guion gráfico.",
+    clearStoryboardSelection: "Borrar selección",
+    createStoryboard: "Crear guion gráfico",
+    selectReplayForStoryboard:
+      "Seleccionar la reproducción {{id}} para el guion gráfico",
+    storyboardDesignId: "ID de Design (opcional)",
+    storyboardTitle: "Título del guion gráfico",
+    storyboardDefaultTitle: "Guion gráfico de reproducciones de sesión",
+    storyboardTimestamps: "Marcas de tiempo (hasta 3, separadas por comas)",
+    storyboardReplayPreview: "Vista previa de la reproducción",
+    storyboardStartingCapture:
+      "Elige esta pestaña de Analytics en el selector de captura del navegador.",
+    storyboardLoadingReplay: "Cargando reproducción {{replayId}}…",
+    storyboardCapturingFrame:
+      "Capturando {{current}} de {{total}} · {{replayId}} · {{timestamp}}",
+    storyboardSendingToDesign: "Enviando capturas a Design…",
+    storyboardComplete: "Se añadieron {{screenshots}} capturas a Design.",
+    storyboardTimestampError: "Usa mm:ss, hh:mm:ss o mm:ss.mmm.",
+    storyboardTimestampRequired:
+      "Introduce al menos una marca de tiempo para cada reproducción seleccionada.",
+    storyboardTimestampLimit:
+      "Elige como máximo 3 marcas de tiempo por reproducción.",
+    storyboardDuplicateTimestamp: "Elimina las marcas de tiempo duplicadas.",
+    storyboardScreenshotLimit: "Elige como máximo 9 capturas.",
+    storyboardReplayLimit: "Selecciona hasta 3 sesiones de reproducción.",
+    storyboardCaptureFailed: "No se pudo capturar la imagen.",
+    storyboardCanceled: "Se canceló la captura.",
+    storyboardReplayIncomplete:
+      "La reproducción {{replayId}} contiene eventos no disponibles; se detuvo la exportación.",
+    storyboardViewportUnavailable:
+      "No están disponibles las dimensiones grabadas de la ventana.",
+    storyboardTimestampOutOfRange:
+      "La marca de tiempo queda fuera de la reproducción {{replayId}}.",
+    storyboardScreenshotTooLarge: "Una captura supera el límite de 5 MB.",
+    storyboardBatchTooLarge: "El lote de capturas supera el límite de 20 MB.",
+    storyboardRouteUnavailable:
+      "La ruta de {{timestamp}} no está disponible para la reproducción {{replayId}}.",
+    storyboardNoDesignResponse:
+      "Design no devolvió un resultado del guion gráfico.",
+    storyboardTemporaryCleanupPending:
+      "El guion gráfico se guardó, pero no se pudieron eliminar los archivos temporales de captura.",
+    storyboardTemporaryCleanupFailed:
+      "La limpieza de las capturas temporales sigue pendiente.",
+    storyboardUnexpectedResponse:
+      "La exportación de capturas devolvió una respuesta ilegible. Vuelve a intentarlo.",
+    storyboardSaveOutcomeUnknown:
+      "Es posible que Design haya guardado el guion gráfico. Comprueba Design antes de volver a intentarlo.",
+    openStoryboard: "Abrir guion gráfico en Design",
+    cancelStoryboardCapture: "Cancelar captura",
+    captureToDesign: "Capturar y añadir a Design",
+    storyboardSelectAnalyticsTab:
+      "Selecciona esta pestaña de Analytics en el selector de captura del navegador.",
   },
   catalog: {
     description:
@@ -1640,5 +1861,59 @@ export default {
     name: "Nombre",
     appId: "ID de aplicación",
     flagKey: "Indicador de función",
+  },
+  githubFolderSync: {
+    menuItem: "Sincronizar con GitHub",
+    folderActions: "Acciones de la carpeta",
+    title: "Sincronizar {{name}} con GitHub",
+    loadFailed:
+      "No se ha podido cargar el estado de sincronización con GitHub.",
+    actionFailed: "No se ha podido actualizar la sincronización con GitHub.",
+    owner: "Propietario",
+    repo: "Repositorio",
+    branch: "Rama",
+    path: "Ruta de la carpeta en el repositorio",
+    ownerRequired: "Introduce el propietario de GitHub.",
+    repoRequired: "Introduce el nombre del repositorio.",
+    branchRequired: "Introduce el nombre de la rama.",
+    connect: "Conectar carpeta",
+    linkedTo: "Vinculada a",
+    rootPath: "Raíz del repositorio",
+    exportPullRequest: "Pull request de exportación",
+    pullRequest: "Pull request n.º {{number}}",
+    prOpen: "Abierta",
+    prMerged: "Fusionada",
+    prClosed: "Cerrada",
+    dashboard: "Panel",
+    status: "Estado",
+    statuses: {
+      inSync: "Sincronizado",
+      githubChanged: "Cambiado en GitHub",
+      appChanged: "Cambiado en la app",
+      bothChanged: "Cambiado en ambos",
+      conflict: "Conflicto",
+      notExported: "No está en GitHub",
+      newInGithub: "Nuevo en GitHub",
+      removedInGithub: "Eliminado en GitHub",
+      exportPending: "Exportación pendiente",
+      noAccess: "Sin acceso",
+    },
+    conflictPanel: "Panel: {{id}}",
+    conflictOrder: "Orden de los paneles",
+    conflictMeta: "Configuración del panel",
+    checkGitHub: "Revisar GitHub",
+    pullFromGitHub: "Traer desde GitHub",
+    exportToGitHub: "Exportar a GitHub",
+    disconnect: "Desconectar",
+    disconnectTitle: "¿Desconectar esta carpeta de GitHub?",
+    disconnectDescription:
+      "Los paneles seguirán en esta app. Los archivos de GitHub no se modifican.",
+    pulled: "Cambios traídos desde GitHub.",
+    exported: "Exportado a GitHub.",
+    nothingToExport: "No hay nada que exportar.",
+    finalizedMerged: "La pull request de exportación abierta se fusionó.",
+    finalizedClosed: "La pull request de exportación abierta se cerró.",
+    skippedHeading: "Paneles omitidos",
+    skippedItem: "{{title}}: {{reason}}",
   },
 };

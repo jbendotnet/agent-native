@@ -14,7 +14,10 @@ import {
   type Page,
 } from "@playwright/test";
 
-import { canvasWheelPoint } from "./canvas-wheel-point";
+import {
+  expectedCanvasScaleAtZoomPercent,
+  readZoomUntilAvailable,
+} from "./runtime-budget-zoom.ts";
 
 type BudgetFile = {
   copies: number;
@@ -124,6 +127,12 @@ await page.addInitScript(() => {
       refreshes: { at: number; screen: string; from: string; to: string }[];
       liveInserts: number[];
       previewRemounts: number[];
+      selectionEvents: {
+        at: number;
+        screen: string;
+        sourceId: string;
+        tagName: string;
+      }[];
     };
   };
   w.__budget = {
@@ -131,6 +140,7 @@ await page.addInitScript(() => {
     refreshes: [],
     liveInserts: [],
     previewRemounts: [],
+    selectionEvents: [],
   };
   new PerformanceObserver((list) => {
     for (const entry of list.getEntries()) {
@@ -158,13 +168,35 @@ await page.addInitScript(() => {
   // An editor draws as its document parses and says so with this message;
   // its load event waits for images and fonts as well.
   addEventListener("message", (event) => {
-    if (event.data?.type !== "agent-native:editor-chrome-ready") return;
+    if (event.data?.type === "agent-native:editor-chrome-ready") {
+      for (const frame of document.querySelectorAll(
+        "iframe[data-design-preview-iframe]",
+      )) {
+        if ((frame as HTMLIFrameElement).contentWindow === event.source) {
+          frame.setAttribute("data-budget-loaded", "");
+        }
+      }
+      return;
+    }
+    if (event.data?.type !== "element-select") return;
     for (const frame of document.querySelectorAll(
       "iframe[data-design-preview-iframe]",
     )) {
-      if ((frame as HTMLIFrameElement).contentWindow === event.source) {
-        frame.setAttribute("data-budget-loaded", "");
-      }
+      if ((frame as HTMLIFrameElement).contentWindow !== event.source) continue;
+      const payload = event.data.payload as
+        | { sourceId?: unknown; tagName?: unknown }
+        | undefined;
+      const title = frame
+        .closest("[data-screen-shell]")
+        ?.querySelector("[data-frame-title]")
+        ?.getAttribute("title");
+      w.__budget.selectionEvents.push({
+        at: performance.now(),
+        screen: title ?? "",
+        sourceId: typeof payload?.sourceId === "string" ? payload.sourceId : "",
+        tagName: typeof payload?.tagName === "string" ? payload.tagName : "",
+      });
+      break;
     }
   });
   addEventListener("DOMContentLoaded", () => {
@@ -319,47 +351,71 @@ const zoomOf = () =>
     }
     return zoom;
   });
-async function zoomTo(target: number, anchor?: Locator): Promise<boolean> {
-  const distance = async () => Math.log((await zoomOf()) / target);
-  // A CI runner reads the zoom back several times slower than a laptop.
-  const giveUpAt = Date.now() + 60_000;
-  while (Date.now() < giveUpAt) {
-    const off = await distance();
-    if (Math.abs(off) < 0.06) {
-      await page.waitForTimeout(1500);
-      const actual = await zoomOf();
-      console.log(`  zoom ${target}% ended at ${actual}%`);
-      if (Math.abs(Math.log(actual / target)) < 0.15) {
-        return true;
-      }
-      continue;
-    }
-    // Keep each wheel below the mouse-notch cutoff (40px) so the camera
-    // classifies this entire continuous Ctrl+wheel gesture as a pinch.
-    const box = anchor ? await anchor.boundingBox() : null;
-    if (anchor && !box) throw new Error("Zoom anchor left the canvas");
-    const { x, y } = box
-      ? { x: box.x + box.width / 2, y: box.y + box.height / 2 }
-      : await canvasWheelPoint(page);
-    await page.mouse.move(x, y);
-    // Moving the pointer can expose a hover overlay at the former target.
-    const wheelPoint = await canvasWheelPoint(page, box ? { x, y } : undefined);
-    await cdp.send("Input.dispatchMouseEvent", {
-      type: "mouseWheel",
-      x: wheelPoint.x,
-      y: wheelPoint.y,
-      deltaX: 0,
-      deltaY: Math.sign(off) * Math.min(30, Math.max(2, Math.abs(off) * 40)),
-      modifiers: 2,
-    });
-    // Near the target, let the camera apply each step before reading again;
-    // otherwise a slow runner overshoots back and forth around it.
-    await new Promise((resolve) =>
-      setTimeout(resolve, Math.abs(off) < 0.3 ? 120 : 16),
+const zoomPercentFromUrl = () =>
+  page.evaluate(() => {
+    const raw = new URLSearchParams(location.search).get("zoom");
+    const zoom = raw === null ? Number.NaN : Number(raw);
+    return Number.isFinite(zoom) && zoom > 0 ? zoom : null;
+  });
+async function zoomTo(target: number): Promise<boolean> {
+  const startedAt = Date.now();
+  const deadline = startedAt + 10_000;
+  const remainingTimeout = () => Math.max(1, deadline - Date.now());
+  // This benchmark measures camera-driven rendering and preview churn; wheel
+  // forwarding is covered by interaction-pan-zoom-mouse.spec.ts.
+  const readout = page.getByRole("button", { name: /^\d+%$/ }).first();
+  const currentZoomPercent = await readZoomUntilAvailable(
+    zoomPercentFromUrl,
+    (ms) => page.waitForTimeout(ms),
+    deadline,
+    () => cdp.send("Runtime.terminateExecution"),
+  );
+  if (currentZoomPercent === null) return false;
+  // Overview zoom is normalized by board geometry, so compare the world
+  // transform with the exact route zoom instead of the rounded toolbar label.
+  const currentCanvasScale = await readZoomUntilAvailable(
+    zoomOf,
+    (ms) => page.waitForTimeout(ms),
+    deadline,
+    () => cdp.send("Runtime.terminateExecution"),
+  );
+  const expectedScale = expectedCanvasScaleAtZoomPercent(
+    currentCanvasScale,
+    currentZoomPercent,
+    target,
+  );
+  if (expectedScale === null) return false;
+  await readout.click({ timeout: remainingTimeout() });
+  const zoomInput = page.getByRole("textbox", { name: "Zoom percentage" });
+  await zoomInput.fill(`${target}%`, { timeout: remainingTimeout() });
+  await zoomInput.press("Enter", { timeout: remainingTimeout() });
+  const actual = await readZoomUntilAvailable(
+    async () => {
+      const zoom = await zoomOf();
+      const routeZoom = await zoomPercentFromUrl();
+      const label = (await readout.textContent())?.trim();
+      return zoom !== null &&
+        routeZoom === target &&
+        Math.abs(zoom - expectedScale) <=
+          Math.max(0.005, expectedScale * 0.001) &&
+        label === `${target}%`
+        ? zoom
+        : null;
+    },
+    (ms) => page.waitForTimeout(ms),
+    deadline,
+    () => cdp.send("Runtime.terminateExecution"),
+  );
+  const arrived = actual !== null;
+  if (!arrived) {
+    const actualZoom = await zoomOf();
+    const actualText =
+      actualZoom === null ? "unavailable" : `${actualZoom.toFixed(1)}%`;
+    console.log(
+      `  zoom ${target}% ended at ${actualText} with readout ${(await readout.textContent())?.trim() ?? "unavailable"} after ${Date.now() - startedAt}ms`,
     );
   }
-  console.log(`  zoom ${target}% ended at ${await zoomOf()}%`);
-  return false;
+  return arrived;
 }
 
 async function until(check: () => Promise<boolean>, timeoutMs = 30_000) {
@@ -369,6 +425,37 @@ async function until(check: () => Promise<boolean>, timeoutMs = 30_000) {
     await page.waitForTimeout(250);
   }
   return false;
+}
+
+async function panToViewportCenter(locator: ReturnType<Page["locator"]>) {
+  const viewport = page.viewportSize();
+  if (!viewport) throw new Error("browser viewport is unavailable");
+  let lastBox = await settledBox(locator);
+
+  for (let attempt = 0; attempt < 96; attempt += 1) {
+    // coercion-ok: The editor can reload during a camera move; this loop retries until it settles.
+    const box = await locator.boundingBox({ timeout: 500 }).catch(() => null);
+    if (!box) {
+      await page.waitForTimeout(30);
+      continue;
+    }
+    lastBox = box;
+    if (box && box.y >= 120 && box.y + box.height <= viewport.height - 120) {
+      return;
+    }
+
+    const centerY = viewport.height / 2;
+    await page.mouse.move(viewport.width / 2, centerY);
+    await page.mouse.wheel(
+      0,
+      box && box.y + box.height / 2 < centerY ? -120 : 120,
+    );
+    await page.waitForTimeout(30);
+  }
+
+  throw new Error(
+    `${locator} never moved into the canvas viewport; last box ${JSON.stringify(lastBox)} after 96 wheel ticks`,
+  );
 }
 
 // An editor can reboot while the board settles after a camera move, detaching
@@ -383,11 +470,60 @@ async function settledBox(locator: ReturnType<Page["locator"]>) {
   throw new Error(`${locator.toString()} never appeared`);
 }
 
+async function stableBox(locator: ReturnType<Page["locator"]>) {
+  const deadline = Date.now() + 10_000;
+  // coercion-ok: A transient preview reload detaches the locator; the bounded poll retries it.
+  let previous = await locator.boundingBox({ timeout: 500 }).catch(() => null);
+  let lastBox = previous;
+  let stableReads = 0;
+  while (Date.now() < deadline) {
+    // coercion-ok: A transient preview reload detaches the locator; the bounded poll retries it.
+    const box = await locator.boundingBox({ timeout: 500 }).catch(() => null);
+    if (
+      box &&
+      previous &&
+      Math.abs(box.x - previous.x) <= 0.5 &&
+      Math.abs(box.y - previous.y) <= 0.5 &&
+      Math.abs(box.width - previous.width) <= 0.5 &&
+      Math.abs(box.height - previous.height) <= 0.5
+    ) {
+      stableReads += 1;
+      if (stableReads >= 2) return box;
+    } else {
+      stableReads = 0;
+    }
+    previous = box;
+    if (box) lastBox = box;
+    await page.waitForTimeout(100);
+  }
+  throw new Error(
+    `${locator} did not settle; last box ${JSON.stringify(lastBox)}`,
+  );
+}
+
 const tree = page.getByRole("tree", { name: "Layers" });
 const editorFrame = (filename: string) =>
   page.frameLocator(
     `[data-screen-shell]:has([data-frame-title][title="${filename}" i]) iframe[data-design-preview-iframe]`,
   );
+async function waitForLiveEditor(filename: string) {
+  const selector = `[data-screen-shell]:has([data-frame-title][title="${filename}" i]) iframe[data-design-preview-iframe]`;
+  await page.waitForFunction(
+    (frameSelector) => {
+      const frame = document.querySelector<HTMLIFrameElement>(frameSelector);
+      const previewDocument = frame?.contentDocument;
+      return Boolean(
+        frame?.hasAttribute("data-budget-loaded") &&
+        previewDocument?.readyState === "complete" &&
+        previewDocument.querySelector(
+          '[data-agent-native-edit-overlay="shield"]',
+        ),
+      );
+    },
+    selector,
+    { timeout: 30_000 },
+  );
+}
 async function selectScreenRow(name: string) {
   // A deep selection expands its screen's whole subtree, burying the other
   // screens' rows. One page call: the button disables itself as rows collapse.
@@ -442,6 +578,7 @@ async function step(name: string, run: () => Promise<boolean>) {
     worstFrameByStep[name] ?? 0,
     await worstFrameSince(startedAt),
   );
+  return tookEffect;
 }
 
 const heapSeries = [await heapAfterGcMB(cdp)];
@@ -468,42 +605,87 @@ async function runSession() {
       .locator("main header h1")
       .first();
     await settledBox(heading);
-    if (!(await zoomTo(60, heading))) {
-      throw new Error("Heading-anchored setup zoom did not take effect");
+    if (
+      !(await step("initialZoomAndPan", async () => {
+        if (!(await zoomTo(60))) return false;
+        await page.keyboard.press("Escape");
+        await panToViewportCenter(heading);
+        return true;
+      }))
+    ) {
+      return;
     }
-    await page.waitForTimeout(2500);
 
-    await step("select", async () => {
-      await page.keyboard.press("Escape");
-      await editorFrame("dashboard-2.html")
-        .locator('[data-agent-native-edit-overlay="shield"]')
-        .first()
-        .waitFor({ state: "attached", timeout: 30_000 });
-      const target = await settledBox(heading);
-      await page.keyboard.down("ControlOrMeta");
-      await page.mouse.click(
-        target.x + target.width / 2,
-        target.y + target.height / 2,
-      );
-      await page.keyboard.up("ControlOrMeta");
-      await page
-        .getByRole("button", { name: "Typography details" })
-        .waitFor({ timeout: 10_000 });
-      return true;
-    });
+    if (
+      !(await step("select", async () => {
+        const modifier = process.platform === "darwin" ? "Meta" : "Control";
+        const details = page.getByRole("button", {
+          name: "Typography details",
+        });
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          await page.keyboard.press("Escape");
+          await waitForLiveEditor("dashboard-2.html");
+          const selectionCount = await page.evaluate(
+            () => (window as any).__budget.selectionEvents.length as number,
+          );
+          const target = await stableBox(heading);
+          await page.keyboard.down(modifier);
+          try {
+            await page.mouse.click(
+              target.x + target.width / 2,
+              target.y + target.height / 2,
+            );
+          } finally {
+            await page.keyboard.up(modifier);
+          }
+          const selected = await page
+            .waitForFunction(
+              ({ after, filename }) => {
+                const events = (window as any).__budget.selectionEvents.slice(
+                  after,
+                );
+                return events.some(
+                  (event: { screen: string; tagName: string }) =>
+                    event.screen === filename && event.tagName === "h1",
+                );
+              },
+              { after: selectionCount, filename: "dashboard-2.html" },
+              { timeout: 1_500 },
+            )
+            .then(
+              () => true,
+              () => false,
+            );
+          if (!selected) continue;
+          await details.waitFor({ timeout: 5_000 });
+          return true;
+        }
+        throw new Error(
+          "canvas click emitted no H1 selection for dashboard-2.html",
+        );
+      }))
+    ) {
+      return;
+    }
     const original = (await heading.textContent())?.trim() ?? "";
     await step("textEdit", async () => {
-      await page.keyboard.press("Enter");
+      const target = await settledBox(heading);
+      await page.mouse.dblclick(
+        target.x + target.width / 2,
+        target.y + target.height / 2,
+        { delay: 100 },
+      );
       await editorFrame("dashboard-2.html")
         .locator('[contenteditable="true"]')
         .first()
         .waitFor({ timeout: 10_000 });
-      await page.keyboard.press("ControlOrMeta+a");
+      const modifier = process.platform === "darwin" ? "Meta" : "Control";
+      await page.keyboard.press(`${modifier}+a`);
       await page.keyboard.type(`Budget ${iteration}`, { delay: 20 });
-      await page.keyboard.press("ControlOrMeta+Enter");
+      await page.keyboard.press(`${modifier}+Enter`);
       await page.waitForTimeout(1500);
       const edited = (await heading.textContent())?.trim();
-      await page.keyboard.press("ControlOrMeta+z");
+      await page.keyboard.press(`${modifier}+z`);
       await page.waitForTimeout(2000);
       return (
         edited === `Budget ${iteration}` &&
@@ -591,7 +773,7 @@ async function runSession() {
       return true;
     });
     await page.keyboard.press("Escape");
-    await zoomTo(8);
+    await step("finalZoom", () => zoomTo(8));
     heapSeries.push(await heapAfterGcMB(cdp));
   }
 }
@@ -599,6 +781,7 @@ async function runSession() {
 try {
   await runSession();
 } catch (error) {
+  console.error("runtime budget session failed", error);
   failedSteps.push(`session (${String(error).split("\n")[0]?.slice(0, 160)})`);
 }
 
