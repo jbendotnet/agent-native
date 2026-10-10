@@ -65,7 +65,7 @@ export interface ChatThreadShareLink extends ChatThreadShareState {
   url: string;
 }
 
-type ThreadTitleSource = "generated" | "extracted";
+type ThreadTitleSource = "fallback" | "generated" | "extracted";
 
 interface ForkSnapshotWithScope extends ChatThreadSnapshot {
   scope: ChatThreadScope | null;
@@ -292,6 +292,7 @@ function nextThreadTitle(
 ): string {
   if (options.preserveUserTitle && currentTitle) return currentTitle;
   if (source === "generated") return incomingTitle;
+  if (source === "fallback") return currentTitle || incomingTitle;
   if (!currentTitle && source === "extracted") return "";
   if (!currentTitle) return incomingTitle;
   if (!incomingTitle) return currentTitle;
@@ -1255,7 +1256,16 @@ export function useChatThreads(
 
   const isNewThread = useCallback(
     (id: string) => {
-      if (routeControlsActiveThread && routeThreadId === id) return false;
+      // A chat created this session stays new when the route adopts its id on
+      // its first save; treating it as a saved thread drops the surface into a
+      // restore-loading state until the thread list loads.
+      if (
+        routeControlsActiveThread &&
+        routeThreadId === id &&
+        !newlyCreatedRef.current.has(id)
+      ) {
+        return false;
+      }
       if (serverConfirmedThreadIdsRef.current.has(id)) return false;
       return newlyCreatedRef.current.has(id) || hasClientDraftThreadMarker(id);
     },

@@ -363,6 +363,7 @@ export function useCreateResource() {
       mimeType?: string;
       shared?: boolean;
       teamGroupId?: string;
+      uniqueSkillPath?: boolean;
     }) => {
       const res = await fetch(agentNativePath("/_agent-native/resources"), {
         method: "POST",

@@ -96,6 +96,21 @@ describe("authored content base", () => {
     expect(tracker.base(merged)).toEqual(authoredOn);
   });
 
+  it("keeps an external SQL snapshot off the authored base until the editor holds it", () => {
+    const tracker = createAuthoredContentBase();
+    tracker.edited(authoredOn.content);
+    const external = {
+      revision: "r2",
+      content: "Alpha. agent\\nBravo.",
+    };
+
+    tracker.adopted(external, authoredOn);
+
+    expect(tracker.base(external)).toEqual(authoredOn);
+    tracker.observed(external.content, external);
+    expect(tracker.base(external)).toEqual(external);
+  });
+
   it("keeps the merged save's own base when the editor reports its unchanged text again", () => {
     const tracker = afterMergedSave();
     // The page's local copy took the saved body with the answer, so the page
@@ -107,6 +122,20 @@ describe("authored content base", () => {
 
   it("releases the held base when the peer's text arrives alongside typing here", () => {
     const tracker = afterMergedSave();
+    tracker.observed("Alpha. peer\nBravo. mine more", merged);
+    expect(tracker.base(merged)).toEqual(merged);
+  });
+
+  it("releases the held base on a page an agent stored as blank-line Markdown", () => {
+    const tracker = createAuthoredContentBase();
+    const agentBody = { revision: "r1", content: "Alpha.\n\nBravo." };
+    tracker.edited("Alpha.\nBravo. mine");
+    tracker.saved({
+      saved: merged,
+      sentContent: "Alpha.\nBravo. mine",
+      authoredOn: agentBody,
+    });
+    expect(tracker.base(merged)).toEqual(agentBody);
     tracker.observed("Alpha. peer\nBravo. mine more", merged);
     expect(tracker.base(merged)).toEqual(merged);
   });
