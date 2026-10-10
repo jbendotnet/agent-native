@@ -95,11 +95,11 @@ test("trusted Ctrl-wheel stays on the canvas as live iframe screens move and zoo
         assert.equal(hit.screen, false);
         assert.notEqual(hit.tag, "IFRAME");
         await page.mouse.move(x, y);
-        await canvasWheelPoint(page, { x, y });
+        const wheelPoint = await canvasWheelPoint(page);
         await cdp.send("Input.dispatchMouseEvent", {
           type: "mouseWheel",
-          x,
-          y,
+          x: wheelPoint.x,
+          y: wheelPoint.y,
           deltaX: 0,
           deltaY:
             Math.sign(off) * Math.min(30, Math.max(2, Math.abs(off) * 40)),
@@ -121,6 +121,72 @@ test("trusted Ctrl-wheel stays on the canvas as live iframe screens move and zoo
       seen.every(
         ({ trusted, ctrl, target }) => trusted && ctrl && target !== "IFRAME",
       ),
+    );
+
+    const beforeMove = await canvasWheelPoint(page);
+    await page.evaluate(() => {
+      const surface = document.querySelector<HTMLElement>(
+        "[data-multi-screen-canvas-surface]",
+      )!;
+      surface.addEventListener(
+        "mousemove",
+        (event) => {
+          const overlay = document.createElement("span");
+          overlay.dataset.unknownOverlay = "";
+          const rect = surface.getBoundingClientRect();
+          overlay.style.cssText = `position:absolute;left:${event.clientX - rect.left - 10}px;top:${event.clientY - rect.top - 10}px;width:20px;height:20px;z-index:10`;
+          surface.append(overlay);
+        },
+        { once: true },
+      );
+    });
+    await page.mouse.move(beforeMove.x, beforeMove.y);
+    await assert.rejects(
+      canvasWheelPoint(page, beforeMove),
+      /Wheel point no longer hits the canvas surface/,
+    );
+    const afterMove = await canvasWheelPoint(page);
+    assert.notDeepEqual(afterMove, beforeMove);
+    assert.equal(
+      await page.evaluate(
+        ({ x, y }) =>
+          document.elementFromPoint(x, y) ===
+          document.querySelector("[data-multi-screen-canvas-surface]"),
+        afterMove,
+      ),
+      true,
+    );
+    const wheelCount = await page.evaluate(
+      () =>
+        (
+          window as typeof window & {
+            __wheelSeen: { trusted: boolean; ctrl: boolean; target: string }[];
+          }
+        ).__wheelSeen.length,
+    );
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x: afterMove.x,
+      y: afterMove.y,
+      deltaX: 0,
+      deltaY: 10,
+      modifiers: 2,
+    });
+    assert.deepEqual(
+      await page.evaluate(
+        (count) =>
+          (
+            window as typeof window & {
+              __wheelSeen: {
+                trusted: boolean;
+                ctrl: boolean;
+                target: string;
+              }[];
+            }
+          ).__wheelSeen.slice(count),
+        wheelCount,
+      ),
+      [{ trusted: true, ctrl: true, target: "DIV" }],
     );
 
     await page
