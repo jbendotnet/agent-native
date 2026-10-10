@@ -561,7 +561,7 @@ describe("MultiTabAssistantChat postMessage bridge", () => {
   let root: Root;
 
   it("does not display a missing stored binding as an explicit no-team chat", async () => {
-    expect(container.textContent).toContain("This chat: Unavailable");
+    expect(container.textContent).toContain("Team selection unavailable");
     threadMocks.threads = [{ ...threadMocks.threads[0], teamGroupId: null }];
     await act(async () => {
       root.render(<MultiTabAssistantChat storageKey="bridge-test" />);
@@ -608,7 +608,7 @@ describe("MultiTabAssistantChat postMessage bridge", () => {
         .querySelector('[data-testid="assistant-chat"]')
         ?.getAttribute("data-composer-submission-disabled"),
     ).toBe("true");
-    expect(container.textContent).toContain("This chat: Unavailable");
+    expect(container.textContent).toContain("Team selection unavailable");
   });
 
   beforeEach(async () => {
