@@ -6,8 +6,10 @@ import {
   setThreadArchived,
   setThreadPinned,
 } from "../../chat-threads/store.js";
+import { assertCanManageSharedResource } from "../../resources/script-helpers.js";
 import type { DatabaseToolsMode } from "../../scripts/db/tool-mode.js";
 import { dbExecToolParameters } from "../../scripts/db/tool-schemas.js";
+import { serializeCliArgs } from "../../scripts/parse-args.js";
 import { captureCliOutput } from "../cli-capture.js";
 import {
   getAmbientUserEmail,
@@ -23,25 +25,26 @@ function wrapCliScript(
     allowedArgs?: readonly string[];
     readOnly?: boolean;
     propagateErrors?: (args: Record<string, string>) => boolean;
+    needsApproval?: ActionEntry["needsApproval"];
+    allowPersistentApproval?: ActionEntry["allowPersistentApproval"];
   },
 ): ActionEntry {
   return {
     tool,
     ...(opts?.readOnly ? { readOnly: true as const } : {}),
+    ...(opts?.needsApproval !== undefined
+      ? { needsApproval: opts.needsApproval }
+      : {}),
+    ...(opts?.allowPersistentApproval !== undefined
+      ? { allowPersistentApproval: opts.allowPersistentApproval }
+      : {}),
     run: async (args: Record<string, string>): Promise<string> => {
-      const cliArgs: string[] = [];
-      for (const [k, v] of Object.entries(args)) {
+      for (const k of Object.keys(args)) {
         if (opts?.allowedArgs && !opts.allowedArgs.includes(k)) {
           throw new Error(`Unknown argument: ${k}`);
         }
-        const raw = v as unknown;
-        const value =
-          raw != null && typeof raw === "object"
-            ? JSON.stringify(raw)
-            : String(raw);
-        cliArgs.push(`--${k}`, value);
       }
-      return captureCliOutput(() => cliDefault(cliArgs), {
+      return captureCliOutput(() => cliDefault(serializeCliArgs(args)), {
         swallowErrors: !opts?.propagateErrors?.(args),
       });
     },
@@ -346,6 +349,19 @@ export function shouldDefaultResourceWriteToShared(path: string): boolean {
   return path.replace(/^\/+/, "") === "LEARNINGS.md";
 }
 
+function requiresSharedResourceApproval(
+  args: Record<string, unknown>,
+): boolean {
+  return (
+    ["write", "promote", "delete"].includes(String(args.action)) &&
+    (args.scope === "shared" ||
+      (args.action === "write" &&
+        args.scope == null &&
+        typeof args.path === "string" &&
+        shouldDefaultResourceWriteToShared(args.path)))
+  );
+}
+
 export async function createResourceScriptEntries(): Promise<
   Record<string, ActionEntry>
 > {
@@ -409,7 +425,7 @@ export async function createResourceScriptEntries(): Promise<
       resources: {
         tool: {
           description:
-            'Manage agent resources. List/read/write/delete team files with scope="team" and teamGroupId (current team members only); other scopes retain their existing behavior. Effective shows workspace -> organization/app -> personal inheritance. Promote makes agent scratch visible. Workspace writes are limited to local file mode control files.',
+            'Manage agent resources: list/read/write/delete team files with scope="team" and teamGroupId (current members only); inspect workspace -> org/app -> personal inheritance; write personal/shared resources (workspace only for local file mode controls); promote scratch; delete personal/shared resources (workspace controls only). Agent scratch stays hidden in Workspace; use visibility="workspace" only for files the user wants to keep/manage. Shared writes, promotions, and deletions require per-action approval.',
           parameters: {
             type: "object",
             properties: {
@@ -486,6 +502,8 @@ export async function createResourceScriptEntries(): Promise<
           description:
             "Plan mode allows listing and reading workspace resources.",
         },
+        needsApproval: requiresSharedResourceApproval,
+        allowPersistentApproval: false,
         run: async (args: Record<string, string>) => {
           const { action: a, ...rest } = args;
           if (
@@ -565,6 +583,7 @@ export async function createResourceScriptEntries(): Promise<
               );
               return `Promoted resource: ${promoted.path}`;
             }
+            if (scope === "shared") await assertCanManageSharedResource();
             const owner =
               scope === "shared"
                 ? store.sharedResourceOwner(getRequestOrgId())
@@ -607,10 +626,16 @@ export async function createResourceScriptEntries(): Promise<
       "save-memory": wrapCliScript(
         {
           description:
-            "Save a memory for future conversations. Creates or updates a memory file and its index entry. Use proactively when you learn preferences, corrections, project context, or references.",
+            "Save a memory for future conversations. Creates or updates a memory file and its index entry. Use proactively when you learn preferences, corrections, project context, or references. Organization-wide saves require approval for each write; personal is the default.",
           parameters: {
             type: "object",
             properties: {
+              scope: {
+                type: "string",
+                description:
+                  'Where to save the memory: "personal" (default) or "current-org" (organization-wide; requires approval).',
+                enum: ["personal", "current-org"],
+              },
               name: {
                 type: "string",
                 description:
@@ -636,6 +661,11 @@ export async function createResourceScriptEntries(): Promise<
           },
         },
         saveMem.default,
+        {
+          needsApproval: (args: Record<string, unknown>) =>
+            args.scope === "current-org",
+          allowPersistentApproval: false,
+        },
       ),
       "delete-memory": wrapCliScript(
         {

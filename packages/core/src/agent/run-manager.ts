@@ -4,6 +4,9 @@ import {
   BACKGROUND_SOFT_TIMEOUT_CEILING_MS,
   RUN_NO_PROGRESS_HARD_TIMEOUT_MS,
 } from "../app-config/run-lifecycle-invariants.js";
+import { recordAgentRun } from "../observability/metrics.js";
+import { parseServiceIdentityEmail } from "../org/service-identity.js";
+import { ServicePrincipalRefusedError } from "../org/service-principal-guard.js";
 import { captureError } from "../server/capture-error.js";
 import {
   isLlmCredentialError,
@@ -15,6 +18,8 @@ import {
   describeErrorWithCauses,
   isProviderConnectionError,
 } from "./engine/error-detail.js";
+import { runErrorTelemetryProperties } from "./engine/error-telemetry.js";
+import { getAgentEngineEntry } from "./engine/registry.js";
 import { EngineError } from "./engine/types.js";
 import type { EngineRequestShape } from "./engine/types.js";
 import {
@@ -308,6 +313,15 @@ export interface StartRunOptions {
   userId?: string;
   attemptCount?: number;
   recoverChunkBoundaries?: boolean;
+  persistEvent?: (
+    write: () => Promise<void>,
+    metadata: {
+      terminal: boolean;
+      runId: string;
+      seq: number;
+      eventData: string;
+    },
+  ) => Promise<void>;
 }
 
 export interface RunChunkControl {
@@ -520,8 +534,6 @@ function terminalReasonForRun(
   return "done";
 }
 
-const MAX_RUN_ERROR_DETAIL_LENGTH = 500;
-
 function emitRunBoundaryTrackingEvent(args: {
   runId: string;
   threadId: string;
@@ -573,7 +585,6 @@ function emitRunTerminalTrackingEvent(args: {
   status: "completed" | "errored" | "aborted" | "truncated";
   terminalReason: string;
   errorCode?: string;
-  errorDetail?: string;
   dispatchMode?: string;
   abortReason?: string;
   durationMs: number;
@@ -582,6 +593,20 @@ function emitRunTerminalTrackingEvent(args: {
   userId?: string;
   attemptCount?: number;
 }): void {
+  try {
+    recordAgentRun({
+      status: args.status,
+      terminalReason: args.terminalReason,
+      requestModel: args.model,
+      providerName: args.engineName,
+      supportedModels: args.engineName
+        ? getAgentEngineEntry(args.engineName)?.supportedModels
+        : undefined,
+    });
+    // coercion-ok: metrics must never affect the agent run or its status.
+  } catch {
+    // Metrics must never affect the agent run or its persisted status.
+  }
   const properties: Record<string, unknown> = {
     source: "agent_run_manager",
     run_id: args.runId,
@@ -590,11 +615,7 @@ function emitRunTerminalTrackingEvent(args: {
     status: args.status,
     terminal_reason: args.terminalReason,
     error_code: args.errorCode,
-    error_detail: args.errorDetail
-      ? args.errorDetail.length > MAX_RUN_ERROR_DETAIL_LENGTH
-        ? `${args.errorDetail.slice(0, MAX_RUN_ERROR_DETAIL_LENGTH)}…`
-        : args.errorDetail
-      : undefined,
+    ...(args.errorCode ? runErrorTelemetryProperties(args.errorCode) : {}),
     dispatch_mode: args.dispatchMode,
     abort_reason: args.abortReason,
     duration_ms: args.durationMs,
@@ -801,14 +822,19 @@ export function startRun(
             : {}),
         }
       : undefined;
+  const servicePrincipalRunStart = Boolean(
+    options?.turnInitiator &&
+    parseServiceIdentityEmail(options.turnInitiator.email),
+  );
   const insertRunPromise = (
-    options?.runRowAlreadyInserted
+    options?.runRowAlreadyInserted && !servicePrincipalRunStart
       ? Promise.resolve()
       : insertOptions
         ? insertRun(runId, threadId, options?.turnId, insertOptions)
         : insertRun(runId, threadId, options?.turnId)
   ).catch((error) => {
     captureRunPersistenceError(error, "insert-run");
+    if (error instanceof ServicePrincipalRefusedError) throw error;
   });
 
   let persistenceChain: Promise<void> = Promise.resolve();
@@ -1305,6 +1331,7 @@ export function startRun(
     captureError(error, {
       route: "/_agent-native/agent-chat",
       aiTraceId: runId,
+      errorMessagePolicy: "omit",
       tags: {
         source: "agent-run-manager",
         phase,
@@ -1342,6 +1369,19 @@ export function startRun(
     });
   };
 
+  const persistRunEvent = (runEvent: RunEvent): Promise<void> => {
+    const eventData = JSON.stringify(runEvent.event);
+    const write = () => insertRunEvent(runId, runEvent.seq, eventData);
+    return options?.persistEvent
+      ? options.persistEvent(write, {
+          terminal: isTerminalRunEvent(runEvent.event),
+          runId,
+          seq: runEvent.seq,
+          eventData,
+        })
+      : write();
+  };
+
   const emitRunEvent = (
     runEvent: RunEvent,
     options?: { surfacePersistenceError?: boolean },
@@ -1364,11 +1404,7 @@ export function startRun(
 
     const thisInsert = persistenceChain.then(async () => {
       try {
-        await insertRunEvent(
-          runId,
-          runEvent.seq,
-          JSON.stringify(runEvent.event),
-        );
+        await persistRunEvent(runEvent);
       } catch (error) {
         if (!eventPersistenceErrorCaptured) {
           eventPersistenceErrorCaptured = true;
@@ -1377,11 +1413,7 @@ export function startRun(
             eventType: runEvent.event.type,
           });
         }
-        await insertRunEvent(
-          runId,
-          runEvent.seq,
-          JSON.stringify(runEvent.event),
-        );
+        await persistRunEvent(runEvent);
       }
     });
     persistenceChain = thisInsert;
@@ -1406,7 +1438,15 @@ export function startRun(
     void emitRunEvent(runEvent);
   };
 
-  const runPromise = runFn(send, runControl.chunkSignal, runControl)
+  const runPromise = (
+    servicePrincipalRunStart
+      ? insertRunPromise.then(() => {
+          if (!abort.signal.aborted) {
+            return runFn(send, runControl.chunkSignal, runControl);
+          }
+        })
+      : runFn(send, runControl.chunkSignal, runControl)
+  )
     .then(() => {
       settleBoundary(false);
       if (abort.signal.aborted) {
@@ -1437,8 +1477,8 @@ export function startRun(
         ...(err instanceof EngineError && err.upgradeUrl
           ? { upgradeUrl: err.upgradeUrl }
           : {}),
-        ...(err instanceof EngineError && err.providerRetryable === true
-          ? { providerRetryable: true }
+        ...(err instanceof EngineError && err.providerRetryable !== undefined
+          ? { providerRetryable: err.providerRetryable }
           : {}),
         ...(err instanceof EngineError && err.contextOverflow === true
           ? { contextOverflow: true }
@@ -1450,23 +1490,25 @@ export function startRun(
       let terminalPersistenceError: unknown = null;
       let eventPersistenceError: unknown = null;
       let runTerminalErrorCode: string | undefined;
-      let runTerminalErrorDetail: string | undefined;
       let terminalPersistenceEstablished = false;
       try {
         await persistenceChain;
       } catch (error) {
         eventPersistenceError = error;
-        run.status = "errored";
-        pendingTerminalEvent = {
-          seq: run.events.length,
-          event: {
-            type: "error",
-            error: "Agent run ended unexpectedly",
-            errorCode: "run_event_persistence_failed",
-          },
-        };
+        if (run.status !== "aborted") {
+          run.status = "errored";
+          pendingTerminalEvent = {
+            seq: run.events.length,
+            event: {
+              type: "error",
+              error: "Agent run ended unexpectedly",
+              errorCode: "run_event_persistence_failed",
+            },
+          };
+        }
       }
       const resolveTerminalEventForCompletion = () => {
+        if (run.status === "aborted") return null;
         if (eventPersistenceError) return pendingTerminalEvent;
         const continuationTerminalEvent = run.continuationTerminalEvent
           ? {
@@ -1537,14 +1579,15 @@ export function startRun(
       if (unfinishedTurnContinuationEvent) {
         terminalEvent = unfinishedTurnContinuationEvent;
       }
-      const terminalReason = eventPersistenceError
-        ? "error:run_event_persistence_failed"
-        : terminalReasonForRun(
-            finalStatus,
-            terminalEvent,
-            run.abortReason,
-            completionError,
-          );
+      const terminalReason =
+        eventPersistenceError && finalStatus !== "aborted"
+          ? "error:run_event_persistence_failed"
+          : terminalReasonForRun(
+              finalStatus,
+              terminalEvent,
+              run.abortReason,
+              completionError,
+            );
       const persistedStatus =
         finalStatus === "completed" &&
         isContinuationTerminalReason(terminalReason)
@@ -1590,11 +1633,7 @@ export function startRun(
             );
             if (!eventPersistenceError) {
               try {
-                await insertRunEvent(
-                  runId,
-                  terminal.seq,
-                  JSON.stringify(terminal.event),
-                );
+                await persistRunEvent(terminal);
                 terminalPersistenceError = null;
               } catch (retryError) {
                 terminalPersistenceError = retryError;
@@ -1675,7 +1714,6 @@ export function startRun(
         }
         errorCode ??= classifyTerminalErrorCode(errorDetail);
         runTerminalErrorCode = errorCode ?? "unknown";
-        runTerminalErrorDetail = errorDetail;
         await setRunError(runId, errorCode ?? "unknown", errorDetail);
       }
 
@@ -1703,7 +1741,6 @@ export function startRun(
           status: persistedStatus,
           terminalReason,
           errorCode: runTerminalErrorCode,
-          errorDetail: runTerminalErrorDetail,
           dispatchMode: options?.dispatchMode,
           abortReason: run.abortReason,
           durationMs: Date.now() - run.startedAt,

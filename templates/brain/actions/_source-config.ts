@@ -2,18 +2,19 @@ import { fail } from "@agent-native/core/action";
 import { z } from "zod";
 
 import {
-  normalizeZoomMeetingId,
-  normalizeZoomMeetingTopic,
-} from "../server/lib/zoom.js";
-import {
   describeSourceConfigIssues,
   validateSourceConfig,
 } from "../shared/source-config-validation.js";
+import {
+  normalizeZoomMeetingId,
+  normalizeZoomMeetingTopic,
+} from "../shared/zoom-meeting-filter.js";
 
 const zoomSourceConfigSchema = z
   .object({
     userIds: z.array(z.string().trim().min(1)).max(50).optional(),
     lookbackDays: z.number().int().min(1).max(30).optional(),
+    includeSummaries: z.boolean().optional(),
     meetingIds: z
       .array(
         z
@@ -50,7 +51,7 @@ function assertValidZoomConfig(config: Record<string, unknown>) {
       .map((issue) => `${issue.field} ${issue.message}`)
       .join(
         "; ",
-      )}. Use {"zoom":{"meetingIds":["123 4567 8901"],"meetingTopics":["Weekly Sync"],"userIds":["user@example.com"],"lookbackDays":7}} with up to 100 meeting IDs or titles, up to 50 user IDs, and 1-30 lookback days.`,
+      )}. Use {"zoom":{"meetingIds":["123 4567 8901"],"meetingTopics":["Weekly Sync"],"userIds":["user@example.com"],"lookbackDays":7,"includeSummaries":true}} with up to 100 meeting IDs or titles, up to 50 user IDs, 1-30 lookback days, and includeSummaries true or false.`,
     {
       errorCode: "invalid_source_config",
       details: { issues },
