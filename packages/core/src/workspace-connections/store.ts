@@ -329,6 +329,52 @@ function workspaceConnectionGrantsTable(): string {
   return "public.workspace_connection_grants";
 }
 
+export async function removeWorkspaceUserGroupFromConnections(
+  tx: DbExec,
+  orgId: string,
+  groupId: string,
+): Promise<void> {
+  const table = workspaceConnectionsTable();
+  const { rows } = await tx.execute({
+    sql: `SELECT id, allowed_user_groups_json, allowed_users_json FROM ${table} WHERE org_id = ? ORDER BY id DESC FOR UPDATE`,
+    args: [orgId],
+  });
+  for (const row of rows) {
+    const entry = row as Record<string, unknown>;
+    const allowed = JSON.parse(String(entry.allowed_user_groups_json));
+    if (
+      !Array.isArray(allowed) ||
+      allowed.some((id) => typeof id !== "string")
+    ) {
+      throw new Error(
+        `Invalid user group allow-list on workspace connection "${entry.id}".`,
+      );
+    }
+    if (!allowed.includes(groupId)) continue;
+    const remaining = allowed.filter((id) => id !== groupId);
+    const allowedUsers = JSON.parse(String(entry.allowed_users_json));
+    if (
+      !Array.isArray(allowedUsers) ||
+      allowedUsers.some((email) => typeof email !== "string")
+    ) {
+      throw new Error(
+        `Invalid user allow-list on workspace connection "${entry.id}".`,
+      );
+    }
+    await tx.execute({
+      sql: `UPDATE ${table} SET allowed_user_groups_json = ?, status = CASE WHEN ? AND ? THEN 'disabled' ELSE status END, updated_at = ? WHERE id = ? AND org_id = ?`,
+      args: [
+        JSON.stringify(remaining),
+        remaining.length === 0,
+        allowedUsers.length === 0,
+        Date.now(),
+        entry.id,
+        orgId,
+      ],
+    });
+  }
+}
+
 export async function ensureWorkspaceConnectionsTable(): Promise<void> {
   if (!_initPromise) {
     _initPromise = (async () => {

@@ -12,11 +12,14 @@ export {
   listWorkspaceUserGroups,
   listWorkspaceUserGroupsForOrg,
   normalizeWorkspaceUserGroupIds,
+  getWorkspaceTeamForMember,
+  setWorkspaceTeamLeads,
   updateWorkspaceUserGroupMembers,
   upsertWorkspaceUserGroup,
   workspaceUserGroupsIncludeUser,
   type UpsertWorkspaceUserGroupInput,
   type UpdateWorkspaceUserGroupMembersInput,
+  type SetWorkspaceTeamLeadsInput,
   type WorkspaceUserGroup,
 } from "./groups.js";
 
