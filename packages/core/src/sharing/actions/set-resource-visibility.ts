@@ -5,6 +5,7 @@ import { defineAction } from "../../action.js";
 import { getAppConfig } from "../../app-config/index.js";
 import { invalidateCollabAccessCache } from "../../server/poll.js";
 import { track } from "../../tracking/registry.js";
+import { getWorkspaceTeamForMember } from "../../workspace-connections/groups.js";
 import {
   assertAccess,
   currentAccess,
@@ -57,10 +58,29 @@ export default defineAction({
       args.resourceId,
       "admin",
     );
+    const rawAccess = currentAccess();
+    if (
+      args.resourceType === "chat_thread" &&
+      access.resource?.teamGroupId &&
+      (args.visibility !== "private" ||
+        !rawAccess.userEmail ||
+        rawAccess.userEmail.trim().toLowerCase() !==
+          access.resource.ownerEmail?.trim().toLowerCase() ||
+        !access.resource.orgId ||
+        rawAccess.orgId !== access.resource.orgId ||
+        !(await getWorkspaceTeamForMember(
+          access.resource.orgId,
+          access.resource.teamGroupId,
+          rawAccess.userEmail,
+        )))
+    ) {
+      throw new ForbiddenError(
+        "Bound conversations cannot be made visible outside their explicit team share.",
+      );
+    }
     const visibilityChanged = access.resource?.visibility !== args.visibility;
     const db = reg.getDb() as any;
     const update: Record<string, unknown> = { visibility: args.visibility };
-    const rawAccess = currentAccess();
     const currentOrgId = resolveRegisteredAccessContext(reg, rawAccess).orgId;
     if (args.visibility === "org" && !access.resource?.orgId) {
       if (!currentOrgId) {

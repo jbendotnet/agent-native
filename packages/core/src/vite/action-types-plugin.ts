@@ -117,6 +117,34 @@ const CORE_SHARING_ACTIONS: Array<{ name: string; specifier: string }> = [
     specifier: "@agent-native/core/sharing/actions/share-resource",
   },
   {
+    name: "share-chat-thread-with-team",
+    specifier:
+      "@agent-native/core/chat-threads/actions/share-chat-thread-with-team",
+  },
+  {
+    name: "unshare-chat-thread-from-team",
+    specifier:
+      "@agent-native/core/chat-threads/actions/unshare-chat-thread-from-team",
+  },
+  {
+    name: "list-team-shared-chat-threads",
+    specifier:
+      "@agent-native/core/chat-threads/actions/list-team-shared-chat-threads",
+  },
+  {
+    name: "get-chat-thread-capabilities",
+    specifier:
+      "@agent-native/core/chat-threads/actions/get-chat-thread-capabilities",
+  },
+  {
+    name: "list-chat-thread-runs",
+    specifier: "@agent-native/core/chat-threads/actions/list-chat-thread-runs",
+  },
+  {
+    name: "get-chat-thread-run",
+    specifier: "@agent-native/core/chat-threads/actions/get-chat-thread-run",
+  },
+  {
     name: "unshare-resource",
     specifier: "@agent-native/core/sharing/actions/unshare-resource",
   },

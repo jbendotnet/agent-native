@@ -446,6 +446,30 @@ export async function mergeCoreSharingActions(
   registry: Record<string, ActionEntry>,
 ): Promise<void> {
   const entries: Array<[string, () => Promise<any>]> = [
+    [
+      "share-chat-thread-with-team",
+      () => import("../chat-threads/actions/share-chat-thread-with-team.js"),
+    ],
+    [
+      "unshare-chat-thread-from-team",
+      () => import("../chat-threads/actions/unshare-chat-thread-from-team.js"),
+    ],
+    [
+      "list-team-shared-chat-threads",
+      () => import("../chat-threads/actions/list-team-shared-chat-threads.js"),
+    ],
+    [
+      "get-chat-thread-capabilities",
+      () => import("../chat-threads/actions/get-chat-thread-capabilities.js"),
+    ],
+    [
+      "list-chat-thread-runs",
+      () => import("../chat-threads/actions/list-chat-thread-runs.js"),
+    ],
+    [
+      "get-chat-thread-run",
+      () => import("../chat-threads/actions/get-chat-thread-run.js"),
+    ],
     ["share-resource", () => import("../sharing/actions/share-resource.js")],
     [
       "unshare-resource",

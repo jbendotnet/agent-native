@@ -14,6 +14,7 @@ import {
 import { ensureIndexExists, ensureTableExists } from "../db/ddl-guard.js";
 import { isMigrationAuthorizedRuntime } from "../db/migration-runtime.js";
 import { isOrgMember } from "../org/membership.js";
+import { invalidateCollabAccessCacheForGroupChange } from "../server/poll.js";
 import {
   getRequestOrgId,
   getRequestUserEmail,
@@ -413,7 +414,7 @@ async function mutateWorkspaceUserGroup(
     );
   }
   await ensureAuditTables();
-  return client.transaction(async (tx) => {
+  const result = await client.transaction(async (tx) => {
     const memberships = await lockCurrentOrgMembers(tx, orgId, [
       actor,
       ...memberEmails,
@@ -456,6 +457,36 @@ async function mutateWorkspaceUserGroup(
       before?.leadEmails.filter((email) => !after.leadEmails.includes(email)) ??
       [];
     const converted = !before?.isTeam && after.isTeam;
+    if (converted) {
+      const { rows: tables } = await tx.execute({
+        sql: "SELECT to_regclass('chat_threads') AS threads, to_regclass('chat_thread_shares') AS shares",
+        args: [],
+      });
+      if (tables[0]?.threads && tables[0]?.shares) {
+        await tx.execute({
+          sql: `SELECT t.id FROM chat_threads t JOIN chat_thread_shares s ON s.resource_id = t.id
+            WHERE t.org_id = ? AND s.principal_type = 'group' AND s.principal_id = ?
+            ORDER BY t.id FOR UPDATE OF t`,
+          args: [orgId, after.id],
+        });
+        const { rows: conflicts } = await tx.execute({
+          sql: `SELECT 1 FROM chat_thread_shares s
+            JOIN chat_threads t ON t.id = s.resource_id AND t.org_id = ?
+            JOIN workspace_user_groups g ON g.id = s.principal_id AND g.org_id = ? AND g.is_team = true
+            WHERE s.principal_type = 'group' AND s.principal_id <> ?
+              AND EXISTS (SELECT 1 FROM chat_thread_shares candidate
+                WHERE candidate.resource_id = t.id AND candidate.principal_type = 'group' AND candidate.principal_id = ?)
+            LIMIT 1`,
+          args: [orgId, orgId, after.id, after.id],
+        });
+        if (conflicts.length) {
+          fail(
+            "Convert only after removing conflicting conversation team shares.",
+            { statusCode: 409 },
+          );
+        }
+      }
+    }
     if (
       addedMembers.length ||
       removedMembers.length ||
@@ -494,6 +525,8 @@ async function mutateWorkspaceUserGroup(
     }
     return after;
   });
+  invalidateCollabAccessCacheForGroupChange();
+  return result;
 }
 
 async function lockCurrentOrgMembers(
@@ -801,7 +834,7 @@ export async function deleteWorkspaceUserGroup(
       "Workspace user group changes require database transactions.",
     );
   }
-  return client.transaction(async (tx) => {
+  const deleted = await client.transaction(async (tx) => {
     const memberships = await lockCurrentOrgMembers(tx, normalizedOrgId, [
       requestScope.userEmail,
     ]);
@@ -822,6 +855,8 @@ export async function deleteWorkspaceUserGroup(
     });
     return result.rowsAffected > 0;
   });
+  if (deleted) invalidateCollabAccessCacheForGroupChange();
+  return deleted;
 }
 
 export async function getWorkspaceTeamForMember(

@@ -109,6 +109,11 @@ const designId = values.design ?? seededDesignId!;
 const sessionStartedAt = Date.now();
 
 const browser = await chromium.launch({ headless: !values.headed });
+console.log("runtime browser:", {
+  version: browser.version(),
+  executablePath: chromium.executablePath(),
+  headless: !values.headed,
+});
 const context = await browser.newContext({
   viewport: { width: 1280, height: 720 },
   deviceScaleFactor: 2,

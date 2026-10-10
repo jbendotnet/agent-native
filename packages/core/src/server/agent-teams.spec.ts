@@ -23,17 +23,24 @@ const withTaskThread = <T>(
   runWithRequestContext({ userEmail: "alice@example.com", orgId }, async () => {
     registerChatThreadsShareable();
     await getDbExec().execute({
-      sql: "CREATE TABLE IF NOT EXISTS org_members (org_id TEXT, email TEXT, role TEXT DEFAULT 'member', federation_removal_pending_at BIGINT)",
+      sql: "CREATE TABLE IF NOT EXISTS org_members (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, email TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', joined_at BIGINT NOT NULL, federation_removal_pending_at BIGINT)",
       args: [],
     });
     await getDbExec().execute({
-      sql: "CREATE TABLE IF NOT EXISTS workspace_user_groups (id TEXT, org_id TEXT, is_team BOOLEAN, member_emails_json TEXT)",
+      sql: "CREATE TABLE IF NOT EXISTS workspace_user_groups (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', normalized_name TEXT, member_emails_json TEXT NOT NULL DEFAULT '[]', is_team BOOLEAN NOT NULL DEFAULT false, lead_emails_json TEXT NOT NULL DEFAULT '[]', created_by_email TEXT NOT NULL DEFAULT '', created_at BIGINT NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL DEFAULT 0)",
       args: [],
     });
     if (orgId) {
       await getDbExec().execute({
-        sql: "INSERT INTO org_members (org_id, email) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM org_members WHERE org_id = ? AND email = ?)",
-        args: [orgId, "alice@example.com", orgId, "alice@example.com"],
+        sql: "INSERT INTO org_members (id, org_id, email, joined_at) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM org_members WHERE org_id = ? AND email = ?)",
+        args: [
+          `member-${orgId}-alice`,
+          orgId,
+          "alice@example.com",
+          Date.now(),
+          orgId,
+          "alice@example.com",
+        ],
       });
     }
     await createThread("alice@example.com", { id: threadId });
@@ -299,22 +306,22 @@ describe("agent teams message queue", () => {
     } = await import("./agent-teams.js");
     registerChatThreadsShareable();
     await db.execute({
-      sql: "CREATE TABLE IF NOT EXISTS org_members (org_id TEXT, email TEXT, role TEXT DEFAULT 'member', federation_removal_pending_at BIGINT)",
+      sql: "CREATE TABLE IF NOT EXISTS org_members (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, email TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', joined_at BIGINT NOT NULL, federation_removal_pending_at BIGINT)",
       args: [],
     });
     await db.execute({
-      sql: "CREATE TABLE IF NOT EXISTS workspace_user_groups (id TEXT, org_id TEXT, is_team BOOLEAN, member_emails_json TEXT)",
+      sql: "CREATE TABLE IF NOT EXISTS workspace_user_groups (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', normalized_name TEXT, member_emails_json TEXT NOT NULL DEFAULT '[]', is_team BOOLEAN NOT NULL DEFAULT false, lead_emails_json TEXT NOT NULL DEFAULT '[]', created_by_email TEXT NOT NULL DEFAULT '', created_at BIGINT NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL DEFAULT 0)",
       args: [],
     });
     try {
       for (const email of [owner, viewer]) {
         await db.execute({
-          sql: "INSERT INTO org_members (org_id, email) VALUES (?, ?)",
-          args: [orgId, email],
+          sql: "INSERT INTO org_members (id, org_id, email, joined_at) VALUES (?, ?, ?, ?)",
+          args: [`member-${orgId}-${email}`, orgId, email, Date.now()],
         });
       }
       await db.execute({
-        sql: "INSERT INTO workspace_user_groups (id, org_id, is_team, member_emails_json) VALUES (?, ?, true, ?)",
+        sql: "INSERT INTO workspace_user_groups (id, org_id, name, is_team, member_emails_json) VALUES (?, ?, 'Task team', true, ?)",
         args: [teamId, orgId, JSON.stringify([owner, viewer])],
       });
       await as(owner, () =>

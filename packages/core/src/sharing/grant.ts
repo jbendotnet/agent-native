@@ -2,12 +2,16 @@ import { and, eq, inArray, ne, sql, type SQL } from "drizzle-orm";
 import { drizzle as drizzleProxy } from "drizzle-orm/pg-proxy";
 
 import { fail } from "../action.js";
+import { withChatThreadGroupMutationLock } from "../chat-threads/team-sharing.js";
 import { getDbExec, getScopedDbExec } from "../db/client.js";
 import type { ExtensionChangeTarget } from "../extensions/change-marker.js";
 import { isOrgMember } from "../org/membership.js";
 import { invalidateCollabAccessCache } from "../server/poll.js";
 import { getRequestUserEmail } from "../server/request-context.js";
-import { assertWorkspaceUserGroupIds } from "../workspace-connections/groups.js";
+import {
+  assertWorkspaceUserGroupIds,
+  listWorkspaceUserGroupsForOrg,
+} from "../workspace-connections/groups.js";
 import { assertAccess, ForbiddenError } from "./access.js";
 import {
   getExtensionShareChangeTargets,
@@ -124,12 +128,30 @@ export interface GrantResourceAccessResult {
 export async function grantResourceAccess(
   input: GrantResourceAccessInput,
 ): Promise<GrantResourceAccessResult> {
+  if (input.resourceType === "chat_thread" && input.principalType === "group") {
+    return withChatThreadGroupMutationLock(
+      input.resourceId,
+      input.principalId,
+      () => grantResourceAccessLocked(input),
+    );
+  }
+  return grantResourceAccessLocked(input);
+}
+
+async function grantResourceAccessLocked(
+  input: GrantResourceAccessInput,
+): Promise<GrantResourceAccessResult> {
   const reg = requireShareableResource(input.resourceType);
   const access = await assertAccess(
     input.resourceType,
     input.resourceId,
     "admin",
   );
+  if (input.resourceType === "chat_thread" && access.resource?.teamGroupId) {
+    throw new ForbiddenError(
+      "Bound conversations can only be shared with their team through share-chat-thread-with-team.",
+    );
+  }
   const actor = getRequestUserEmail();
   if (!actor) throw new ForbiddenError("Not signed in");
   const principalId = normalizePrincipalId(
@@ -158,6 +180,15 @@ export async function grantResourceAccess(
     } catch {
       throw new ForbiddenError(
         `${reg.displayName} can only be shared with a group from its own organization.`,
+      );
+    }
+    if (
+      input.resourceType === "chat_thread" &&
+      (await listWorkspaceUserGroupsForOrg(resourceOrgId, [principalId]))[0]
+        ?.isTeam
+    ) {
+      throw new ForbiddenError(
+        "Share conversations with a team through share-chat-thread-with-team.",
       );
     }
   }

@@ -8,6 +8,7 @@ import {
   captureException,
   trackEvent,
 } from "@agent-native/core/client/analytics";
+import { useActionQuery } from "@agent-native/core/client/hooks";
 import { useT } from "@agent-native/core/client/i18n";
 import {
   AgentMessageView,
@@ -49,7 +50,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -60,6 +61,11 @@ import {
 } from "@/components/ui/tooltip";
 import { APP_TITLE } from "@/lib/app-config";
 import { consumeChatHomeThreadId } from "@/lib/chat-home-thread";
+import {
+  CHAT_THREAD_ACCESS_DENIED_EVENT,
+  chatThreadAccessState,
+  isThreadAccessDenied,
+} from "@/lib/chat-thread-access";
 import { TAB_ID } from "@/lib/tab-id";
 
 function chatThreadPath(threadId: string | null) {
@@ -100,7 +106,36 @@ function ChatThreadRouteContent({
   navigate: ReturnType<typeof useNavigate>;
 }) {
   const t = useT();
+  const [searchParams] = useSearchParams();
+  const selectedRunId = searchParams.get("runId");
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const isDraft =
+    typeof window !== "undefined" &&
+    window.localStorage?.getItem(
+      `agent-chat-client-draft-thread:${encodeURIComponent(resolvedThreadId)}`,
+    ) === "1";
+  const access = useActionQuery<{
+    canRead: boolean;
+    canContinue: boolean;
+    canManage: boolean;
+  }>(
+    "get-chat-thread-capabilities",
+    { threadId: resolvedThreadId },
+    { enabled: !isDraft, refetchOnWindowFocus: "always", staleTime: 0 },
+  );
+  const { canRead, refreshing, readOnly } = chatThreadAccessState(
+    isDraft,
+    access,
+  );
+  useEffect(() => {
+    if (!isDraft && access.isError && isThreadAccessDenied(access.error)) {
+      window.dispatchEvent(
+        new CustomEvent(CHAT_THREAD_ACCESS_DENIED_EVENT, {
+          detail: { threadId: resolvedThreadId },
+        }),
+      );
+    }
+  }, [isDraft, access.isError, access.error, resolvedThreadId]);
 
   const [transport] = useState(() =>
     createAgentNativeAgentKitTransport({
@@ -110,71 +145,143 @@ function ChatThreadRouteContent({
     }),
   );
 
-  return (
-    <div
-      className="relative flex h-full min-h-0 overflow-hidden bg-background"
-      data-agent-chat-workspace-state={workspaceOpen ? "open" : "closed"}
-    >
+  if (!canRead) {
+    return (
       <div
-        className={`agent-kit-chat-canvas-body min-w-0 flex-none ${
-          workspaceOpen ? "agent-kit-chat-canvas-body--workspace-open" : ""
-        }`}
+        className="p-4"
+        role={access.isPending || access.isFetching ? "status" : "alert"}
       >
-        <CoreComposerRuntimeProvider>
-          <CoreAgentKitRoot
-            transport={transport}
-            clientOptions={{
-              transportOwnership: "owned",
-              retainActiveRunsOnThreadRelease: true,
-              onIntegrityReport: reportStreamIntegrity,
-            }}
-            threadId={resolvedThreadId}
-            labels={{
-              composerPlaceholder: t("chat.composerPlaceholder"),
-              continueRun: t("agentChat.common.continue"), // i18n-key-ignore shared framework catalog
-              continueRunUnavailable: t(
-                // i18n-key-ignore shared framework catalog
-                "agentChat.recovery.continueUnavailable",
-              ),
-            }}
-            slots={{
-              emptyState: ChatEmptyState,
-              message: ChatMessage,
-              messageSupplement: ChatMcpConnectionSuggestion,
-              runFailure: ChatRunFailure,
-              connectionRequest: ChatMcpConnectionRequest,
-              footer: ChatAgentFooter,
-            }}
-            onThreadForked={(thread) => navigate(chatThreadPath(thread.id))}
-          >
-            <ChatLifecycleTracking threadId={resolvedThreadId} />
-            <ChatMcpConnectionResume />
-            <ChatCanvas
-              workspaceOpen={workspaceOpen}
-              setWorkspaceOpen={setWorkspaceOpen}
-            />
-          </CoreAgentKitRoot>
-        </CoreComposerRuntimeProvider>
+        {access.isPending || access.isFetching
+          ? t("chat.teamShareLoading")
+          : t("chat.teamWorkUnavailable")}
       </div>
-      <aside
-        data-agent-chat-workspace-panel=""
-        data-state={workspaceOpen ? "open" : "closed"}
-        aria-hidden={workspaceOpen ? undefined : true}
-        inert={workspaceOpen ? undefined : true}
-        className="agent-kit-workspace-panel absolute end-0 flex flex-col border-s border-border bg-background shadow-lg md:shadow-none"
+    );
+  }
+
+  return (
+    <>
+      {refreshing && (
+        <div role="status" className="p-4">
+          {t("chat.teamShareLoading")}
+        </div>
+      )}
+      <div
+        className={`relative flex h-full min-h-0 overflow-hidden bg-background ${refreshing ? "invisible" : ""}`}
+        aria-hidden={refreshing || undefined}
+        inert={refreshing || undefined}
+        data-agent-chat-workspace-state={workspaceOpen ? "open" : "closed"}
       >
-        <header className="agent-kit-workspace-panel__header flex shrink-0 items-center border-b border-border px-3">
-          <h2 className="min-w-0 truncate text-xs font-medium text-foreground">
-            {t("settings.workspaceTitle")}
-          </h2>
-        </header>
-        <div data-agent-chat-workspace-slot="" className="min-h-0 flex-1" />
-      </aside>
-    </div>
+        <div
+          className={`agent-kit-chat-canvas-body min-w-0 flex-none flex flex-col ${
+            workspaceOpen ? "agent-kit-chat-canvas-body--workspace-open" : ""
+          }`}
+        >
+          {selectedRunId && (
+            <SelectedRun
+              key={selectedRunId}
+              threadId={resolvedThreadId}
+              runId={selectedRunId}
+            />
+          )}
+          <div className="min-h-0 flex-1">
+            <CoreComposerRuntimeProvider>
+              <CoreAgentKitRoot
+                transport={transport}
+                clientOptions={{
+                  transportOwnership: "owned",
+                  retainActiveRunsOnThreadRelease: true,
+                  onIntegrityReport: reportStreamIntegrity,
+                }}
+                threadId={resolvedThreadId}
+                labels={{ composerPlaceholder: t("chat.composerPlaceholder") }}
+                slots={{
+                  emptyState: ChatEmptyState,
+                  message: readOnly ? ReadOnlyChatMessage : ChatMessage,
+                  messageSupplement: ChatMcpConnectionSuggestion,
+                  runFailure: readOnly ? ReadOnlyRunFailure : ChatRunFailure,
+                  connectionRequest: readOnly
+                    ? () => null
+                    : ChatMcpConnectionRequest,
+                  footer: ChatAgentFooter,
+                }}
+                onThreadForked={(thread) => navigate(chatThreadPath(thread.id))}
+              >
+                <ChatLifecycleTracking threadId={resolvedThreadId} />
+                {!readOnly && <ChatMcpConnectionResume />}
+                <ChatCanvas
+                  workspaceOpen={workspaceOpen}
+                  setWorkspaceOpen={setWorkspaceOpen}
+                  readOnly={readOnly}
+                />
+              </CoreAgentKitRoot>
+            </CoreComposerRuntimeProvider>
+          </div>
+        </div>
+        <aside
+          data-agent-chat-workspace-panel=""
+          data-state={workspaceOpen ? "open" : "closed"}
+          aria-hidden={workspaceOpen ? undefined : true}
+          inert={workspaceOpen ? undefined : true}
+          className="agent-kit-workspace-panel absolute end-0 flex flex-col border-s border-border bg-background shadow-lg md:shadow-none"
+        >
+          <header className="agent-kit-workspace-panel__header flex shrink-0 items-center border-b border-border px-3">
+            <h2 className="min-w-0 truncate text-xs font-medium text-foreground">
+              {t("settings.workspaceTitle")}
+            </h2>
+          </header>
+          <div data-agent-chat-workspace-slot="" className="min-h-0 flex-1" />
+        </aside>
+      </div>
+    </>
   );
 }
 
-function ChatMessage({ value, threadId }: AgentKitRenderProps<AgentMessage>) {
+function SelectedRun({ threadId, runId }: { threadId: string; runId: string }) {
+  const t = useT();
+  const query = useActionQuery<{
+    run: {
+      id: string;
+      status: string;
+      startedAt: number;
+    };
+  }>(
+    "get-chat-thread-run",
+    { threadId, runId },
+    {
+      staleTime: 0,
+      refetchOnWindowFocus: "always",
+    },
+  );
+  if (query.isError)
+    return (
+      <p role="alert" className="border-b border-border p-3">
+        {t("chat.linkedRunsUnavailable")}
+      </p>
+    );
+  if (query.isPending || query.isFetching)
+    return <div role="status" className="h-12 border-b border-border" />;
+  return (
+    <section
+      aria-label={t("chat.linkedRun")}
+      data-selected-run={runId}
+      className="flex shrink-0 items-center gap-3 border-b border-border px-3 py-2 text-xs"
+    >
+      <strong className="truncate">
+        {t("chat.linkedRun")} {query.data.run.id}
+      </strong>
+      <span>{query.data.run.status}</span>
+      <time dateTime={new Date(query.data.run.startedAt).toISOString()}>
+        {new Date(query.data.run.startedAt).toLocaleString()}
+      </time>
+    </section>
+  );
+}
+
+function ChatMessage({
+  value,
+  threadId,
+  readOnly = false,
+}: AgentKitRenderProps<AgentMessage> & { readOnly?: boolean }) {
   const metadata = value.metadata as
     | { custom?: { agentNativeRecoveryAction?: unknown } }
     | undefined;
@@ -185,7 +292,21 @@ function ChatMessage({ value, threadId }: AgentKitRenderProps<AgentMessage>) {
   ) {
     return null;
   }
-  return <AgentMessageView value={value} threadId={threadId} />;
+  return (
+    <AgentMessageView value={value} threadId={threadId} readOnly={readOnly} />
+  );
+}
+
+function ReadOnlyChatMessage(props: AgentKitRenderProps<AgentMessage>) {
+  return <ChatMessage {...props} readOnly />;
+}
+
+function ReadOnlyRunFailure({
+  error,
+  runId,
+  threadId,
+}: AgentRunFailureRenderProps) {
+  return <AgentRunFailure error={error} runId={runId} threadId={threadId} />;
 }
 
 type ChatRetryError = {
@@ -520,9 +641,11 @@ function ChatEmptyState() {
 function ChatCanvas({
   workspaceOpen,
   setWorkspaceOpen,
+  readOnly,
 }: {
   workspaceOpen: boolean;
   setWorkspaceOpen: (value: boolean | ((current: boolean) => boolean)) => void;
+  readOnly: boolean;
 }) {
   const t = useT();
   const thread = useAgentThread();
@@ -562,6 +685,8 @@ function ChatCanvas({
       toolbar={toolbar}
       emptyComposerPlacement="center"
       composerProps={{
+        disabled: readOnly,
+        placeholder: readOnly ? t("chat.teamReadOnly") : undefined,
         requireAgentEngine: true,
         stopButton,
         queueWhileRunning: true,

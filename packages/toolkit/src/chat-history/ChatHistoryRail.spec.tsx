@@ -4,6 +4,15 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@agent-native/core/client/hooks", () => ({
+  useActionQuery: () => ({
+    data: { canManage: true },
+    isPending: false,
+    isFetching: false,
+    isError: false,
+  }),
+}));
+
 import { ActionButton, IconButton } from "../design-system/components.js";
 import { defineDesignSystem } from "../design-system/definition.js";
 import { ToolkitProvider } from "../provider.js";

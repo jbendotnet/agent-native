@@ -8,6 +8,7 @@ import {
 import { OrgSwitcher } from "@agent-native/toolkit/app/org";
 import { openCommandMenu } from "@agent-native/toolkit/app/shared";
 import { AgentNativeIcon } from "@agent-native/toolkit/app/shared/AgentNativeIcon";
+import { TeamShareMenu } from "@agent-native/toolkit/chat-history";
 import {
   ChatHistoryList,
   type ChatHistoryItem,
@@ -39,6 +40,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { APP_TITLE } from "@/lib/app-config";
+import { CHAT_THREAD_ACCESS_DENIED_EVENT } from "@/lib/chat-thread-access";
 import { visibleChatThreads } from "@/lib/sidebar-thread-state";
 import { cn } from "@/lib/utils";
 
@@ -265,6 +267,7 @@ function ChatThreadsSection({ collapsed }: { collapsed: boolean }) {
     archiveThread,
     renameThread,
     refreshThreads,
+    openThread: revalidateThread,
   } = useChatThreads(undefined, CHAT_STORAGE_KEY, undefined, {
     autoCreate: false,
     restoreActiveThread: false,
@@ -332,6 +335,23 @@ function ChatThreadsSection({ collapsed }: { collapsed: boolean }) {
       window.removeEventListener("focus", refresh);
     };
   }, [refreshThreads]);
+
+  useEffect(() => {
+    const onDenied = (event: Event) => {
+      const threadId = (event as CustomEvent<{ threadId?: unknown }>).detail
+        ?.threadId;
+      if (typeof threadId !== "string" || !threadId) return;
+      void revalidateThread(threadId)
+        .then((result) => {
+          if (result === "unavailable")
+            toast.error(t("chat.teamWorkUnavailable"));
+        })
+        .catch(() => toast.error(t("chat.teamWorkUnavailable")));
+    };
+    window.addEventListener(CHAT_THREAD_ACCESS_DENIED_EVENT, onDenied);
+    return () =>
+      window.removeEventListener(CHAT_THREAD_ACCESS_DENIED_EVENT, onDenied);
+  }, [revalidateThread, t]);
 
   function openThread(threadId: string, options?: { isNew?: boolean }) {
     switchThread(threadId);
@@ -407,7 +427,19 @@ function ChatThreadsSection({ collapsed }: { collapsed: boolean }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="px-2 pb-3">{newChatButton}</div>
+      <Link
+        to="/team"
+        className="mx-2 mb-2 flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+      >
+        <IconMessages className="size-4" aria-hidden="true" />
+        {t("chat.teamWork")}
+      </Link>
       <ChatHistoryList
+        enforceThreadCapabilities
+        capabilityLabels={{
+          readOnly: t("chat.teamReadOnly"),
+          unavailable: t("chat.teamWorkUnavailable"),
+        }}
         sections={historySections}
         activeId={displayedActiveThreadId}
         onSelect={openThread}
@@ -416,6 +448,24 @@ function ChatThreadsSection({ collapsed }: { collapsed: boolean }) {
           if (thread) void pinThread(threadId, !thread.pinnedAt);
         }}
         onRename={handleRenameThread}
+        renderAdditionalRowActions={(item, closeMenu) => {
+          const thread = visibleThreads.find(
+            (candidate) => candidate.id === item.id,
+          );
+          return thread && thread.messageCount > 0 ? (
+            <TeamShareMenu
+              thread={thread}
+              closeMenu={closeMenu}
+              labels={{
+                unavailable: t("chat.teamShareUnavailable"),
+                loading: t("chat.teamShareLoading"),
+                failed: t("chat.teamShareFailed"),
+                share: (name) => t("chat.shareWithTeam", { name }),
+                unshare: (name) => t("chat.unshareFromTeam", { name }),
+              }}
+            />
+          ) : null;
+        }}
         renameMaxLength={160}
         onDelete={(threadId) => void handleArchiveThread(threadId)}
         labels={{
@@ -541,6 +591,15 @@ export function Sidebar({
         )}
       >
         <ChatThreadsSection collapsed={collapsed} />
+        {collapsed && (
+          <Link
+            to="/team"
+            className="flex size-10 items-center justify-center rounded-md hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+            aria-label={t("chat.teamWork")}
+          >
+            <IconMessages className="size-4" aria-hidden="true" />
+          </Link>
+        )}
       </nav>
 
       <div className="mt-auto shrink-0 border-t border-sidebar-border p-2">

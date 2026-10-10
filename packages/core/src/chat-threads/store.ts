@@ -209,6 +209,14 @@ async function ensureTable(): Promise<void> {
           "chat_thread_shares_resource_idx",
           CHAT_THREAD_SHARES_RESOURCE_INDEX_SQL,
         );
+        await ensureIndexExists(
+          "chat_thread_shares_team_list_idx",
+          "CREATE INDEX IF NOT EXISTS chat_thread_shares_team_list_idx ON chat_thread_shares (principal_type, principal_id, resource_id)",
+        );
+        await ensureIndexExists(
+          "chat_threads_org_updated_idx",
+          "CREATE INDEX IF NOT EXISTS chat_threads_org_updated_idx ON chat_threads (org_id, updated_at, id)",
+        );
         return;
       }
     })().catch((err) => {
@@ -796,7 +804,9 @@ function rowToThread(r: Record<string, unknown>): ChatThread {
   };
 }
 
-function rowToSummary(r: Record<string, unknown>): ChatThreadSummary | null {
+export function chatThreadSummaryFromRow(
+  r: Record<string, unknown>,
+): ChatThreadSummary | null {
   // The summary path never loads `thread_data`; the count comes from the
   // dedicated `message_count` column maintained on write. Empty threads are
   // filtered out of the list.
@@ -911,6 +921,7 @@ export function registerChatThreadsShareable(): void {
       `/?thread=${encodeURIComponent(String(thread.id ?? ""))}`,
     getDb: () => getChatThreadsDb(),
     allowPublic: false,
+    supportsGroupShares: true,
     ownerAccessIgnoresOrg: true,
   });
 }
@@ -1018,6 +1029,7 @@ export async function accessibleThreadIds(
   if (!userEmail || !ids.length) return new Set();
   await ensureTable();
   const access = chatThreadAccessSql(userEmail, orgId);
+  // guard:allow-unscoped — chatThreadAccessSql filters each requested id by caller, organization, and bound-team membership
   const { rows } = await getDbExec().execute({
     sql: `SELECT id FROM chat_threads WHERE id IN (${ids.map(() => "?").join(", ")}) AND ${access.sql}`,
     args: [...ids, ...access.args],
@@ -1302,7 +1314,7 @@ export async function listThreads(
     args,
   });
   return rows
-    .map((r) => rowToSummary(r))
+    .map((r) => chatThreadSummaryFromRow(r))
     .filter((r): r is ChatThreadSummary => r !== null);
 }
 
@@ -1361,7 +1373,7 @@ export async function searchThreads(
     args,
   });
   return rows
-    .map((r) => rowToSummary(r))
+    .map((r) => chatThreadSummaryFromRow(r))
     .filter((r): r is ChatThreadSummary => r !== null);
 }
 

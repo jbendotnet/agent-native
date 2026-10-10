@@ -26,6 +26,12 @@ const routeState = vi.hoisted(() => ({
   }>,
   title: undefined as string | undefined,
   navigate: vi.fn(),
+  accessRole: "owner" as string | undefined,
+  accessError: false,
+  accessStatus: 404,
+  accessFetching: false,
+  search: "",
+  selectedRunError: false,
   transport: undefined as
     | { id: string; dispose: ReturnType<typeof vi.fn> }
     | undefined,
@@ -71,6 +77,38 @@ vi.mock("@agent-native/core/client/api-path", () => ({
 vi.mock("@agent-native/core/client/analytics", () => ({
   captureException,
   trackEvent,
+}));
+vi.mock("@agent-native/core/client/hooks", () => ({
+  useActionQuery: (name: string) =>
+    name === "get-chat-thread-run"
+      ? {
+          data: {
+            run: {
+              id: "run-one",
+              status: "completed",
+              startedAt: 1000,
+              completedAt: 2000,
+            },
+          },
+          isPending: false,
+          isFetching: false,
+          isError: routeState.selectedRunError,
+        }
+      : {
+          data: {
+            canRead: Boolean(routeState.accessRole),
+            canContinue: routeState.accessRole === "owner",
+            canManage: routeState.accessRole === "owner",
+          },
+          isPending: false,
+          isFetching: routeState.accessFetching,
+          isError: routeState.accessError,
+          error: routeState.accessError
+            ? Object.assign(new Error("Denied"), {
+                status: routeState.accessStatus,
+              })
+            : null,
+        },
 }));
 
 vi.mock("@agent-native/toolkit/app/chat/agentkit-chat/composer", () => ({
@@ -179,6 +217,7 @@ vi.mock("@agent-native/core/client/i18n", () => ({
 vi.mock("react-router", () => ({
   useNavigate: () => routeState.navigate,
   useParams: () => ({ threadId: routeState.threadId }),
+  useSearchParams: () => [new URLSearchParams(routeState.search)],
 }));
 
 vi.mock("@/lib/app-config", () => ({ APP_TITLE: "Chat" }));
@@ -208,6 +247,12 @@ describe("ChatRoute AgentKit surface", () => {
     routeState.threadId = undefined;
     routeState.messages = [];
     routeState.title = undefined;
+    routeState.accessRole = "owner";
+    routeState.accessError = false;
+    routeState.accessStatus = 404;
+    routeState.accessFetching = false;
+    routeState.search = "";
+    routeState.selectedRunError = false;
     routeState.navigate.mockReset();
     routeState.transport = undefined;
     routeState.transports = [];
@@ -288,6 +333,84 @@ describe("ChatRoute AgentKit surface", () => {
     expect(
       container.querySelector("[data-agent-page-workspace-toggle]"),
     ).toBeNull();
+  });
+
+  it("disables continuation for a team viewer and drops denied content", () => {
+    routeState.threadId = "thread-one";
+    routeState.accessRole = "viewer";
+    act(() => root.render(<ChatRoute />));
+    expect(routeState.chatProps).toMatchObject({
+      composerProps: { disabled: true, placeholder: "chat.teamReadOnly" },
+    });
+
+    routeState.accessError = true;
+    act(() => root.render(<ChatRoute />));
+    expect(routeState.chatProps).toBeTruthy();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "chat.teamWorkUnavailable",
+    );
+    expect(container.querySelector("[data-core-composer-runtime]")).toBeNull();
+  });
+
+  it("retains the chat subtree during a capability refresh but removes it on denial", () => {
+    routeState.threadId = "thread-one";
+    act(() => root.render(<ChatRoute />));
+    const composer = container.querySelector("[data-core-composer-runtime]");
+    expect(composer).not.toBeNull();
+    routeState.accessFetching = true;
+    act(() => root.render(<ChatRoute />));
+    expect(container.querySelector("[data-core-composer-runtime]")).toBe(
+      composer,
+    );
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(
+      "chat.teamShareLoading",
+    );
+    expect(routeState.chatProps).toMatchObject({
+      composerProps: { disabled: true },
+    });
+    routeState.accessFetching = false;
+    routeState.accessError = true;
+    act(() => root.render(<ChatRoute />));
+    expect(container.querySelector("[data-core-composer-runtime]")).toBeNull();
+  });
+
+  it("notifies history only after an explicit thread-access denial", () => {
+    const denied = vi.fn();
+    window.addEventListener("agent-chat:thread-access-denied", denied);
+    routeState.threadId = "shared-thread";
+    act(() => root.render(<ChatRoute />));
+    routeState.accessError = true;
+    routeState.accessStatus = 503;
+    act(() => root.render(<ChatRoute />));
+    expect(denied).not.toHaveBeenCalled();
+    routeState.accessStatus = 404;
+    act(() => root.render(<ChatRoute />));
+    expect(denied).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: { threadId: "shared-thread" } }),
+    );
+    window.removeEventListener("agent-chat:thread-access-denied", denied);
+  });
+
+  it("renders the selected linked run and clears its detail after denial", () => {
+    routeState.threadId = "thread-one";
+    routeState.search = "?runId=run-one";
+    routeState.accessRole = "viewer";
+    act(() => root.render(<ChatRoute />));
+    expect(
+      container.querySelector('[data-selected-run="run-one"]')?.textContent,
+    ).toContain("completed");
+    expect(routeState.chatProps).toMatchObject({
+      composerProps: { disabled: true },
+    });
+    routeState.selectedRunError = true;
+    act(() => root.render(<ChatRoute />));
+    expect(container.querySelector('[data-selected-run="run-one"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "chat.linkedRunsUnavailable",
+    );
+    routeState.accessError = true;
+    act(() => root.render(<ChatRoute />));
+    expect(container.querySelector("[data-core-composer-runtime]")).toBeNull();
   });
 
   it("passes connection request scope to the MCP connection card", () => {

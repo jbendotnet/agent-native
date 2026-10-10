@@ -18,9 +18,15 @@ Start only after all children and proof gates in Epics 1–4 pass. Reuse Epic 1 
 
 ## Child Plans
 
-1. [Owner-only sharing and authorized discovery](wip/01-share-policy-and-list.md) — H-01/H-02.
-2. [Shared conversation and linked-run UI](wip/02-team-work-ui.md) — H-03.
+1. [Owner-only sharing and authorized discovery](completed/01-share-policy-and-list.md) — H-01/H-02, independently verified locally.
+2. [Shared conversation and linked-run UI](completed/02-team-work-ui.md) — H-03, independently verified locally in source and browser.
 
 ## Success Criteria
 
 Members discover only explicit viewer grants; direct and listed access agree. Share revocation, org/team removal, and deletion deny subsequent thread/run requests. Unbound team sharing does not bind or change context.
+
+## Execution status — 2026-10-06
+
+Both children are complete with independent local proof recorded in their completion sections. The final Core matrix passed 15 files / 224 tests; Toolkit passed 45 tests and Chat passed 27 tests. Independent PostgreSQL contention proof passed three tests. Authenticated browser/action/SQL checks passed explicit-only discovery, read-only viewer controls, direct thread/run denial, and lifecycle cleanup.
+
+The user explicitly closed the epic on 2026-10-06. Both completed children are retained inside this completed epic. This is local execution acceptance, not deployed or full V1 release acceptance. Epic 6 owns the remaining release-integration gates. The follow-on branch is `review/teams-5611-05-sharing`, based on PR #6 head, for publication as the next stacked PR.
