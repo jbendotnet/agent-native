@@ -19,6 +19,12 @@ const mockIsLocalWorkspaceResourceId = vi.fn();
 const mockIsLegacyOrganizationWorkspaceFile = vi.fn();
 const mockUploadFile = vi.fn();
 const mockCanUpdateAutomationResource = vi.fn();
+const mockGetWorkspaceTeamForMember = vi.fn();
+
+vi.mock("../workspace-connections/groups.js", () => ({
+  getWorkspaceTeamForMember: (...args: unknown[]) =>
+    mockGetWorkspaceTeamForMember(...args),
+}));
 
 vi.mock("./store.js", () => ({
   SHARED_OWNER: "__shared__",
@@ -164,6 +170,10 @@ describe("resource handlers", () => {
     mockIsLegacyOrganizationWorkspaceFile.mockReturnValue(false);
     mockUploadFile.mockResolvedValue(null);
     mockCanUpdateAutomationResource.mockResolvedValue(false);
+    mockGetWorkspaceTeamForMember.mockImplementation(async (_orgId, id) => ({
+      id,
+      isTeam: true,
+    }));
     mockExportResourcePackRun.mockReset();
     mockImportResourcePackRun.mockReset();
     vi.mocked(getSession).mockResolvedValue({ email: "test@test.com" } as any);
@@ -172,6 +182,287 @@ describe("resource handlers", () => {
       orgId: null,
       orgName: null,
       role: null,
+    });
+  });
+
+  describe("team resource operations", () => {
+    const team = {
+      id: "r-team",
+      path: "skills/example/SKILL.md",
+      owner: "__team__:team-a",
+      content: "team content",
+      mimeType: "text/markdown",
+    };
+    const orgContext = {
+      email: "test@test.com",
+      orgId: "org-a",
+      orgName: "Example",
+      role: "member",
+    };
+
+    beforeEach(() => {
+      mockGetOrgContext.mockResolvedValue(orgContext);
+      mockResourceGet.mockResolvedValue(team);
+      mockResourceList.mockResolvedValue([team]);
+      mockResourcePut.mockResolvedValue(team);
+      mockResourceDeleteIfCurrent.mockResolvedValue(true);
+    });
+
+    it("lists, builds tree, reads by id, creates, updates and deletes for current members", async () => {
+      expect(
+        (
+          await handleListResources({
+            _query: { scope: "team", teamGroupId: "team-a", prefix: "skills/" },
+          })
+        ).resources,
+      ).toEqual([team]);
+      expect(mockResourceList).toHaveBeenCalledWith(
+        "__team__:team-a",
+        "skills/",
+        undefined,
+      );
+      expect(
+        (
+          await handleGetResourceTree({
+            _query: { scope: "team", teamGroupId: "team-a" },
+          })
+        ).tree[0].name,
+      ).toBe("skills");
+      expect(
+        await handleGetResource({
+          _params: { id: team.id },
+          _query: { teamGroupId: "team-a" },
+          context: {},
+        }),
+      ).toEqual(team);
+      await handleCreateResource({
+        _body: {
+          teamGroupId: "team-a",
+          path: team.path,
+          content: "team content",
+        },
+      });
+      expect(mockResourcePut).toHaveBeenCalledWith(
+        team.owner,
+        team.path,
+        team.content,
+        undefined,
+      );
+      await handleUpdateResource({
+        _params: { id: team.id },
+        _body: { teamGroupId: "team-a", content: "updated" },
+        context: {},
+      });
+      expect(mockResourcePut).toHaveBeenCalledWith(
+        team.owner,
+        team.path,
+        "updated",
+        team.mimeType,
+      );
+      expect(
+        await handleDeleteResource({
+          _params: { id: team.id },
+          _query: { teamGroupId: "team-a" },
+          context: {},
+        }),
+      ).toEqual({ ok: true });
+      expect(mockResourceDeleteIfCurrent).toHaveBeenCalledWith(team);
+      expect(mockGetWorkspaceTeamForMember).toHaveBeenCalledWith(
+        "org-a",
+        "team-a",
+        "test@test.com",
+      );
+    });
+
+    it("distinguishes an authorized empty team from denied or failed lookup", async () => {
+      mockResourceList.mockResolvedValue([]);
+      expect(
+        (
+          await handleListResources({
+            _query: { scope: "team", teamGroupId: "team-a" },
+          })
+        ).resources,
+      ).toEqual([]);
+      mockGetWorkspaceTeamForMember.mockResolvedValue(null);
+      await expect(
+        handleListResources({
+          _query: { scope: "team", teamGroupId: "team-a" },
+        }),
+      ).rejects.toThrow();
+      mockGetWorkspaceTeamForMember.mockRejectedValue(
+        new Error("database unavailable"),
+      );
+      await expect(
+        handleGetResourceTree({
+          _query: { scope: "team", teamGroupId: "team-a" },
+        }),
+      ).rejects.toThrow("database unavailable");
+    });
+
+    it("rejects incomplete team tree bodies without changing non-team best-effort trees", async () => {
+      const failure = new Error("team body unavailable");
+      mockResourceGet.mockRejectedValue(failure);
+      await expect(
+        handleGetResourceTree({
+          _query: { scope: "team", teamGroupId: "team-a" },
+        }),
+      ).rejects.toBe(failure);
+
+      mockResourceGet.mockResolvedValue(null);
+      await expect(
+        handleGetResourceTree({
+          _query: { scope: "team", teamGroupId: "team-a" },
+        }),
+      ).rejects.toThrow("Unable to read team resource");
+
+      mockResourceGet.mockRejectedValue(failure);
+      mockResourceListAccessible.mockResolvedValue([team]);
+      expect((await handleGetResourceTree({ _query: {} })).tree).toHaveLength(
+        1,
+      );
+      mockResourceList.mockResolvedValue([]);
+      expect(
+        (
+          await handleGetResourceTree({
+            _query: { scope: "team", teamGroupId: "team-a" },
+          })
+        ).tree,
+      ).toEqual([]);
+    });
+
+    it.each([
+      "nonmember",
+      "admin nonmember",
+      "departed",
+      "deleted",
+      "ordinary group",
+      "unknown group",
+    ])("denies %s before returning content or mutating", async (actor) => {
+      mockGetOrgContext.mockResolvedValue({
+        ...orgContext,
+        role: actor === "admin nonmember" ? "admin" : "member",
+      });
+      mockGetWorkspaceTeamForMember.mockResolvedValue(null);
+      await expect(
+        handleListResources({
+          _query: { scope: "team", teamGroupId: "team-a" },
+        }),
+      ).rejects.toThrow();
+      await expect(
+        handleGetResourceTree({
+          _query: { scope: "team", teamGroupId: "team-a" },
+        }),
+      ).rejects.toThrow();
+      await expect(
+        handleGetResource({
+          _params: { id: team.id },
+          _query: { teamGroupId: "team-a" },
+          context: {},
+        }),
+      ).rejects.toThrow();
+      await expect(
+        handleCreateResource({
+          _body: { teamGroupId: "team-a", path: team.path, content: "leak" },
+        }),
+      ).rejects.toThrow();
+      await expect(
+        handleUpdateResource({
+          _params: { id: team.id },
+          _body: { teamGroupId: "team-a", content: "leak" },
+          context: {},
+        }),
+      ).rejects.toThrow();
+      await expect(
+        handleDeleteResource({
+          _params: { id: team.id },
+          _query: { teamGroupId: "team-a" },
+          context: {},
+        }),
+      ).rejects.toThrow();
+      expect(mockResourcePut).not.toHaveBeenCalled();
+      expect(mockResourceDeleteIfCurrent).not.toHaveBeenCalled();
+      expect(mockResourceList).not.toHaveBeenCalled();
+      expect(mockEnsurePersonalDefaults).not.toHaveBeenCalled();
+    });
+
+    it("rejects raw owner injection and mixed team/non-team scopes", async () => {
+      await expect(
+        handleCreateResource({
+          _body: { path: team.path, owner: team.owner, content: "leak" },
+        }),
+      ).rejects.toMatchObject({ statusCode: 400 });
+      await expect(
+        handleListResources({
+          _query: { scope: "all", teamGroupId: "team-a" },
+        }),
+      ).rejects.toMatchObject({ statusCode: 400 });
+      await expect(
+        handleGetResourceTree({
+          _query: { scope: "shared", teamGroupId: "team-a" },
+        }),
+      ).rejects.toMatchObject({ statusCode: 400 });
+      await expect(
+        handleUpdateResource({
+          _params: { id: team.id },
+          _body: { teamGroupId: "team-a", owner: team.owner, content: "leak" },
+          context: {},
+        }),
+      ).rejects.toMatchObject({ statusCode: 400 });
+      expect(mockResourcePut).not.toHaveBeenCalled();
+      expect(mockResourceDeleteIfCurrent).not.toHaveBeenCalled();
+    });
+
+    it("denies mismatched or missing target, wrong org, and malformed stored owner by ID", async () => {
+      for (const target of [undefined, "team-b"]) {
+        const _query = target ? { teamGroupId: target } : {};
+        const _body = target
+          ? { teamGroupId: target, content: "leak" }
+          : { content: "leak" };
+        const operations = [
+          () =>
+            handleGetResource({
+              _params: { id: team.id },
+              _query,
+              context: {},
+            }),
+          () =>
+            handleUpdateResource({
+              _params: { id: team.id },
+              _body,
+              context: {},
+            }),
+          () =>
+            handleDeleteResource({
+              _params: { id: team.id },
+              _query,
+              context: {},
+            }),
+        ];
+        for (const operation of operations) {
+          if (target)
+            expect(await operation()).toEqual({ error: "Resource not found" });
+          else await expect(operation()).rejects.toThrow();
+        }
+      }
+      mockResourceGet.mockResolvedValue({ ...team, owner: "__team__: team-a" });
+      expect(
+        await handleGetResource({
+          _params: { id: team.id },
+          _query: { teamGroupId: "team-a" },
+          context: {},
+        }),
+      ).toEqual({ error: "Resource not found" });
+      mockGetOrgContext.mockResolvedValue({ ...orgContext, orgId: "org-b" });
+      mockGetWorkspaceTeamForMember.mockResolvedValue(null);
+      await expect(
+        handleGetResource({
+          _params: { id: team.id },
+          _query: { teamGroupId: "team-a" },
+          context: {},
+        }),
+      ).rejects.toThrow();
+      expect(mockResourcePut).not.toHaveBeenCalled();
+      expect(mockResourceDeleteIfCurrent).not.toHaveBeenCalled();
     });
   });
 

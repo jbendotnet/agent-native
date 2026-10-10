@@ -23,8 +23,25 @@ import {
   type ResourceVisibility,
   type ResourceCreatedBy,
 } from "./store.js";
+import { authorizedTeamResourceOwner } from "./team-access.js";
 
-type ResourceHelperScope = "personal" | "shared" | "workspace";
+type ResourceHelperScope = "personal" | "shared" | "workspace" | "team";
+
+async function resolveResourceOwner(
+  scope: ResourceHelperScope,
+  teamGroupId?: string,
+): Promise<string> {
+  if (scope === "team") {
+    return authorizedTeamResourceOwner(
+      teamGroupId,
+      getRequestOrgId(),
+      getRequestUserEmail(),
+    );
+  }
+  if (teamGroupId !== undefined)
+    throw new Error("teamGroupId requires team scope");
+  return getOwnerForScope(scope);
+}
 
 function getOwnerForScope(scope?: ResourceHelperScope): string {
   if (scope === "shared") return sharedResourceOwner(getRequestOrgId());
@@ -84,10 +101,14 @@ async function deleteSharedResource(path: string): Promise<boolean> {
 
 export async function readResource(
   path: string,
-  options?: { shared?: boolean; scope?: ResourceHelperScope },
+  options?: {
+    shared?: boolean;
+    scope?: ResourceHelperScope;
+    teamGroupId?: string;
+  },
 ): Promise<string | null> {
   const scope = resolveScope(options);
-  const owner = getOwnerForScope(scope);
+  const owner = await resolveResourceOwner(scope, options?.teamGroupId);
   const orgId = scope === "personal" ? undefined : getRequestOrgId();
   const resourceOptions = orgId ? { orgId } : undefined;
   const resource = resourceOptions
@@ -109,6 +130,7 @@ export async function writeResource(
   options?: {
     shared?: boolean;
     scope?: Exclude<ResourceHelperScope, "workspace">;
+    teamGroupId?: string;
     mimeType?: string;
     visibility?: ResourceVisibility;
     createdBy?: ResourceCreatedBy;
@@ -120,7 +142,7 @@ export async function writeResource(
 ): Promise<void> {
   const scope = resolveScope(options);
   if (scope === "shared") await assertCanManageSharedResource();
-  const owner = getOwnerForScope(scope);
+  const owner = await resolveResourceOwner(scope, options?.teamGroupId);
   const writeOptions = {
     visibility: options?.visibility,
     createdBy: options?.createdBy,
@@ -144,14 +166,20 @@ export async function deleteResource(
   options?: {
     shared?: boolean;
     scope?: Exclude<ResourceHelperScope, "workspace">;
+    teamGroupId?: string;
   },
 ): Promise<boolean> {
   const scope = resolveScope(options);
   if (scope === "shared") await assertCanManageSharedResource();
-  const owner = getOwnerForScope(scope);
-  return scope === "shared"
-    ? deleteSharedResource(path)
-    : resourceDeleteByPath(owner, path);
+  const owner = await resolveResourceOwner(scope, options?.teamGroupId);
+  if (scope === "shared") return deleteSharedResource(path);
+  if (scope === "team") {
+    const existing = await resourceGetByPath(owner, path, {
+      orgId: getRequestOrgId(),
+    });
+    return existing ? resourceDeleteIfCurrent(existing) : false;
+  }
+  return resourceDeleteByPath(owner, path);
 }
 
 export async function listResources(
@@ -159,11 +187,12 @@ export async function listResources(
   options?: {
     shared?: boolean;
     scope?: ResourceHelperScope;
+    teamGroupId?: string;
     includeAgentScratch?: boolean;
   },
 ): Promise<ResourceMeta[]> {
   const scope = resolveScope(options);
-  const owner = getOwnerForScope(scope);
+  const owner = await resolveResourceOwner(scope, options?.teamGroupId);
   const orgId = scope === "personal" ? undefined : getRequestOrgId();
   const resourceOptions =
     scope !== "personal"

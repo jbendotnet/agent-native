@@ -65,6 +65,21 @@ vi.mock("../../resources/store.js", () => ({
     mocks.resourceListAccessible(...args),
   ensurePersonalDefaults: vi.fn(),
 }));
+vi.mock("../../resources/team-access.js", () => ({
+  authorizedTeamResourceOwner: async (
+    teamGroupId: string,
+    orgId: string,
+    owner: string,
+  ) => {
+    if (
+      teamGroupId !== "team-a" ||
+      orgId !== "org-a" ||
+      owner !== "user@example.test"
+    )
+      throw new Error("Team not found or access denied");
+    return `__team__:${teamGroupId}`;
+  },
+}));
 vi.mock("../../framework-tools.js", () => ({
   frameworkGroupEnabled: () => true,
 }));
@@ -85,6 +100,127 @@ import {
 } from "./prompt-resources.js";
 
 describe("preloadJevContextForPrompt", () => {
+  it("retains personal, organization, and bound team memory labels through body selection", async () => {
+    mocks.resourceGetByPath.mockImplementation(
+      async (owner: string, path: string) => {
+        if (path === "memory/MEMORY.md")
+          return {
+            content: "# Index\n- [facts](facts.md) — Facts about launch tone.",
+          };
+        if (path === "memory/facts.md")
+          return { content: `Saved fact from ${owner}.` };
+        return null;
+      },
+    );
+    mocks.rankJevCandidates.mockImplementation(
+      async ({
+        candidateStateKey,
+        candidates,
+      }: {
+        candidateStateKey: string;
+        candidates: Array<{ id: string; scope: string }>;
+      }) =>
+        candidateStateKey === "candidate_memory"
+          ? candidates
+              .filter(({ scope }) => scope !== "personal")
+              .map(({ id }) => id)
+          : [],
+    );
+    const result = await preloadJevContextForPrompt({
+      request: "What are the launch tone facts?",
+      owner: "user@example.test",
+      orgId: "org-a",
+      teamGroupId: "team-a",
+      apiKey: "jev-test-key",
+    });
+    expect(result).toContain('scope="bound-team"');
+    expect(result).toContain("Saved fact from __team__:team-a.");
+    expect(result).toContain("Saved fact from __organization__:org-a.");
+    expect(result).not.toContain("__team__:team-b");
+    expect(mocks.rankJevCandidates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateStateKey: "candidate_memory",
+        candidates: expect.arrayContaining([
+          expect.objectContaining({
+            metadata: { kind: "personal-memory", scope: "personal" },
+            description: expect.stringContaining("Personal memory"),
+          }),
+          expect.objectContaining({
+            metadata: { kind: "personal-memory", scope: "current-org" },
+            description: expect.stringContaining("Current organization memory"),
+          }),
+          expect.objectContaining({
+            metadata: { kind: "personal-memory", scope: "bound-team" },
+            description: expect.stringContaining("Bound team memory"),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it.each([
+    "index-error",
+    "index-incomplete",
+    "index-timeout",
+    "body-error",
+    "body-missing",
+    "body-timeout",
+  ])("fails closed for a bound team's %s", async (failure) => {
+    let startedBodyRead = false;
+    mocks.resourceGetByPath.mockImplementation(
+      async (owner: string, path: string) => {
+        if (owner === "__team__:team-a" && path === "memory/MEMORY.md") {
+          if (failure === "index-error")
+            throw new Error("Injected team index failure");
+          if (failure === "index-incomplete") return undefined;
+          if (failure === "index-timeout") return new Promise(() => {});
+        }
+        if (path === "memory/MEMORY.md")
+          return {
+            content: "# Index\n- [facts](facts.md) — Facts about launch tone.",
+          };
+        if (owner === "__team__:team-a" && path === "memory/facts.md") {
+          startedBodyRead = true;
+          if (failure === "body-error")
+            throw new Error("Injected team body failure");
+          if (failure === "body-missing") return null;
+          if (failure === "body-timeout") return new Promise(() => {});
+        }
+        return { content: "A fact about launch tone." };
+      },
+    );
+    mocks.rankJevCandidates.mockImplementation(
+      async ({
+        candidateStateKey,
+        candidates,
+      }: {
+        candidateStateKey: string;
+        candidates: Array<{ id: string; scope: string }>;
+      }) =>
+        candidateStateKey === "candidate_memory"
+          ? candidates
+              .filter(({ scope }) => scope === "bound-team")
+              .map(({ id }) => id)
+          : [],
+    );
+    await expect(
+      preloadJevContextForPrompt({
+        request: "Use launch tone facts",
+        owner: "user@example.test",
+        orgId: "org-a",
+        teamGroupId: "team-a",
+        apiKey: "jev-test-key",
+        contextPrefetchDeadlineAt:
+          Date.now() +
+          (failure === "body-timeout"
+            ? 200
+            : failure === "index-timeout"
+              ? 25
+              : 1000),
+      }),
+    ).rejects.toThrow();
+    if (failure.startsWith("body-")) expect(startedBodyRead).toBe(true);
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.useRealRanker.value = false;
@@ -1383,6 +1519,46 @@ describe("preloadJevContextForPrompt", () => {
       );
     },
   );
+
+  it("includes the bound team ID in the compact instruction overflow lookup", async () => {
+    const instructions = Array.from({ length: 21 }, (_, index) => ({
+      id: `instruction-${index}`,
+      path: `instructions/${String(index).padStart(2, "0")}.md`,
+      owner: "__team__:team-a",
+    }));
+    mocks.resourceList.mockImplementation(
+      async (owner: string, prefix: string) =>
+        [
+          "__team__:team-a",
+          "__organization__:org-a",
+          "user@example.test",
+        ].includes(owner) && prefix === "instructions/"
+          ? instructions
+          : [],
+    );
+    mocks.resourceGet.mockResolvedValue({ content: "# Team instruction" });
+
+    const prompt = await loadResourcesForPrompt(
+      "user@example.test",
+      true,
+      undefined,
+      "org-a",
+      { teamGroupId: "team-a" },
+    );
+    const overflow = prompt
+      .split("\n")
+      .filter((line) => line.includes("more instruction files"));
+    expect(overflow).toHaveLength(3);
+    expect(overflow[0]).toContain('scope: "shared"');
+    expect(overflow[1]).toContain('scope: "team"');
+    expect(overflow[1]).toContain('teamGroupId: "team-a"');
+    expect(overflow[2]).toContain('scope: "personal"');
+    expect(overflow[0]).not.toContain("teamGroupId");
+    expect(overflow[2]).not.toContain("teamGroupId");
+    expect(
+      overflow.every((line) => line.includes('prefix: "instructions/"')),
+    ).toBe(true);
+  });
 
   it.each([
     ["instruction", "instructions/", "instructions/failing.md"],

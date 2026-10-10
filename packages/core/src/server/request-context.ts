@@ -72,6 +72,7 @@ export interface RequestRunContext {
   userApiKey?: string;
   userApiKeyEnvVar?: string;
   threadId?: string;
+  boundTeamGroupId?: string | null;
   runId?: string;
   systemPrompt?: string;
   engine?: import("../agent/engine/types.js").AgentEngine;

@@ -7,8 +7,14 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { chromium, type CDPSession, type Page } from "@playwright/test";
+import {
+  chromium,
+  type CDPSession,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 
+import { canvasWheelPoint } from "./canvas-wheel-point";
 import {
   expectedCanvasScaleAtZoomPercent,
   readZoomUntilAvailable,
@@ -457,7 +463,7 @@ async function settledBox(locator: ReturnType<Page["locator"]>) {
     const box = await locator.boundingBox({ timeout: 5_000 }).catch(() => null);
     if (box) return box;
   }
-  throw new Error(`${locator} never appeared`);
+  throw new Error(`${locator.toString()} never appeared`);
 }
 
 async function stableBox(locator: ReturnType<Page["locator"]>) {

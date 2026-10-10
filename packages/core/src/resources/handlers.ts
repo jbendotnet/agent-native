@@ -67,6 +67,10 @@ import {
   WORKSPACE_OWNER,
   type ResourceMeta,
 } from "./store.js";
+import {
+  authorizedTeamResourceOwner,
+  assertTeamResourceTarget,
+} from "./team-access.js";
 
 function isSameSkillUpload(
   incomingContent: string,
@@ -253,8 +257,18 @@ export async function handleListResources(event: any) {
   const query = getQuery(event);
   const prefix = (query.prefix as string) || undefined;
   const scope = (query.scope as string) || "all";
+  if (scope !== "team" && query.teamGroupId !== undefined) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: "teamGroupId requires team scope",
+    });
+  }
   const email = await resolveEmail(event);
   const orgId = await resolveOrgId(event);
+  const teamOwner =
+    scope === "team"
+      ? await authorizedTeamResourceOwner(query.teamGroupId, orgId, email)
+      : null;
   const includeAgentScratch = shouldIncludeAgentScratch(query);
   const localListOptions = includeAgentScratch
     ? { includeAgentScratch: true }
@@ -263,11 +277,13 @@ export async function handleListResources(event: any) {
     ? { includeAgentScratch: true, userEmail: email, orgId }
     : { userEmail: email, orgId };
 
-  await ensurePersonalDefaults(email);
+  if (!teamOwner) await ensurePersonalDefaults(email);
 
   let resources: ResourceMeta[];
 
-  if (scope === "personal") {
+  if (scope === "team") {
+    resources = await resourceList(teamOwner!, prefix, localListOptions);
+  } else if (scope === "personal") {
     resources = localListOptions
       ? await resourceList(email, prefix, localListOptions)
       : await resourceList(email, prefix);
@@ -285,8 +301,18 @@ export async function handleListResources(event: any) {
 export async function handleGetResourceTree(event: any) {
   const query = getQuery(event);
   const scope = (query.scope as string) || "all";
+  if (scope !== "team" && query.teamGroupId !== undefined) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: "teamGroupId requires team scope",
+    });
+  }
   const email = await resolveEmail(event);
   const orgId = await resolveOrgId(event);
+  const teamOwner =
+    scope === "team"
+      ? await authorizedTeamResourceOwner(query.teamGroupId, orgId, email)
+      : null;
   const includeAgentScratch = shouldIncludeAgentScratch(query);
   const localListOptions = includeAgentScratch
     ? { includeAgentScratch: true }
@@ -295,11 +321,13 @@ export async function handleGetResourceTree(event: any) {
     ? { includeAgentScratch: true, userEmail: email, orgId }
     : { userEmail: email, orgId };
 
-  await ensurePersonalDefaults(email);
+  if (!teamOwner) await ensurePersonalDefaults(email);
 
   let resources: ResourceMeta[];
 
-  if (scope === "personal") {
+  if (scope === "team") {
+    resources = await resourceList(teamOwner!, undefined, localListOptions);
+  } else if (scope === "personal") {
     resources = localListOptions
       ? await resourceList(email, undefined, localListOptions)
       : await resourceList(email);
@@ -325,7 +353,7 @@ export async function handleGetResourceTree(event: any) {
 
   const tree = buildTree(resources);
 
-  await enrichTreeNodes(tree, orgId);
+  await enrichTreeNodes(tree, orgId, !!teamOwner);
 
   return { tree };
 }
@@ -347,6 +375,7 @@ export async function handleGetEffectiveResourceContext(event: any) {
 async function enrichTreeNodes(
   nodes: TreeNode[],
   orgId: string | null,
+  required = false,
 ): Promise<void> {
   let parseFn: typeof import("../jobs/scheduler.js").parseJobFrontmatter;
   let describeFn: typeof import("../jobs/cron.js").describeCron;
@@ -355,17 +384,22 @@ async function enrichTreeNodes(
     const cron = await import("../jobs/cron.js");
     parseFn = scheduler.parseJobFrontmatter;
     describeFn = cron.describeCron;
-  } catch {
+  } catch (error) {
+    if (required) throw error;
     return;
   }
 
   for (const node of nodes) {
     if (node.type === "folder" && node.children) {
-      await enrichTreeNodes(node.children, orgId);
+      await enrichTreeNodes(node.children, orgId, required);
     }
     if (node.type === "file" && node.resource) {
       try {
         const full = await resourceGet(node.resource.id, { orgId });
+        if (required && !full)
+          throw new Error(
+            `Unable to read team resource: ${node.resource.path}`,
+          );
         if (!full?.content) continue;
 
         if (
@@ -407,7 +441,8 @@ async function enrichTreeNodes(
             parseRemoteAgentManifest(full.content, node.resource.path) ??
             undefined;
         }
-      } catch {
+      } catch (error) {
+        if (required) throw error;
         // Skip individual file errors
       }
     }
@@ -430,7 +465,14 @@ export async function handleGetResource(event: any) {
   }
 
   if (
-    !canReadOwner(resource.owner, email, orgId) ||
+    !(await assertTeamResourceTarget(
+      resource.owner,
+      getQuery(event).teamGroupId,
+      orgId,
+      email,
+    )) ||
+    (!canReadOwner(resource.owner, email, orgId) &&
+      !resource.owner.startsWith("__team__:")) ||
     !isLegacySharedResourceVisibleToOrganization(resource, orgId)
   ) {
     setResponseStatus(event, 404);
@@ -503,6 +545,12 @@ export async function handleGetResource(event: any) {
 
 export async function handleCreateResource(event: any) {
   const body = await readBody(event);
+  if (typeof body?.owner === "string" && body.owner.startsWith("__team__:")) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: "Specify teamGroupId, not owner",
+    });
+  }
 
   if (!body?.path || typeof body.path !== "string") {
     setResponseStatus(event, 400);
@@ -513,7 +561,20 @@ export async function handleCreateResource(event: any) {
     await assertCanEditShared(event);
   }
 
-  const owner = await resolveOwner(event, body.shared);
+  if (body.teamGroupId !== undefined && body.shared) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: "Choose one resource scope",
+    });
+  }
+  const owner =
+    body.teamGroupId !== undefined
+      ? await authorizedTeamResourceOwner(
+          body.teamGroupId,
+          await resolveOrgId(event),
+          await resolveEmail(event),
+        )
+      : await resolveOwner(event, body.shared);
 
   if (body.uniqueSkillPath) {
     const match = /^skills\/([a-z0-9]+(?:-[a-z0-9]+)*)\/SKILL\.md$/.exec(
@@ -651,8 +712,22 @@ export async function handleUpdateResource(event: any) {
     return { error: "Resource not found" };
   }
 
+  const body = await readBody(event);
+  if (typeof body?.owner === "string" && body.owner.startsWith("__team__:")) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: "Specify teamGroupId, not owner",
+    });
+  }
   if (
-    !canReadOwner(existing.owner, email, orgId) ||
+    !(await assertTeamResourceTarget(
+      existing.owner,
+      body.teamGroupId,
+      orgId,
+      email,
+    )) ||
+    (!canReadOwner(existing.owner, email, orgId) &&
+      !existing.owner.startsWith("__team__:")) ||
     !isLegacySharedResourceVisibleToOrganization(existing, orgId)
   ) {
     setResponseStatus(event, 404);
@@ -671,7 +746,6 @@ export async function handleUpdateResource(event: any) {
     await assertCanEditShared(event);
   }
 
-  const body = await readBody(event);
   const nextPath = body.path ?? existing.path;
   const activeSharedOwner = sharedResourceOwner(orgId);
   const isLegacyOrganizationWorkspaceResource =
@@ -768,7 +842,14 @@ export async function handleDeleteResource(event: any) {
   }
 
   if (
-    !canReadOwner(existing.owner, email, orgId) ||
+    !(await assertTeamResourceTarget(
+      existing.owner,
+      getQuery(event).teamGroupId,
+      orgId,
+      email,
+    )) ||
+    (!canReadOwner(existing.owner, email, orgId) &&
+      !existing.owner.startsWith("__team__:")) ||
     !isLegacySharedResourceVisibleToOrganization(existing, orgId)
   ) {
     setResponseStatus(event, 404);

@@ -24,6 +24,7 @@ function wrapCliScript(
   opts?: {
     allowedArgs?: readonly string[];
     readOnly?: boolean;
+    propagateErrors?: (args: Record<string, string>) => boolean;
     needsApproval?: ActionEntry["needsApproval"];
     allowPersistentApproval?: ActionEntry["allowPersistentApproval"];
   },
@@ -43,7 +44,9 @@ function wrapCliScript(
           throw new Error(`Unknown argument: ${k}`);
         }
       }
-      return captureCliOutput(() => cliDefault(serializeCliArgs(args)));
+      return captureCliOutput(() => cliDefault(serializeCliArgs(args)), {
+        swallowErrors: !opts?.propagateErrors?.(args),
+      });
     },
   };
 }
@@ -363,6 +366,8 @@ export async function createResourceScriptEntries(): Promise<
   Record<string, ActionEntry>
 > {
   try {
+    const isTeamRequest = (args: Record<string, string>) =>
+      args.scope === "team";
     const [list, read, effective, write, del, saveMem, delMem, store] =
       await Promise.all([
         import("../../scripts/resources/list.js"),
@@ -381,7 +386,7 @@ export async function createResourceScriptEntries(): Promise<
         parameters: { type: "object" as const, properties: {} },
       },
       list.default,
-      { readOnly: true },
+      { readOnly: true, propagateErrors: isTeamRequest },
     );
     const readEntry = wrapCliScript(
       {
@@ -389,7 +394,7 @@ export async function createResourceScriptEntries(): Promise<
         parameters: { type: "object" as const, properties: {} },
       },
       read.default,
-      { readOnly: true },
+      { readOnly: true, propagateErrors: isTeamRequest },
     );
     const writeEntry = wrapCliScript(
       {
@@ -397,6 +402,7 @@ export async function createResourceScriptEntries(): Promise<
         parameters: { type: "object" as const, properties: {} },
       },
       write.default,
+      { propagateErrors: isTeamRequest },
     );
     const effectiveEntry = wrapCliScript(
       {
@@ -412,13 +418,14 @@ export async function createResourceScriptEntries(): Promise<
         parameters: { type: "object" as const, properties: {} },
       },
       del.default,
+      { propagateErrors: isTeamRequest },
     );
 
     return {
       resources: {
         tool: {
           description:
-            'Manage workspace resources: list/read files; inspect workspace -> org/app -> personal inheritance; write personal/shared resources (workspace only for local file mode controls); promote scratch; delete personal/shared resources (workspace controls only). Agent scratch stays hidden in Workspace; use visibility="workspace" only for files the user wants to keep/manage. Shared writes, promotions, and deletions require per-action approval.',
+            'Manage agent resources: list/read/write/delete team files with scope="team" and teamGroupId (current members only); inspect workspace -> org/app -> personal inheritance; write personal/shared resources (workspace only for local file mode controls); promote scratch; delete personal/shared resources (workspace controls only). Agent scratch stays hidden in Workspace; use visibility="workspace" only for files the user wants to keep/manage. Shared writes, promotions, and deletions require per-action approval.',
           parameters: {
             type: "object",
             properties: {
@@ -446,8 +453,13 @@ export async function createResourceScriptEntries(): Promise<
               scope: {
                 type: "string",
                 description:
-                  "personal, shared, workspace, or all (default varies by action). Workspace is read-only when inherited from Dispatch; in local file mode AGENTS.md, agent-native.json, mcp.config.json, .mcp.json, and skills/ are writable.",
-                enum: ["personal", "shared", "workspace", "all"],
+                  "personal, shared, team, workspace, or all (default varies by action). Team requires teamGroupId and current membership. Workspace is read-only when inherited from Dispatch except local control files.",
+                enum: ["personal", "shared", "team", "workspace", "all"],
+              },
+              teamGroupId: {
+                type: "string",
+                description:
+                  "Marked team group ID in the current organization; required with scope=team, not an owner string.",
               },
               prefix: {
                 type: "string",
@@ -494,6 +506,17 @@ export async function createResourceScriptEntries(): Promise<
         allowPersistentApproval: false,
         run: async (args: Record<string, string>) => {
           const { action: a, ...rest } = args;
+          if (
+            (rest.scope === "team") !==
+            (typeof rest.teamGroupId === "string" && !!rest.teamGroupId)
+          ) {
+            throw new Error(
+              "scope=team requires teamGroupId; teamGroupId requires scope=team",
+            );
+          }
+          if (rest.scope === "team" && a === "effective") {
+            throw new Error("Effective context does not support team scope");
+          }
           if (a === "list") return listEntry.run(rest);
           if (a === "read") {
             if (!rest.path) return "Error: path is required for read";
@@ -529,7 +552,36 @@ export async function createResourceScriptEntries(): Promise<
             if (!rest.path) return "Error: path is required for promote";
             const scope = rest.scope ?? "personal";
             if (scope === "workspace" || scope === "all") {
-              return "Error: promote supports personal or shared scope only";
+              return "Error: promote supports personal, shared, or team scope only";
+            }
+            if (scope === "team") {
+              const { authorizedTeamResourceOwner } =
+                await import("../../resources/team-access.js");
+              const owner = await authorizedTeamResourceOwner(
+                rest.teamGroupId,
+                getRequestOrgId(),
+                getRequestUserEmail(),
+              );
+              const resource = await store.resourceGetByPath(
+                owner,
+                String(rest.path),
+              );
+              if (!resource) return `Resource not found: ${rest.path}`;
+              const promoted = await store.resourcePut(
+                owner,
+                resource.path,
+                resource.content,
+                resource.mimeType,
+                {
+                  createdBy: resource.createdBy,
+                  visibility: "workspace",
+                  threadId: resource.threadId,
+                  runId: resource.runId,
+                  expiresAt: null,
+                  metadata: resource.metadata,
+                },
+              );
+              return `Promoted resource: ${promoted.path}`;
             }
             if (scope === "shared") await assertCanManageSharedResource();
             const owner =

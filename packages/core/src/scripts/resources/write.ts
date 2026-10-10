@@ -8,6 +8,7 @@ import {
   type ResourceCreatedBy,
   type ResourceVisibility,
 } from "../../resources/store.js";
+import { authorizedTeamResourceOwner } from "../../resources/team-access.js";
 import {
   getAmbientUserEmail,
   getRequestOrgId,
@@ -135,7 +136,13 @@ Options:
     "--expires-at",
   );
   let owner: string;
-  if (scope === "shared") {
+  if (scope === "team") {
+    owner = await authorizedTeamResourceOwner(
+      parsed.teamGroupId ?? parsed["team-group-id"],
+      getRequestOrgId(),
+      getRequestUserEmail(),
+    );
+  } else if (scope === "shared") {
     await assertCanWriteSharedResource();
     owner = sharedResourceOwner(getRequestOrgId());
   } else if (scope === "workspace") {
